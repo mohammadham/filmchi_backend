@@ -60,7 +60,7 @@ jobs:
 
       - name: Deploy on server
         run: |
-          ssh -i ~/.ssh/deploy_key root@144.217.133.97 '
+          ssh -i ~/.ssh/deploy_key root@144.217.133.97 "bash -s" <<'REMOTE'
             set -e
             rm -rf /opt/flixy/_incoming && mkdir -p /opt/flixy/_incoming
             tar xzf /tmp/flixy-src.tgz -C /opt/flixy/_incoming
@@ -79,11 +79,11 @@ jobs:
             docker compose build
             docker compose up -d
             sleep 3
-            docker exec flixy sh -c "chown -R application:application storage bootstrap-cache 2>/dev/null; chown -R application:application storage bootstrap/cache; ln -sf /app/storage/app/public /app/public/storage; mkdir -p storage/framework/{cache,sessions,views} storage/logs"
-            CODE=\$(curl -s -o /dev/null -w %{http_code} http://127.0.0.1:8082/)
-            echo "Local health: \$CODE"
-            if [ "\$CODE" != "200" ]; then docker logs flixy --tail 30; exit 1; fi
-          '
+            docker exec flixy sh -c "chown -R application:application /app/storage /app/bootstrap/cache; ln -sf /app/storage/app/public /app/public/storage; mkdir -p /app/storage/framework/cache /app/storage/framework/sessions /app/storage/framework/views /app/storage/logs"
+            CODE=$(curl -s -o /dev/null -w %{http_code} http://127.0.0.1:8082/)
+            echo "Local health: $CODE"
+            if [ "$CODE" != "200" ]; then docker logs flixy --tail 30; exit 1; fi
+          REMOTE
 
       - name: Public smoke check
         run: |
