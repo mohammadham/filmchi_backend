@@ -1,0 +1,93 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-master
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP 8.2
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, pdo_mysql, pdo_sqlite, dom, curl, zip, gd, exif
+          coverage: none
+
+      - name: Composer install
+        run: composer install --prefer-dist --no-interaction --no-progress
+
+      - name: Run tests
+        run: vendor/bin/phpunit --stop-on-failure
+        env:
+          APP_ENV: testing
+          APP_KEY: base64:G8KSE0fro76WwgWlGbRna0F9+US4OdPaaXDMavBXAB8=
+          DB_CONNECTION: sqlite
+          DB_DATABASE: ':memory:'
+          CACHE_DRIVER: array
+          SESSION_DRIVER: array
+          QUEUE_CONNECTION: sync
+          MAIL_MAILER: array
+
+  deploy:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H 144.217.133.97 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Upload source archive
+        run: |
+          tar czf /tmp/flixy-src.tgz --exclude='.git' --exclude='vendor' --exclude='node_modules' .
+          scp -i ~/.ssh/deploy_key /tmp/flixy-src.tgz root@144.217.133.97:/tmp/flixy-src.tgz
+
+      - name: Deploy on server
+        run: |
+          ssh -i ~/.ssh/deploy_key root@144.217.133.97 '
+            set -e
+            rm -rf /opt/flixy/_incoming && mkdir -p /opt/flixy/_incoming
+            tar xzf /tmp/flixy-src.tgz -C /opt/flixy/_incoming
+            rsync -a --delete \
+              --exclude ".env" \
+              --exclude "storage/logs" \
+              --exclude "storage/app" \
+              --exclude "database_flixy.sql.gz" \
+              --exclude "database_flixy.sql" \
+              /opt/flixy/_incoming/ /opt/flixy/
+
+            rm -rf /opt/flixy/_incoming /tmp/flixy-src.tgz
+            cd /opt/flixy
+            cp flixy.Dockerfile Dockerfile
+            cp flixy-compose.yml docker-compose.yml
+            docker compose build
+            docker compose up -d
+            sleep 3
+            docker exec flixy sh -c "chown -R application:application storage bootstrap-cache 2>/dev/null; chown -R application:application storage bootstrap/cache; ln -sf /app/storage/app/public /app/public/storage; mkdir -p storage/framework/{cache,sessions,views} storage/logs"
+            CODE=\$(curl -s -o /dev/null -w %{http_code} http://127.0.0.1:8082/)
+            echo "Local health: \$CODE"
+            if [ "\$CODE" != "200" ]; then docker logs flixy --tail 30; exit 1; fi
+          '
+
+      - name: Public smoke check
+        run: |
+          sleep 2
+          CODE=$(curl -s -o /dev/null -w %{http_code} --max-time 30 https://filmchi.sanduqche.top/)
+          echo "Public health: $CODE"
+          test "$CODE" = "200"
