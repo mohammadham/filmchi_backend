@@ -27,13 +27,24 @@ jobs:
       - name: Composer install
         run: composer install --prefer-dist --no-interaction --no-progress
 
+      - name: Prepare database
+        run: |
+          rm -f /tmp/testing.sqlite
+          touch /tmp/testing.sqlite
+          php artisan migrate --force
+        env:
+          APP_ENV: testing
+          APP_KEY: base64:G8KSE0fro76WwgWlGbRna0F9+US4OdPaaXDMavBXAB8=
+          DB_CONNECTION: sqlite
+          DB_DATABASE: /tmp/testing.sqlite
+
       - name: Run tests
         run: vendor/bin/phpunit --stop-on-failure
         env:
           APP_ENV: testing
           APP_KEY: base64:G8KSE0fro76WwgWlGbRna0F9+US4OdPaaXDMavBXAB8=
           DB_CONNECTION: sqlite
-          DB_DATABASE: ':memory:'
+          DB_DATABASE: /tmp/testing.sqlite
           CACHE_DRIVER: array
           SESSION_DRIVER: array
           QUEUE_CONNECTION: sync
