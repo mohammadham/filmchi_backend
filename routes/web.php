@@ -37,6 +37,13 @@ Route::get($relayStreamPath, [RelayController::class, 'stream'])->name('relayStr
 Route::get($relayDownloadPath, [RelayController::class, 'download'])->name('relayDownload');
 
 Route::get('/', [LoginController::class, 'login'])->name('/');
+
+// The login page only lives at /; reaching /login with GET (e.g. after a
+// Cloudflare challenge round-trip or a stale bookmark) must not 405.
+Route::get('login', function () {
+    return redirect(url('/'));
+})->name('loginPage');
+
 Route::post('login', [LoginController::class, 'checklogin'])->middleware(['checkLogin'])->name('login');
 Route::get('index', [SettingController::class, 'index'])->middleware(['checkLogin'])->name('index');
 Route::get('logout', [LoginController::class, 'logout'])->middleware(['checkLogin'])->name('logout');

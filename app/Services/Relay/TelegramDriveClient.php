@@ -187,34 +187,50 @@ class TelegramDriveClient
      */
     public function uploadFromPath(string $path, string $name, string $mime = null, string $storageChat = null): array
     {
-        $handle = fopen($path, 'rb');
+        $attempt = 0;
 
-        if ($handle === false) {
-            throw new RuntimeException('Unable to read the uploaded file.');
-        }
+        while (true) {
+            // A 401 retry needs a fresh handle: the previous stream was already
+            // consumed by the failed attempt.
+            $handle = fopen($path, 'rb');
 
-        $headers = [];
-
-        if ($storageChat !== null && $storageChat !== '') {
-            $headers['X-Storage-Chat'] = $storageChat;
-        }
-
-        try {
-            $response = $this->request('POST', 'api/v1/files/upload', [
-                'headers' => $headers,
-                'multipart' => [
-                    [
-                        'name' => 'file',
-                        'contents' => $handle,
-                        'filename' => $name,
-                        'headers' => ['Content-Type' => $mime ?: 'application/octet-stream'],
-                    ],
-                ],
-            ], false);
-        } finally {
-            if (is_resource($handle)) {
-                fclose($handle);
+            if ($handle === false) {
+                throw new RuntimeException('Unable to read the uploaded file.');
             }
+
+            $headers = [];
+
+            if ($storageChat !== null && $storageChat !== '') {
+                $headers['X-Storage-Chat'] = $storageChat;
+            }
+
+            try {
+                $response = $this->request('POST', 'api/v1/files/upload', [
+                    'headers' => $headers,
+                    'multipart' => [
+                        [
+                            'name' => 'file',
+                            'contents' => $handle,
+                            'filename' => $name,
+                            'headers' => ['Content-Type' => $mime ?: 'application/octet-stream'],
+                        ],
+                    ],
+                ], false);
+            } finally {
+                if (is_resource($handle)) {
+                    fclose($handle);
+                }
+            }
+
+            if ($response->getStatusCode() === 401 && $attempt === 0 && !$this->hasApiKey()) {
+                // The cached token went stale mid-flight; mint a fresh one and retry once.
+                $this->token(true);
+                $attempt = 1;
+
+                continue;
+            }
+
+            break;
         }
 
         return $this->decode($response, 'upload');
