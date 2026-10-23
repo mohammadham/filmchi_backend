@@ -8,6 +8,9 @@ services:
     environment:
       WEB_DOCUMENT_ROOT: /app/public
       APP_ENV: production
+    volumes:
+      - ./storage/app:/app/storage/app
+      - ./storage/logs:/app/storage/logs
     networks:
       - default
       - 1panel-network

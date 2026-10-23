@@ -1,6 +1,6 @@
 @extends('include.app')
 @section('script')
-<script src="{{ asset('assets/script/setting.js') }}"></script>
+<script src="{{ asset('assets/script/setting.js') }}?v={{ @filemtime(public_path('assets/script/setting.js')) }}"></script>
 
 <script>
     document.addEventListener('DOMContentLoaded', function() {
@@ -171,6 +171,20 @@
                             </label>
                         </div>
                     </div>
+                    <div class="card w-auto p-3">
+                        <div class="checkbox-slider d-flex align-items-center justify-content-between">
+                            <span class="me-3">
+                                {{ __('combinedStorage') }}
+                            </span>
+                            <label>
+                                <input type="radio" class="d-none" name="storage_type" value="3" id="combinedRadio" {{ $setting->storage_type == 3 ? 'checked' : '' }}>
+                                <span class="toggle_background">
+                                    <div class="circle-icon"></div>
+                                    <div class="vertical_line"></div>
+                                </span>
+                            </label>
+                        </div>
+                    </div>
                     <div class="modal-footer p-0">
                         <button type="submit" class="btn theme-btn text-white">{{ __('save') }}</button>
                     </div>
@@ -280,6 +294,153 @@
                         <div class="vertical_line"></div>
                     </span>
                 </label>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <div class="page-title w-100">
+                    <div class="d-flex align-items-center justify-content-between">
+                        <h4 class="mb-0 fw-semibold">{{ __('relayStorage') }}</h4>
+                        <div class="d-flex align-items-center gap-2">
+                            <span class="badge bg-secondary" id="tgStatusBadge">{{ __('primaryStorage') }}: -</span>
+                            <span class="badge bg-secondary" id="nineStatusBadge">{{ __('cacheTier') }}: -</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="card-body px-4">
+                <form id="relaySettingForm" method="POST" autocomplete="off">
+                    @csrf
+                    <div class="card w-auto p-3 mb-3">
+                        <div class="checkbox-slider d-flex align-items-center justify-content-between">
+                            <span class="me-3">
+                                {{ __('relayEnabled') }}
+                                <br>
+                                <span class="text-muted small">{{ __('relayStorageHint') }}</span>
+                            </span>
+                            <label>
+                                <input type="checkbox" class="d-none" id="relayEnabled" name="relay_enabled" value="1" {{ $relay['relay_enabled'] ? 'checked' : '' }}>
+                                <span class="toggle_background">
+                                    <div class="circle-icon"></div>
+                                    <div class="vertical_line"></div>
+                                </span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-lg-6">
+                            <h6 class="fw-semibold mb-3">{{ __('relayTgSection') }}</h6>
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relayBaseUrl') }}</label>
+                                <input type="text" class="form-control" name="relay_tg_base_url" value="{{ $relay['relay_tg_base_url'] }}" placeholder="http://tdrive-app-1:8000">
+                            </div>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label class="form-label">{{ __('relayUsername') }}</label>
+                                        <input type="text" class="form-control" name="relay_tg_username" value="{{ $relay['relay_tg_username'] }}">
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label class="form-label">{{ __('relayPassword') }}</label>
+                                        <input type="password" class="form-control" name="relay_tg_password" value="{{ $relay['relay_tg_password'] }}" placeholder="{{ __('leaveBlankToKeep') }}">
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label class="form-label">{{ __('relayApiKey') }}</label>
+                                        <input type="password" class="form-control" name="relay_tg_api_key" value="{{ $relay['relay_tg_api_key'] }}" placeholder="{{ __('leaveBlankToKeep') }}">
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label class="form-label">{{ __('relayStorageChat') }}</label>
+                                        <input type="text" class="form-control" name="relay_tg_storage_chat" value="{{ $relay['relay_tg_storage_chat'] }}">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="col-lg-6">
+                            <h6 class="fw-semibold mb-3">{{ __('relayNineSection') }}</h6>
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relayBaseUrl') }}</label>
+                                <input type="text" class="form-control" name="relay_nine_base_url" value="{{ $relay['relay_nine_base_url'] }}" placeholder="http://9drive-backend-1:4000">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relayApiKey') }}</label>
+                                <input type="password" class="form-control" name="relay_nine_api_key" value="{{ $relay['relay_nine_api_key'] }}" placeholder="{{ __('leaveBlankToKeep') }}">
+                            </div>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label class="form-label">{{ __('relayEmail') }}</label>
+                                        <input type="text" class="form-control" name="relay_nine_email" value="{{ $relay['relay_nine_email'] }}">
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label class="form-label">{{ __('relayPassword') }}</label>
+                                        <input type="password" class="form-control" name="relay_nine_password" value="{{ $relay['relay_nine_password'] }}" placeholder="{{ __('leaveBlankToKeep') }}">
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label class="form-label">{{ __('relayFolderId') }}</label>
+                                        <input type="text" class="form-control" name="relay_nine_folder_id" value="{{ $relay['relay_nine_folder_id'] }}">
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label class="form-label">{{ __('relayServeMode') }}</label>
+                                        <select class="form-control selectric" name="relay_nine_serve_mode">
+                                            @foreach(['auto', 'share', 'drive'] as $mode)
+                                                <option value="{{ $mode }}" {{ $relay['relay_nine_serve_mode'] == $mode ? 'selected' : '' }}>{{ $mode }}</option>
+                                            @endforeach
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relayFrontendUrl') }}</label>
+                                <input type="text" class="form-control" name="relay_nine_frontend_url" value="{{ $relay['relay_nine_frontend_url'] }}" placeholder="https://9drive.sanduqche.top">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relayPromoteThreshold') }}</label>
+                                <input type="number" min="1" class="form-control" name="relay_promote_threshold" value="{{ $relay['relay_promote_threshold'] }}">
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relayDemandWindow') }}</label>
+                                <input type="number" min="60" class="form-control" name="relay_demand_window" value="{{ $relay['relay_demand_window'] }}">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="relayTestResult" class="small mb-2"></div>
+
+                    <div class="modal-footer p-0">
+                        <button type="button" class="btn btn-outline-primary" id="testRelayBtn">{{ __('testConnection') }}</button>
+                        <button type="submit" class="btn theme-btn text-white">{{ __('save') }}</button>
+                    </div>
+                </form>
             </div>
         </div>
     </div>

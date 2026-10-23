@@ -91,6 +91,8 @@ jobs:
             docker compose up -d
             sleep 3
             docker exec flixy sh -c "chown -R application:application /app/storage /app/bootstrap/cache; ln -sf /app/storage/app/public /app/public/storage; mkdir -p /app/storage/framework/cache /app/storage/framework/sessions /app/storage/framework/views /app/storage/logs"
+            docker exec flixy php artisan migrate --force
+            docker exec flixy php artisan optimize:clear
             CODE=$(curl -s -o /dev/null -w %{http_code} http://127.0.0.1:8082/)
             echo "Local health: $CODE"
             if [ "$CODE" != "200" ]; then docker logs flixy --tail 30; exit 1; fi

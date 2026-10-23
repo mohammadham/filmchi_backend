@@ -160,3 +160,28 @@ php artisan relay:status                 # health of both tiers, counts per cach
 php artisan relay:promote --limit=5      # promote in-demand files
 php artisan relay:promote --id=42        # promote one file
 ```
+
+---
+
+## Combined storage (panel setting)
+
+`storage_type = 3` ("Combined (Telegram Drive + 9drive)") routes uploads through the relay: the panel sends the file to Telegram Drive, creates a `relay_files` row, and returns a public link on this site's domain (`/r/{token}`). Files are promoted to the 9drive cache tier on demand. If the relay call fails the upload falls back to local storage, so the panel never loses a file.
+
+The option is on **Settings → Storage Setting**, next to local/S3/DigitalOcean. The rest of the relay configuration is editable from the same page (**Multi-storage** card): Telegram Drive base URL/credentials, 9drive base URL/API key/credentials, frontend URL, serve mode, promotion threshold and demand window, plus an enable toggle and a **Test connection** button that hits both upstreams and shows `online`/`offline` badges.
+
+Panel values are stored in `global_settings` (`relay_*` columns) and override `config/media_relay.php` at boot (`AppServiceProvider`), so `.env` still works as the fallback. Blank password/API-key fields keep the stored value.
+
+### Promotion without a queue worker
+
+The production `.env` uses `QUEUE_CONNECTION=sync`, so crossing the threshold only marks a file `queued`. A cron entry drains it:
+
+```cron
+*/5 * * * * docker exec flixy php /app/artisan relay:promote --limit=20 >> /var/log/flixy-relay-promote.log 2>&1
+```
+
+### Deployment notes
+
+- `docker-compose.yml` bind-mounts `./storage/app` and `./storage/logs`; without them every rebuild wipes uploads and logs.
+- Sessions use Redis (`SESSION_DRIVER=redis`) so panel logins survive redeploys.
+- `deploy.yml` now runs `php artisan migrate --force` and `optimize:clear` after `docker compose up`.
+- `setting.js` is cache-busted with `?v=<filemtime>`; bumping assets no longer requires a hard refresh.

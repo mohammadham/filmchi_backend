@@ -221,6 +221,83 @@ $(document).ready(function () {
         });
     });
 
-    
+    function relayApiUrl(path) {
+        return String(domainUrl || "").replace(/\/+$/, "") + "/" + path;
+    }
+
+    function relayFormData() {
+        let formData = new FormData($("#relaySettingForm")[0]);
+        formData.set("relay_enabled", $("#relayEnabled").prop("checked") ? 1 : 0);
+        return formData;
+    }
+
+    $(document).on("submit", "#relaySettingForm", function (e) {
+        e.preventDefault();
+        checkUserType(function () {
+            $.ajax({
+                type: "POST",
+                url: relayApiUrl("saveRelaySettings"),
+                data: relayFormData(),
+                contentType: false,
+                processData: false,
+                success: function (response) {
+                    if (response.status) {
+                        showSuccessToast();
+                    } else {
+                        somethingWentWrongToast();
+                    }
+                },
+                error: function () {
+                    somethingWentWrongToast();
+                },
+            });
+        });
+    });
+
+    function relayStatusBadge(id, label, result) {
+        let $badge = $(id);
+        let ok = result && result.ok;
+
+        $badge
+            .removeClass("bg-secondary bg-success bg-danger")
+            .addClass(ok ? "bg-success" : "bg-danger")
+            .text(`${label}: ${ok ? "online" : "offline"}`);
+    }
+
+    $(document).on("click", "#testRelayBtn", function (e) {
+        e.preventDefault();
+
+        let $btn = $(this);
+        $btn.prop("disabled", true);
+
+        $.ajax({
+            type: "POST",
+            url: relayApiUrl("testRelayConnection"),
+            data: relayFormData(),
+            contentType: false,
+            processData: false,
+            success: function (response) {
+                relayStatusBadge("#tgStatusBadge", "Telegram Drive", response.telegram);
+                relayStatusBadge("#nineStatusBadge", "9drive", response.ninedrive);
+
+                let lines = [
+                    `Telegram Drive: ${response.telegram && response.telegram.ok ? "online" : "offline"} — ${response.telegram ? response.telegram.message : ""}`,
+                    `9drive: ${response.ninedrive && response.ninedrive.ok ? "online" : "offline"} — ${response.ninedrive ? response.ninedrive.message : ""}`,
+                ];
+
+                $("#relayTestResult")
+                    .removeClass("text-danger text-success")
+                    .addClass(response.telegram && response.telegram.ok && response.ninedrive && response.ninedrive.ok ? "text-success" : "text-danger")
+                    .html(lines.join("<br>"));
+            },
+            error: function () {
+                $("#relayTestResult").removeClass("text-success").addClass("text-danger").text("Connection test failed.");
+                somethingWentWrongToast();
+            },
+            complete: function () {
+                $btn.prop("disabled", false);
+            },
+        });
+    });
 
 });

@@ -22,7 +22,7 @@ class CreateGlobalSettingsTable extends Migration
             $table->boolean('is_custom_android')->default(true);
             $table->boolean('is_custom_ios')->default(true);
             $table->integer('videoad_skip_time')->default(8);
-            $table->integer('storage_type')->default(0)->comment('0 = Local / 1 = AWS S3 / 2 = DigitalOcean Space');
+            $table->integer('storage_type')->default(0)->comment('0 = Local / 1 = AWS S3 / 2 = DigitalOcean Space / 3 = Combined (Telegram Drive + 9drive)');
             $table->timestamps();
         });
     }

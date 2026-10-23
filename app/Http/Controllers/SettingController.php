@@ -12,6 +12,9 @@ use App\GlobalSettings;
 use App\Language;
 use App\Notification;
 use App\Pages;
+use App\Services\Relay\NineDriveClient;
+use App\Services\Relay\RelaySettings;
+use App\Services\Relay\TelegramDriveClient;
 use App\TVCategory;
 use App\TVChannel;
 use App\User;
@@ -62,8 +65,9 @@ class SettingController extends Controller
             'DO_SPACE_REGION' => env('DO_SPACE_REGION'),
             'DO_SPACE_BUCKET' => env('DO_SPACE_BUCKET')
         ];
+        $relay = RelaySettings::effective();
 
-        return view('setting', compact('setting', 'awsConfig', 'doConfig'));
+        return view('setting', compact('setting', 'awsConfig', 'doConfig', 'relay'));
     }
     
     function fetchSettings()
@@ -126,6 +130,62 @@ class SettingController extends Controller
         ]);
 
         
+    }
+
+    /**
+     * Save the Telegram Drive + 9drive connection settings from the panel.
+     */
+    public function saveRelaySettings(Request $request)
+    {
+        $setting = GlobalSettings::first();
+
+        if ($setting == null) {
+            return response()->json([
+                'status' => false,
+                'message' => 'setting Not Found',
+            ]);
+        }
+
+        $input = RelaySettings::filterInput($request->all());
+
+        // Never blank out a secret by accident: an empty box keeps the saved value.
+        foreach (['relay_tg_password', 'relay_tg_api_key', 'relay_nine_password', 'relay_nine_api_key'] as $secret) {
+            if (array_key_exists($secret, $input) && trim((string) $input[$secret]) === '') {
+                unset($input[$secret]);
+            }
+        }
+
+        $input['relay_enabled'] = $request->boolean('relay_enabled');
+
+        RelaySettings::save($setting, $input);
+
+        return response()->json([
+            'status' => true,
+            'message' => 'Relay settings updated successfully',
+        ]);
+    }
+
+    /**
+     * Probe both relay services with the values currently in the form.
+     */
+    public function testRelayConnection(Request $request)
+    {
+        $setting = GlobalSettings::first();
+
+        $overrides = RelaySettings::filterInput($request->all());
+        $overrides['relay_enabled'] = $request->boolean('relay_enabled');
+
+        RelaySettings::apply($setting, $overrides);
+
+        $telegram = new TelegramDriveClient((array) config('media_relay.telegram'));
+        $nine = new NineDriveClient((array) config('media_relay.ninedrive'));
+
+        return response()->json([
+            'status' => true,
+            'enabled' => (bool) config('media_relay.enabled'),
+            'telegram' => $telegram->health(),
+            'ninedrive' => $nine->health(),
+        ]);
     }
 
     public function changePassword(Request $request)

@@ -87,6 +87,13 @@ class GlobalFunction extends Model
         if ($url == null) {
             return;
         }
+
+        // A relay link (combined storage) points at /r/{token} or /d/{token}:
+        // remove the remote copies as well instead of treating it as a disk path.
+        if (self::deleteRelayFile($url)) {
+            return;
+        }
+
         // Define the base URLs for AWS, DigitalOcean, and Local storage
         $baseURLAWS = rtrim(env('ITEM_BASE_URL'), '/') . '/';
         $baseURLDO = rtrim(env('DO_SPACE_URL'), '/') . '/';
@@ -120,9 +127,90 @@ class GlobalFunction extends Model
         
     }
 
+    /**
+     * Remove a relay-backed file (Telegram copy, cache copy, links, events)
+     * when the given URL is one of this site's relay links.
+     *
+     * Returns true when the URL was a relay link.
+     */
+    protected static function deleteRelayFile($url)
+    {
+        $path = (string) parse_url($url, PHP_URL_PATH);
+
+        if ($path === '' || class_exists(\App\RelayLink::class) === false) {
+            return false;
+        }
+
+        $templates = [
+            (string) config('media_relay.relay.stream_path', 'r/{token}'),
+            (string) config('media_relay.relay.download_path', 'd/{token}'),
+        ];
+
+        $token = null;
+
+        foreach ($templates as $template) {
+            $prefix = '/' . trim(str_replace('{token}', '', $template), '/');
+
+            if (strpos($path, $prefix . '/') === 0) {
+                $token = trim(substr($path, strlen($prefix) + 1), '/');
+
+                if ($token !== '' && strpos($token, '/') === false) {
+                    break;
+                }
+
+                $token = null;
+            }
+        }
+
+        if ($token === null) {
+            return false;
+        }
+
+        $link = \App\RelayLink::where('token', $token)->first();
+
+        if (!$link) {
+            return true;
+        }
+
+        $file = $link->file;
+
+        if ($file) {
+            try {
+                if (!empty($file->nine_file_id)) {
+                    app(\App\Services\Relay\CachePromoter::class)->evict($file, true);
+                }
+            } catch (\Throwable $e) {
+                Log::warning('Relay cache purge failed', ['message' => $e->getMessage()]);
+            }
+
+            try {
+                if (!empty($file->tg_file_id)) {
+                    app(\App\Services\Relay\RelayManager::class)->telegram()->deleteFile((string) $file->tg_file_id, true);
+                }
+            } catch (\Throwable $e) {
+                Log::warning('Relay Telegram purge failed', ['message' => $e->getMessage()]);
+            }
+
+            \App\RelayEvent::where('relay_file_id', $file->id)->delete();
+            $file->delete();
+        }
+
+        $link->delete();
+
+        return true;
+    }
+
     public static function saveFileAndGivePath($file)
     {
-        $storageType = GlobalSettings::first()->storage_type;
+        $storageType = (int) (GlobalSettings::first()->storage_type ?? 0);
+
+        if ($storageType === GlobalSettings::STORAGE_COMBINED) {
+            $relayUrl = self::saveFileToRelay($file);
+
+            if ($relayUrl !== null) {
+                return $relayUrl;
+            }
+        }
 
         $storageConfig = [
             1 => ['disk' => 's3', 'base_url' => env('ITEM_BASE_URL')],
@@ -141,10 +229,54 @@ class GlobalFunction extends Model
         return $baseUrl . $filePath;
     }
 
+    /**
+     * Send an uploaded file into the relay (Telegram Drive primary + 9drive
+     * cache) and return its public link on this site's domain.
+     *
+     * Returns null when the relay is unavailable so the caller can fall back
+     * to local storage instead of losing the upload.
+     */
+    protected static function saveFileToRelay($file)
+    {
+        try {
+            $storage = app(\App\Services\Relay\RelayStorage::class);
+
+            if (!$storage->isReady()) {
+                return null;
+            }
+
+            return $storage->storeUploadedFile($file);
+        } catch (\Throwable $e) {
+            Log::warning('Relay storage failed; falling back to the local disk.', [
+                'message' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+    }
+
     public static function saveImageFromUrl($url)
     {
         if ($url != null) {
-            $storageType = GlobalSettings::first()->storage_type;
+            $storageType = (int) (GlobalSettings::first()->storage_type ?? 0);
+
+            if ($storageType === GlobalSettings::STORAGE_COMBINED) {
+                try {
+                    $storage = app(\App\Services\Relay\RelayStorage::class);
+
+                    if ($storage->isReady()) {
+                        $relayUrl = $storage->storeUrl($url);
+
+                        if ($relayUrl !== null) {
+                            return $relayUrl;
+                        }
+                    }
+                } catch (\Throwable $e) {
+                    Log::warning('Relay image import failed; falling back to the local disk.', [
+                        'message' => $e->getMessage(),
+                    ]);
+                }
+            }
 
             $storageConfig = [
                 1 => ['disk' => 's3', 'base_url' => env('ITEM_BASE_URL')],
@@ -171,7 +303,24 @@ class GlobalFunction extends Model
     public static function saveSubtitleFileAsSrt($file)
     {
         if ($file != null) {
-            $storageType = GlobalSettings::first()->storage_type;
+            $storageType = (int) (GlobalSettings::first()->storage_type ?? 0);
+
+            $extension = $file->getClientOriginalExtension(); // Get the original file extension
+            $filename = time() . uniqid() . '.' . $extension; // Create a unique filename with the correct extension
+
+            if ($storageType === GlobalSettings::STORAGE_COMBINED) {
+                try {
+                    $storage = app(\App\Services\Relay\RelayStorage::class);
+
+                    if ($storage->isReady()) {
+                        return $storage->storeUploadedFile($file, $filename);
+                    }
+                } catch (\Throwable $e) {
+                    Log::warning('Relay subtitle upload failed; falling back to the local disk.', [
+                        'message' => $e->getMessage(),
+                    ]);
+                }
+            }
 
             $storageConfig = [
                 1 => ['disk' => 's3', 'base_url' => env('ITEM_BASE_URL')],

@@ -16,3 +16,24 @@ yarn-error.log
 /.fleet
 /.idea
 /.vscode
+
+# local ops artifacts / secrets
+*.env
+!*.env.example
+*.b64
+*.sql.gz
+database_flixy.sql
+composer.phar
+/cap*.png
+/cap*.html
+/capout.txt
+/capid.txt
+/panel.png
+.1p_api.html
+ab_url.txt
+abrun.sh
+big_e2e.sh
+e2e_*.php
+decompress_db.py
+gen-env.js
+vid_*.sh

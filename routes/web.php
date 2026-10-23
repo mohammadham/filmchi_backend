@@ -173,6 +173,8 @@ Route::post('addCustomAdSourceVideo', [CustomAdsController::class, 'addCustomAdS
 // Setting
 Route::get('setting', [SettingController::class, 'setting'])->middleware(['checkLogin'])->name('setting');
 Route::post('saveSettings', [SettingController::class, 'saveSettings'])->middleware(['checkLogin'])->name('saveSettings');
+Route::post('saveRelaySettings', [SettingController::class, 'saveRelaySettings'])->middleware(['checkLogin'])->name('saveRelaySettings');
+Route::post('testRelayConnection', [SettingController::class, 'testRelayConnection'])->middleware(['checkLogin'])->name('testRelayConnection');
 Route::post('changePassword', [SettingController::class, 'changePassword'])->middleware(['checkLogin'])->name('changePassword');
 
 Route::get('viewPrivacy', [SettingController::class, 'viewPrivacy'])->middleware(['checkLogin'])->name('viewPrivacy');
