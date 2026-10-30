@@ -247,5 +247,6 @@
     "relayDemandWindow": "Demand window (seconds)",
     "testConnection": "Test connection",
     "leaveBlankToKeep": "Leave blank to keep the current value",
-    "secretStored": "saved"
+    "secretStored": "saved",
+    "thumb": "Preview"
 }

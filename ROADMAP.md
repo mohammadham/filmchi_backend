@@ -2,6 +2,12 @@
 
 این فهرست بر اساس وضعیت فعلی همین ریپو نوشته شده: Laravel 9 + relay بین Telegram Drive و 9drive، پنل مدیریت، اپ Flutter، و استقرار Docker روی یک سرور.
 
+## کارهایی که باید خودم انجام بدهم (نیازمند دسترسی داشبورد/سرویس خارجی)
+
+- [ ] **Cloudflare cache برای استریم‌های warm**: در داشبورد CF یک Cache Rule روی `filmchi.sanduqche.top/r/*` بسازید با `Eligible for cache` + `Edge TTL: respect origin` و برای 200/206. نکته: چون `Cache-Control: private` می‌فرستیم، CF به‌صورت پیش‌فرض کش نمی‌کند و باید در همان rule گزینه‌ی «Use cache-control header if present, bypass if not» را با Edge TTL صریح جایگزین کنید. قبل از فعال‌سازی، تست نشت لینک‌های پسورددار انجام شود.
+- [ ] **چرخش اعتبارنامه‌ها**: کلید API مربوط به `googleCredentials.json` (که در تاریخچه‌ی گیت بود) و پسورد/کلیدهای پنل 9drive و tdrive از داخل خود پنل‌ها عوض شوند.
+- [ ] **2FA حساب GitHub و محدودسازی IP پنل** (اختیاری ولی توصیه‌شده).
+
 ## وضعیت فعلی
 
 - آپلود ترکیبی (`storage_type=3`) کار می‌کند: فایل روی Telegram Drive می‌نشیند و لینک عمومی روی دامنه سایت است.

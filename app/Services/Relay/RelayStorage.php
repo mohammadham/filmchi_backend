@@ -126,6 +126,10 @@ class RelayStorage
         $file->owner = 'panel';
         $file->save();
 
+        // The temp upload still exists on this server, so this is the only
+        // moment a poster frame can be extracted cheaply.
+        Thumbnail::make($path, (string) ($file->mime ?? $mime ?? ''), $file);
+
         $link = new RelayLink();
         $link->relay_file_id = $file->id;
         $link->token = Str::random(40);

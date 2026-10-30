@@ -79,12 +79,17 @@ class MediaRelayController extends Controller
                 ? '<span class="badge bg-success">cache</span>'
                 : '<span class="badge bg-secondary">' . e($item->cache_state) . '</span>';
 
+            $thumb = $item->thumb
+                ? "<img src='" . e(asset('storage/' . $item->thumb)) . "' width='72' height='40' class='rounded' style='object-fit:cover'>"
+                : "<span class='text-muted'>—</span>";
+
             $links = "<a rel='{$item->id}' class='me-2 btn btn-primary px-3 text-white relayLinks'>" . __('links') . "</a>";
             $promote = "<a href='#' rel='{$item->id}' class='me-2 btn btn-warning px-3 text-white promote'>" . __('promote') . "</a>";
             $evict = "<a href='#' rel='{$item->id}' class='me-2 btn btn-secondary px-3 text-white evict'>" . __('evict') . "</a>";
             $delete = "<a href='#' rel='{$item->id}' class='btn btn-danger px-3 text-white delete'>" . __('delete') . "</a>";
 
             return [
+                $thumb,
                 e($item->name),
                 $item->human_size,
                 $tier,

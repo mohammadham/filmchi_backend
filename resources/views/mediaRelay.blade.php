@@ -91,8 +91,9 @@
 
             <table class="table table-striped w-100" id="relayFileTable">
                 <thead>
-                    <tr>
-                        <th>{{ __('title') }}</th>
+                        <tr>
+                            <th width="90px">{{ __('thumb') }}</th>
+                            <th>{{ __('title') }}</th>
                         <th width="110px">{{ __('relaySize') }}</th>
                         <th width="110px">{{ __('relayTier') }}</th>
                         <th width="90px">{{ __('relayDemand') }}</th>

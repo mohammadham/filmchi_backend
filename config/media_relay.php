@@ -33,6 +33,21 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Poster frames
+    |--------------------------------------------------------------------------
+    | A one-frame preview is extracted with ffmpeg while the upload still
+    | exists as a local temp file, and stored under storage/app/public
+    | (a few kilobytes per file, mounted persistently).
+    */
+    'thumbnails' => [
+        'enabled' => (bool) env('RELAY_THUMBNAILS', true),
+        'ffmpeg'  => env('FFMPEG_PATH', '/usr/bin/ffmpeg'),
+        'ffprobe' => env('FFPROBE_PATH', '/usr/bin/ffprobe'),
+        'width'   => (int) env('RELAY_THUMB_WIDTH', 480),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Telegram Drive — primary storage (FastAPI "TelegramDrive")
     |--------------------------------------------------------------------------
     */
