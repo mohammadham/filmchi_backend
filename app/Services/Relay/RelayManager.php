@@ -5,6 +5,7 @@ namespace App\Services\Relay;
 use App\Jobs\PromoteToCacheJob;
 use App\RelayEvent;
 use App\RelayFile;
+use App\Services\Relay\RelayStorage;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
@@ -37,6 +38,11 @@ class RelayManager
     public function telegram(): TelegramDriveClient
     {
         return $this->telegram;
+    }
+
+    public function storage(): RelayStorage
+    {
+        return app(RelayStorage::class);
     }
 
     public function ninedrive(): NineDriveClient
