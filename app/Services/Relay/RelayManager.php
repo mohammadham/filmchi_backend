@@ -123,15 +123,13 @@ class RelayManager
      */
     protected function accelResponse(RelayFile $file, array $source, Request $request, bool $download, string $target): Response
     {
-        // Cache-Control is intentionally absent: nginx emits it via
-        // add_header on the proxied response (see relay-upstream.conf), and
-        // setting it here as well would produce a duplicate header.
+        // Cache-Control, Accept-Ranges and Content-Disposition survive the
+        // X-Accel-Redirect from this internal response. ETag and the custom
+        // X- headers do not — nginx emits those itself (see relay-upstream.conf).
         $headers = [
-            'ETag' => $this->etagFor($file),
+            'Cache-Control' => 'private, max-age=3600',
             'Accept-Ranges' => 'bytes',
             'Content-Disposition' => $this->contentDisposition($file->name, $download),
-            'X-Relay-Tier' => $source['tier'],
-            'X-Robots-Tag' => 'noindex, nofollow',
         ];
 
         if ($request->isMethod('HEAD')) {
