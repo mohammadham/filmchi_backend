@@ -5,12 +5,12 @@
 ## وضعیت فعلی
 
 - آپلود ترکیبی (`storage_type=3`) کار می‌کند: فایل روی Telegram Drive می‌نشیند و لینک عمومی روی دامنه سایت است.
-- کش تقاضامحور کار می‌کند: شمارنده در Redis، promotion به 9drive، سرو از tier گرم.
-- پرده‌ی `Range`/`HEAD`، لینک با پسورد/انقضا/سقف دانلود، و رویدادها وجود دارد.
-- تنظیمات relay از پنل قابل ویرایش و تست است؛ مقادیر DB بر `.env` اولویت دارند.
-- استقرار: rsync در محل + rebuild ایمیج + migrate؛ storage و لاگ‌ها persist شده‌اند؛ سشن روی Redis است.
+- کش تقاضامحور کار می‌کند: شمارنده در Redis، promotion به 9drive با صف Redis و ورکر اختصاصی، سرو از tier گرم.
+- استریم با **X-Accel-Redirect** از nginx عبور می‌کند (PHP از مسیر بایت‌ها خارج است؛ Range نیتیو)؛ ETag/304/If-Range/416 و Cache-Control محلی پیاده شده‌اند.
+- پنل: تنظیمات relay با تست اتصال، رازها هرگز به HTML نمی‌روند، rate limit واقعی per-client (TrustedProxy با زنجیره Cloudflare)، آپلود محدود به `RELAY_MAX_UPLOAD_MB`.
+- عملیات: `/healthz` + healthcheck داکر، بکاپ روزانه با retention، کرون بهداشت داکر و logrotate، رازهای DB رمزنگاری‌شده، CI/CD خودکار (test → rsync → build → migrate → health).
 
-ضعف‌های اصلی: صف واقعی نیست (`QUEUE_CONNECTION=sync`)، اعتبارنامه‌ها در DB رمزنگاری نشده‌اند، استریم از داخل PHP پروکسی می‌شود، CDN/HLS/transcode ندارد، سهمیه و eviction برای 9drive تعریف نشده، و تست خودکار برای relay وجود ندارد.
+ضعف‌های باقی‌مانده: CDN/HLS/transcode ندارد، سهمیه و eviction برای 9drive تعریف نشده، تست خودکار برای relay کامل نیست، پنل فقط انگلیسی است.
 
 ---
 
