@@ -60,7 +60,9 @@ jobs:
       - name: Prepare SSH
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          # Strip any CR characters in case the secret was pasted from Windows;
+          # a CRLF-mangled OpenSSH key fails with "error in libcrypto".
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" | tr -d '\r' > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H 144.217.133.97 >> ~/.ssh/known_hosts 2>/dev/null
 
