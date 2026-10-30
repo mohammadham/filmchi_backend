@@ -123,8 +123,10 @@ class RelayManager
      */
     protected function accelResponse(RelayFile $file, array $source, Request $request, bool $download, string $target): Response
     {
+        // Cache-Control is intentionally absent: nginx emits it via
+        // add_header on the proxied response (see relay-upstream.conf), and
+        // setting it here as well would produce a duplicate header.
         $headers = [
-            'Cache-Control' => 'private, max-age=3600',
             'ETag' => $this->etagFor($file),
             'Accept-Ranges' => 'bytes',
             'Content-Disposition' => $this->contentDisposition($file->name, $download),
