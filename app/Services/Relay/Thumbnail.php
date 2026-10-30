@@ -58,7 +58,12 @@ class Thumbnail
 
             if (!$result && $at > 0) {
                 // Very short files can fail with an input seek; retry from 0.
-                self::run([$ffmpeg, '-y', '-i', $sourcePath, '-frames:v', '1'], $destPath, $width);
+                $result = self::run([$ffmpeg, '-y', '-i', $sourcePath, '-frames:v', '1'], $destPath, $width);
+            }
+
+            if ($result) {
+                $file->thumb = $dest;
+                $file->save();
             }
         } catch (\Throwable $e) {
             Log::warning('Relay thumbnail generation failed', [
