@@ -128,6 +128,8 @@ class MediaRelayController extends Controller
             return response()->json(['status' => false, 'message' => 'Telegram Drive is not configured.']);
         }
 
+        $upload = $request->file('file');
+
         // Identical bytes already stored? A fresh link to the existing copy
         // beats a second multi-gigabyte upload.
         $duplicate = $this->relay->storage()->findByChecksum($upload->getRealPath());
