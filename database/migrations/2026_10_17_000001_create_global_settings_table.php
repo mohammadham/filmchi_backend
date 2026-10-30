@@ -13,6 +13,13 @@ class CreateGlobalSettingsTable extends Migration
      */
     public function up()
     {
+        // Production databases imported from a dump already contain this
+        // table without a migrations-table row; creating it again must not
+        // fail the whole migrate run.
+        if (Schema::hasTable('global_settings')) {
+            return;
+        }
+
         Schema::create('global_settings', function (Blueprint $table) {
             $table->id();
             $table->string('app_name', 55)->nullable();

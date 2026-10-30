@@ -37,3 +37,15 @@ e2e_*.php
 decompress_db.py
 gen-env.js
 vid_*.sh
+googleCredentials.json
+.cloud-attachments/
+adb_out.txt
+1p_*.py
+maintenance.sh
+relay-watch.sh
+weekly-clean.sh
+vid_*
+ninedrive-compose.yml
+tdrive-compose.yml
+tdrive-env.example
+site-*.conf

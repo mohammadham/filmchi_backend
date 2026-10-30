@@ -8,6 +8,10 @@ return new class extends Migration
 {
     public function up()
     {
+        if (Schema::hasTable('relay_events')) {
+            return;
+        }
+
         Schema::create('relay_events', function (Blueprint $table) {
             $table->id();
 

@@ -66,24 +66,24 @@ jobs:
 
       - name: Upload source archive
         run: |
-          tar czf /tmp/flixy-src.tgz --exclude='.git' --exclude='vendor' --exclude='node_modules' .
+          git archive -o /tmp/flixy-src.tgz HEAD
           scp -i ~/.ssh/deploy_key /tmp/flixy-src.tgz root@144.217.133.97:/tmp/flixy-src.tgz
 
       - name: Deploy on server
         run: |
           ssh -i ~/.ssh/deploy_key root@144.217.133.97 "bash -s" <<'REMOTE'
             set -e
-            rm -rf /opt/flixy/_incoming && mkdir -p /opt/flixy/_incoming
-            tar xzf /tmp/flixy-src.tgz -C /opt/flixy/_incoming
+            rm -rf /tmp/flixy-stage && mkdir -p /tmp/flixy-stage
+            tar xzf /tmp/flixy-src.tgz -C /tmp/flixy-stage
             rsync -a --delete \
               --exclude ".env" \
               --exclude "storage/logs" \
               --exclude "storage/app" \
               --exclude "database_flixy.sql.gz" \
               --exclude "database_flixy.sql" \
-              /opt/flixy/_incoming/ /opt/flixy/
+              /tmp/flixy-stage/ /opt/flixy/
 
-            rm -rf /opt/flixy/_incoming /tmp/flixy-src.tgz
+            rm -rf /tmp/flixy-stage /tmp/flixy-src.tgz
             cd /opt/flixy
             cp flixy.Dockerfile Dockerfile
             cp flixy-compose.yml docker-compose.yml
