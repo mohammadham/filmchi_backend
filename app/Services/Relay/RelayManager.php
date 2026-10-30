@@ -136,7 +136,15 @@ class RelayManager
             return response('', 200, $headers);
         }
 
-        return response('', 200, $headers)->header('X-Accel-Redirect', $target);
+        // The ETag and tier travel inside the redirect target and are emitted
+        // by nginx's add_header, because headers set on the internal response
+        // are not reliably forwarded through X-Accel-Redirect. ETag/tier are
+        // argument-safe (no spaces, &, ? or #) so they pass unencoded.
+        $redirect = '/relay-upstream/' . rawurlencode($source['url'])
+            . '?rte=' . $this->etagFor($file)
+            . '&rtt=' . $source['tier'];
+
+        return response('', 200, $headers)->header('X-Accel-Redirect', $redirect);
     }
 
     /**
