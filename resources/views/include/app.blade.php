@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="{{ app()->getLocale() }}" dir="{{ app()->getLocale() === 'fa' ? 'rtl' : 'ltr' }}">
 
 <head>
     <meta charset="UTF-8">
@@ -18,6 +18,9 @@
     <link rel="stylesheet" href="{{ asset('assets/css/swiper-bundle.min.css') }}" type="text/css" />
     <link rel="stylesheet" href="{{ asset('assets/css/jquery-ui.css') }}" type="text/css" />
     <link rel="stylesheet" href="{{ asset('assets/css/style.css') }}">
+@if(app()->getLocale() === 'fa')
+    <link rel="stylesheet" href="{{ asset('assets/css/rtl.css') }}?v={{ @filemtime(public_path('assets/css/rtl.css')) }}">
+@endif
 </head>
 
 <body>

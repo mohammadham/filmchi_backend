@@ -5,6 +5,7 @@ namespace App\Providers;
 use App\Services\Relay\RelaySettings;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Facades\Schema;
@@ -31,7 +32,32 @@ class AppServiceProvider extends ServiceProvider
         Schema::defaultStringLength(191);
 
         $this->applyRelaySettings();
+        $this->applyPanelLocale();
         $this->defineRateLimiters();
+    }
+
+    /**
+     * Switch the panel language (en/fa). fa also flips the layout to RTL
+     * from the blade templates by reading app()->getLocale().
+     *
+     * Wrapped defensively: the table may not exist yet and that must never
+     * break a request.
+     */
+    protected function applyPanelLocale(): void
+    {
+        try {
+            if (!Schema::hasTable('global_settings')) {
+                return;
+            }
+
+            $lang = DB::table('global_settings')->value('panel_lang');
+
+            if (in_array($lang, ['en', 'fa'], true)) {
+                $this->app->setLocale($lang);
+            }
+        } catch (\Throwable $e) {
+            // Ignore: fall back to config('app.locale').
+        }
     }
 
     /**

@@ -248,5 +248,6 @@
     "testConnection": "Test connection",
     "leaveBlankToKeep": "Leave blank to keep the current value",
     "secretStored": "saved",
+    "panelLanguage": "Panel language",
     "thumb": "Preview"
 }

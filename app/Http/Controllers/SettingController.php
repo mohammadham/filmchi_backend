@@ -122,6 +122,9 @@ class SettingController extends Controller
         if($request->has('storage_type')) {
             $setting->storage_type = $request->storage_type;
         }
+        if($request->has('panel_lang') && in_array($request->panel_lang, ['en', 'fa'], true)) {
+            $setting->panel_lang = $request->panel_lang;
+        }
         $setting->save();
 
         return response()->json([

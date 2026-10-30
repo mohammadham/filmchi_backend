@@ -1,0 +1,72 @@
+/* Directional adjustments for the Persian (RTL) panel.
+   Loaded only when the document is dir="rtl". */
+
+[dir="rtl"] body {
+    direction: rtl;
+    text-align: right;
+}
+
+[dir="rtl"] .sidebar .menu .sidebar-link {
+    display: flex;
+    flex-direction: row-reverse;
+    justify-content: flex-end;
+}
+
+[dir="rtl"] .sidebar .menu .sidebar-link i {
+    margin-left: 0.6rem;
+    margin-right: 0;
+}
+
+[dir="rtl"] .text-end {
+    text-align: left !important;
+}
+
+[dir="rtl"] .text-start {
+    text-align: right !important;
+}
+
+[dir="rtl"] .me-2,
+[dir="rtl"] .me-3 {
+    margin-right: 0 !important;
+    margin-left: 0.6rem;
+}
+
+[dir="rtl"] .ms-2,
+[dir="rtl"] .ms-3 {
+    margin-left: 0 !important;
+    margin-right: 0.6rem;
+}
+
+[dir="rtl"] input[type="checkbox"],
+[dir="rtl"] input[type="radio"] {
+    margin-left: 0.5rem;
+}
+
+[dir="rtl"] table.dataTable thead th,
+[dir="rtl"] table.dataTable tbody td {
+    text-align: right;
+}
+
+[dir="rtl"] table.dataTable thead .sorting::after,
+[dir="rtl"] table.dataTable thead .sorting_asc::after,
+[dir="rtl"] table.dataTable thead .sorting_desc::after {
+    right: unset;
+    left: 8px;
+}
+
+[dir="rtl"] .dataTables_wrapper .dataTables_filter {
+    text-align: left;
+}
+
+[dir="rtl"] .badge {
+    direction: rtl;
+}
+
+/* Password/URL inputs keep their logical content left-to-right */
+[dir="rtl"] input[type="url"],
+[dir="rtl"] input[type="password"],
+[dir="rtl"] input[name*="url"],
+[dir="rtl"] input[name*="email"] {
+    direction: ltr;
+    text-align: left;
+}

@@ -61,6 +61,15 @@
                                 <input value="{{ $setting->videoad_skip_time }}" type="text" name="videoad_skip_time" class="form-control" required>
                             </div>
                         </div>
+                        <div class="col-md-6">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('panelLanguage') }}</label>
+                                <select name="panel_lang" class="form-control">
+                                    <option value="en" {{ $setting->panel_lang === 'fa' ? '' : 'selected' }}>English</option>
+                                    <option value="fa" {{ $setting->panel_lang === 'fa' ? 'selected' : '' }}>فارسی (راست‌به‌چپ)</option>
+                                </select>
+                            </div>
+                        </div>
                     </div>
                     <div class="modal-footer p-0">
                         <button type="button" class="btn"></button>
