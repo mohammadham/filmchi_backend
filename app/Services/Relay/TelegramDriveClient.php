@@ -241,20 +241,41 @@ class TelegramDriveClient
      */
     public function presignedLink(string $fileId, int $ttl = null, bool $oneTime = false): string
     {
-        $response = $this->request('POST', 'api/v1/files/' . rawurlencode($fileId) . '/link', [
-            'json' => [
-                'ttl' => $ttl ?: (int) ($this->config['link_ttl'] ?? 3600),
-                'one_time' => $oneTime,
-            ],
-        ]);
+        $attempt = 0;
 
-        $data = $this->decode($response, 'presign');
+        while (true) {
+            $attempt++;
 
-        if (empty($data['url'])) {
-            throw new RuntimeException('Telegram Drive did not return a download link.');
+            try {
+                $response = $this->request('POST', 'api/v1/files/' . rawurlencode($fileId) . '/link', [
+                    'json' => [
+                        'ttl' => $ttl ?: (int) ($this->config['link_ttl'] ?? 3600),
+                        'one_time' => $oneTime,
+                    ],
+                ]);
+
+                $data = $this->decode($response, 'presign');
+
+                if (empty($data['url'])) {
+                    throw new RuntimeException('Telegram Drive did not return a download link.');
+                }
+
+                return $this->absoluteUrl((string) $data['url']);
+            } catch (RuntimeException $e) {
+                // Telegram Drive finalises uploads asynchronously; a freshly
+                // uploaded file briefly answers 404 "not found or not ready".
+                // Retry briefly so a visitor (or the promote job) that hits
+                // the file seconds after upload is not turned away.
+                $notReady = stripos($e->getMessage(), 'not ready') !== false
+                    || stripos($e->getMessage(), 'not found') !== false;
+
+                if (!$notReady || $attempt >= 3) {
+                    throw $e;
+                }
+
+                sleep(2 * $attempt);
+            }
         }
-
-        return $this->absoluteUrl((string) $data['url']);
     }
 
     public function shareLink(string $fileId, string $slug = ''): array
