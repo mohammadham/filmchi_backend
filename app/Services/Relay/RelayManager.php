@@ -76,6 +76,35 @@ class RelayManager
     }
 
     /**
+     * Response that defers the byte transfer to nginx.
+     *
+     * Only headers the client should see are set here; Content-Type and
+     * Content-Length arrive from the proxied upstream response. HEAD skips
+     * the upstream entirely (no Content-Length, but ranges still work for
+     * real GETs).
+     *
+     * @param  array{tier:string,url:string,headers:array<string,string>}  $source
+     */
+    protected function accelResponse(RelayFile $file, array $source, Request $request, bool $download): Response
+    {
+        $headers = [
+            'Cache-Control' => 'private, max-age=3600',
+            'ETag' => $this->etagFor($file),
+            'Accept-Ranges' => 'bytes',
+            'Content-Disposition' => $this->contentDisposition($file->name, $download),
+            'X-Relay-Tier' => $source['tier'],
+            'X-Robots-Tag' => 'noindex, nofollow',
+        ];
+
+        if ($request->isMethod('HEAD')) {
+            return response('', 200, $headers);
+        }
+
+        return response('', 200, $headers)
+            ->header('X-Accel-Redirect', '/relay-upstream?u=' . rawurlencode($source['url']));
+    }
+
+    /**
      * Where the bytes for this file come from right now.
      *
      * @return array{tier:string,url:string,headers:array<string,string>}
@@ -201,6 +230,13 @@ class RelayManager
 
         if (!config('media_relay.relay.proxy', true)) {
             return redirect()->away($source['url']);
+        }
+
+        // Hand the byte streaming to nginx: the response only carries an
+        // X-Accel-Redirect to the internal pass-through location, and nginx
+        // proxies the upstream itself (Range included) without any PHP work.
+        if ((bool) config('media_relay.relay.x_accel', true) && !empty($source['url'])) {
+            return $this->accelResponse($file, $source, $request, $download);
         }
 
         $upstreamHeaders = $source['headers'];

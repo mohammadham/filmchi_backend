@@ -4,6 +4,8 @@ WORKDIR /app
 
 COPY . /app
 
+COPY docker/nginx/relay-upstream.conf /opt/docker/etc/nginx/vhost.common.d/11-relay-upstream.conf
+
 RUN composer install --no-dev --prefer-dist --no-interaction --optimize-autoloader 2>&1 | tail -5 \
  && mkdir -p storage/framework/cache storage/framework/sessions storage/framework/views storage/logs \
  && chown -R application:application storage bootstrap/cache \

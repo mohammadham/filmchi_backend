@@ -94,6 +94,13 @@ return [
          * false → the viewer is redirected straight to the signed upstream URL
          */
         'proxy'         => (bool) env('RELAY_PROXY_STREAM', true),
+        /*
+         * true  → streaming is handed to nginx via X-Accel-Redirect, so the
+         *         bytes never pass through PHP (needs the relay-upstream
+         *         location shipped in the image)
+         * false → PHP reads the upstream in chunks and echoes it
+         */
+        'x_accel'       => (bool) env('RELAY_XACCEL', true),
         'chunk_size'    => (int) env('RELAY_CHUNK_SIZE', 262144),
         // Seconds allowed for one upstream transfer. Kept below the platform
         // socket limit (PHP refuses > 2147s on Windows) by Streams::open().
