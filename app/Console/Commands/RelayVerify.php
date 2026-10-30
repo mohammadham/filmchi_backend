@@ -85,7 +85,7 @@ class RelayVerify extends Command
             $broken++;
         }
 
-        $this->table(['Verified OK', 'Skipped', 'Evicted/broken'], [$ok, $skipped, $broken]);
+        $this->table(['Verified OK', 'Skipped', 'Evicted/broken'], [[$ok, $skipped, $broken]]);
 
         return $broken > 0 ? 1 : 0;
     }
