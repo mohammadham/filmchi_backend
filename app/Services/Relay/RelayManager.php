@@ -185,6 +185,18 @@ class RelayManager
      */
     public function serve(RelayFile $file, Request $request, bool $download = false): Response
     {
+        $etag = $this->etagFor($file);
+
+        // The file bytes are immutable, so a matching If-None-Match can be
+        // answered without touching either upstream.
+        if ($this->ifNoneMatchMatches($request, $etag)) {
+            return response('', 304, [
+                'ETag' => $etag,
+                'Cache-Control' => 'private, max-age=3600',
+                'Accept-Ranges' => 'bytes',
+            ]);
+        }
+
         $source = $this->source($file, $download);
 
         if (!config('media_relay.relay.proxy', true)) {
@@ -194,7 +206,14 @@ class RelayManager
         $upstreamHeaders = $source['headers'];
 
         if ($request->header('Range')) {
-            $upstreamHeaders['Range'] = (string) $request->header('Range');
+            // If-Range carries the validator the client based its range on.
+            // A stale validator means the client's cache no longer matches,
+            // so the range must be ignored and the full body returned.
+            if ($request->filled('If-Range') && !$this->ifRangeMatches($request, $etag)) {
+                unset($upstreamHeaders['Range']);
+            } else {
+                $upstreamHeaders['Range'] = (string) $request->header('Range');
+            }
         }
 
         $opened = Streams::open(
@@ -217,7 +236,13 @@ class RelayManager
                 'status' => $status,
             ]);
 
-            return response($this->errorPage($status), $status, ['Content-Type' => 'text/plain; charset=UTF-8']);
+            $errorHeaders = ['Content-Type' => 'text/plain; charset=UTF-8'];
+
+            if ($status === 416 && (int) $file->size > 0) {
+                $errorHeaders['Content-Range'] = 'bytes */' . (int) $file->size;
+            }
+
+            return response($this->errorPage($status), $status, $errorHeaders);
         }
 
         if ($request->isMethod('HEAD')) {
@@ -290,7 +315,10 @@ class RelayManager
             'Content-Type' => $upstream['content-type'] ?? ($file->mime ?: 'application/octet-stream'),
             'Accept-Ranges' => $upstream['accept-ranges'] ?? 'bytes',
             'Content-Disposition' => $this->contentDisposition($file->name, $download),
-            'Cache-Control' => 'public, max-age=0, must-revalidate',
+            // The bytes never change for a given file, so the browser may
+            // keep a private copy and revalidate with If-None-Match (304).
+            'Cache-Control' => 'private, max-age=3600',
+            'ETag' => $this->etagFor($file),
             'X-Relay-Tier' => $tier,
             'X-Robots-Tag' => 'noindex, nofollow',
         ];
@@ -313,6 +341,52 @@ class RelayManager
         ];
 
         return $map[$name] ?? $name;
+    }
+
+    /**
+     * Weak validator derived from the file identity. The bytes behind a
+     * relay file never change (re-upload creates a new file), so id + size
+     * is a stable validator for caching clients.
+     */
+    protected function etagFor(RelayFile $file): string
+    {
+        return 'W/"relay-' . $file->id . '-' . (int) $file->size . '"';
+    }
+
+    /**
+     * @param  array<int, string>|null  $header
+     */
+    protected function ifNoneMatchMatches(Request $request, string $etag): bool
+    {
+        $value = trim((string) $request->header('If-None-Match'));
+
+        if ($value === '') {
+            return false;
+        }
+
+        if ($value === '*') {
+            return true;
+        }
+
+        foreach (explode(',', $value) as $candidate) {
+            if (trim($candidate) === $etag) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * If-Range with a date validator (or anything that is not our ETag)
+     * counts as stale, which simply serves the full body — the safe path
+     * for a client whose cache does not match.
+     */
+    protected function ifRangeMatches(Request $request, string $etag): bool
+    {
+        $value = trim((string) $request->header('If-Range'));
+
+        return $value === $etag;
     }
 
     protected function contentDisposition(string $name, bool $download): string

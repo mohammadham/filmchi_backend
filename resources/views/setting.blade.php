@@ -350,7 +350,7 @@
                                 <div class="col-md-6">
                                     <div class="form-group">
                                         <label class="form-label">{{ __('relayPassword') }}</label>
-                                        <input type="password" class="form-control" name="relay_tg_password" value="{{ $relay['relay_tg_password'] }}" placeholder="{{ __('leaveBlankToKeep') }}">
+                                        <input type="password" class="form-control" name="relay_tg_password" value="" placeholder="{{ __('leaveBlankToKeep') }}">@if($relay['relay_tg_password_set']) <span class="badge bg-success-subtle text-success ms-1">{{ __('secretStored') }}</span>@endif
                                     </div>
                                 </div>
                             </div>
@@ -358,7 +358,7 @@
                                 <div class="col-md-6">
                                     <div class="form-group">
                                         <label class="form-label">{{ __('relayApiKey') }}</label>
-                                        <input type="password" class="form-control" name="relay_tg_api_key" value="{{ $relay['relay_tg_api_key'] }}" placeholder="{{ __('leaveBlankToKeep') }}">
+                                        <input type="password" class="form-control" name="relay_tg_api_key" value="" placeholder="{{ __('leaveBlankToKeep') }}">@if($relay['relay_tg_api_key_set']) <span class="badge bg-success-subtle text-success ms-1">{{ __('secretStored') }}</span>@endif
                                     </div>
                                 </div>
                                 <div class="col-md-6">
@@ -378,7 +378,7 @@
                             </div>
                             <div class="form-group">
                                 <label class="form-label">{{ __('relayApiKey') }}</label>
-                                <input type="password" class="form-control" name="relay_nine_api_key" value="{{ $relay['relay_nine_api_key'] }}" placeholder="{{ __('leaveBlankToKeep') }}">
+                                <input type="password" class="form-control" name="relay_nine_api_key" value="" placeholder="{{ __('leaveBlankToKeep') }}">@if($relay['relay_nine_api_key_set']) <span class="badge bg-success-subtle text-success ms-1">{{ __('secretStored') }}</span>@endif
                             </div>
                             <div class="row">
                                 <div class="col-md-6">
@@ -390,7 +390,7 @@
                                 <div class="col-md-6">
                                     <div class="form-group">
                                         <label class="form-label">{{ __('relayPassword') }}</label>
-                                        <input type="password" class="form-control" name="relay_nine_password" value="{{ $relay['relay_nine_password'] }}" placeholder="{{ __('leaveBlankToKeep') }}">
+                                        <input type="password" class="form-control" name="relay_nine_password" value="" placeholder="{{ __('leaveBlankToKeep') }}">@if($relay['relay_nine_password_set']) <span class="badge bg-success-subtle text-success ms-1">{{ __('secretStored') }}</span>@endif
                                     </div>
                                 </div>
                             </div>

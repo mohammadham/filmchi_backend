@@ -47,7 +47,11 @@ class RelaySettings
     }
 
     /**
-     * Values currently in effect (secrets included, so the panel can prefill them).
+     * Values currently in effect for the settings VIEW.
+     *
+     * Connection secrets are never returned to the browser: the inputs render
+     * empty and blank submissions keep the stored value (see save()). The
+     * *_set booleans let the view show whether a secret exists.
      *
      * @return array<string, mixed>
      */
@@ -57,13 +61,17 @@ class RelaySettings
             'relay_enabled' => (bool) config('media_relay.enabled'),
             'relay_tg_base_url' => (string) config('media_relay.telegram.base_url'),
             'relay_tg_username' => (string) config('media_relay.telegram.username'),
-            'relay_tg_password' => (string) config('media_relay.telegram.password'),
-            'relay_tg_api_key' => (string) config('media_relay.telegram.api_key'),
+            'relay_tg_password' => '',
+            'relay_tg_password_set' => (string) config('media_relay.telegram.password') !== '',
+            'relay_tg_api_key' => '',
+            'relay_tg_api_key_set' => (string) config('media_relay.telegram.api_key') !== '',
             'relay_tg_storage_chat' => (string) config('media_relay.telegram.storage_chat'),
             'relay_nine_base_url' => (string) config('media_relay.ninedrive.base_url'),
-            'relay_nine_api_key' => (string) config('media_relay.ninedrive.api_key'),
+            'relay_nine_api_key' => '',
+            'relay_nine_api_key_set' => (string) config('media_relay.ninedrive.api_key') !== '',
             'relay_nine_email' => (string) config('media_relay.ninedrive.email'),
-            'relay_nine_password' => (string) config('media_relay.ninedrive.password'),
+            'relay_nine_password' => '',
+            'relay_nine_password_set' => (string) config('media_relay.ninedrive.password') !== '',
             'relay_nine_folder_id' => (string) config('media_relay.ninedrive.folder_id'),
             'relay_nine_frontend_url' => (string) config('media_relay.ninedrive.frontend_url'),
             'relay_nine_serve_mode' => (string) config('media_relay.ninedrive.serve_mode'),

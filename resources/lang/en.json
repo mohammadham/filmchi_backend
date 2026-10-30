@@ -246,5 +246,6 @@
     "relayPromoteThreshold": "Promotion threshold",
     "relayDemandWindow": "Demand window (seconds)",
     "testConnection": "Test connection",
-    "leaveBlankToKeep": "Leave blank to keep the current value"
+    "leaveBlankToKeep": "Leave blank to keep the current value",
+    "secretStored": "saved"
 }
