@@ -26,6 +26,9 @@ class PromoteToCacheJob implements ShouldQueue
     /** @var int */
     public $tries = 3;
 
+    /** @var array<int, int> */
+    public $backoff = [60, 300, 900];
+
     /** @var int */
     public $relayFileId;
 

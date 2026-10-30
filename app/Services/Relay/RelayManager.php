@@ -170,7 +170,10 @@ class RelayManager
         $file->cache_state = RelayFile::QUEUED;
         $file->save();
 
-        PromoteToCacheJob::dispatch($file->id);
+        // Telegram Drive finalises an upload asynchronously; hitting it with a
+        // presign request the same second reliably answers 404 "not ready".
+        // Give it a short grace period before the first attempt.
+        PromoteToCacheJob::dispatch($file->id)->delay(now()->addSeconds(20));
 
         return true;
     }

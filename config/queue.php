@@ -63,7 +63,9 @@ return [
             'driver' => 'redis',
             'connection' => 'default',
             'queue' => env('REDIS_QUEUE', 'default'),
-            'retry_after' => 90,
+            // Must exceed the longest job timeout (PromoteToCacheJob: 3600s),
+            // otherwise a running promotion is retried while it is still going.
+            'retry_after' => (int) env('REDIS_QUEUE_RETRY_AFTER', 7200),
             'block_for' => null,
         ],
 

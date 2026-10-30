@@ -5,6 +5,7 @@ use App\Http\Controllers\AdmobController;
 use App\Http\Controllers\ContentController;
 use App\Http\Controllers\CustomAdsController;
 use App\Http\Controllers\GenreController;
+use App\Http\Controllers\HealthController;
 use App\Http\Controllers\LanguageController;
 use App\Http\Controllers\SettingController;
 use App\Http\Controllers\LoginController;
@@ -35,6 +36,8 @@ $relayDownloadPath = config('media_relay.relay.download_path') ?: 'd/{token}';
 
 Route::get($relayStreamPath, [RelayController::class, 'stream'])->name('relayStream');
 Route::get($relayDownloadPath, [RelayController::class, 'download'])->name('relayDownload');
+
+Route::get('healthz', [HealthController::class, 'index'])->name('healthz');
 
 Route::get('/', [LoginController::class, 'login'])->name('/');
 

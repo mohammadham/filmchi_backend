@@ -1,6 +1,7 @@
 services:
   flixy:
     build: .
+    image: flixy:local
     container_name: flixy
     restart: unless-stopped
     ports:
@@ -11,6 +12,36 @@ services:
     volumes:
       - ./storage/app:/app/storage/app
       - ./storage/logs:/app/storage/logs
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1/healthz > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - default
+      - 1panel-network
+      - tdrive_default
+
+  worker:
+    image: flixy:local
+    container_name: flixy-worker
+    restart: unless-stopped
+    command:
+      - php
+      - /app/artisan
+      - queue:work
+      - redis
+      - --queue=default
+      - --sleep=1
+      - --tries=3
+      - --timeout=3600
+      - --max-time=3600
+    volumes:
+      - ./storage/app:/app/storage/app
+      - ./storage/logs:/app/storage/logs
+    depends_on:
+      - flixy
     networks:
       - default
       - 1panel-network
