@@ -99,6 +99,30 @@ class RelayStorage
             throw new RuntimeException('Media relay is disabled or Telegram Drive is not configured.');
         }
 
+        // Identical bytes already stored? Point a fresh link at the existing
+        // copy instead of uploading it again.
+        $existing = $this->findByChecksum($path);
+
+        if ($existing) {
+            $link = new RelayLink();
+            $link->relay_file_id = $existing->id;
+            $link->token = Str::random(40);
+            $link->mode = RelayLink::MODE_STREAM;
+            $link->label = $name;
+            $link->save();
+
+            RelayEvent::create([
+                'relay_file_id' => $existing->id,
+                'event' => 'uploaded',
+                'served_by' => 'telegram',
+                'bytes' => (int) $existing->size,
+                'message' => 'Deduplicated upload: reused the stored copy.',
+                'created_at' => now(),
+            ]);
+
+            return $link->streamUrl();
+        }
+
         $chat = (string) config('media_relay.telegram.storage_chat', '');
 
         $result = $this->relay->telegram()->uploadFromPath(
@@ -119,6 +143,7 @@ class RelayStorage
         $file->size = (int) ($result['size'] ?? $size);
         $file->mime = $result['mime'] ?? $mime;
         $file->extension = $extension;
+        $file->checksum = $this->checksumOf($path);
         $file->tg_file_id = (string) $fileId;
         $file->tg_backend = (string) config('media_relay.telegram.default_backend', 'telegram');
         $file->tg_storage_chat = $chat;
@@ -147,5 +172,30 @@ class RelayStorage
         ]);
 
         return $link->streamUrl();
+    }
+
+    /**
+     * Find a previously stored copy with identical bytes.
+     */
+    public function findByChecksum(string $path): ?RelayFile
+    {
+        $checksum = $this->checksumOf($path);
+
+        if ($checksum === null) {
+            return null;
+        }
+
+        return RelayFile::where('checksum', $checksum)->first();
+    }
+
+    protected function checksumOf(string $path): ?string
+    {
+        if (!is_file($path) || filesize($path) === 0) {
+            return null;
+        }
+
+        $checksum = @hash_file('sha256', $path);
+
+        return $checksum !== false && $checksum !== '' ? $checksum : null;
     }
 }

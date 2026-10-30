@@ -22,16 +22,110 @@ $(document).ready(function () {
         serverMethod: "post",
         columnDefs: [
             {
-                targets: "_all",
                 orderable: false,
+                targets: 0,
+            },
+            {
+                orderable: false,
+                targets: "_all",
             },
         ],
         ajax: {
             url: `${domainUrl}relayFileList`,
+            data: function (d) {
+                d.state = $("#relayStateFilter").val();
+            },
             error: (error) => {
                 console.log(error);
             },
         },
+    });
+
+    $("#relayStateFilter").on("change", function () {
+        relayFileTable.ajax.reload();
+        updateBulkCount();
+    });
+
+    function selectedRelayIds() {
+        return $.map($("input.relay-row-check:checked"), function (el) {
+            return parseInt($(el).val(), 10);
+        });
+    }
+
+    function updateBulkCount() {
+        var count = selectedRelayIds().length;
+        $("#relayBulkCount").text(count > 0 ? count + " " + "selected" : "");
+        $("#bulkPromote, #bulkEvict, #bulkDelete").prop("disabled", count === 0);
+    }
+
+    $("#relaySelectAll").on("change", function () {
+        $("input.relay-row-check").prop("checked", $(this).prop("checked"));
+        updateBulkCount();
+    });
+
+    $(document).on("change", "input.relay-row-check", function () {
+        var all = $("input.relay-row-check");
+        $("#relaySelectAll").prop("checked", all.length > 0 && all.length === all.filter(":checked").length);
+        updateBulkCount();
+    });
+
+    $("#relayFileTable").on("draw.dt", function () {
+        $("#relaySelectAll").prop("checked", false);
+        updateBulkCount();
+    });
+
+    function bulkRelayAction(action, confirmText) {
+        var ids = selectedRelayIds();
+
+        if (ids.length === 0) {
+            return;
+        }
+
+        if (!window.confirm(confirmText)) {
+            return;
+        }
+
+        var payload = {
+            action: action,
+            relay_file_ids: ids,
+        };
+
+        if (action === "evict" || action === "delete") {
+            payload.purge_cache = true;
+        }
+
+        if (action === "delete") {
+            payload.purge_telegram = true;
+        }
+
+        $.ajax({
+            type: "POST",
+            url: `${domainUrl}bulkRelayAction`,
+            data: payload,
+            success: function (response) {
+                if (response.status) {
+                    notify(response.done + " OK, " + response.failed + " failed", "info");
+                } else {
+                    notify("Bulk action failed", "error");
+                }
+                relayFileTable.ajax.reload(null, false);
+            },
+            error: function () {
+                notify("Bulk action failed", "error");
+            },
+        });
+    }
+
+    $("#bulkPromote").on("click", function () {
+        bulkRelayAction("promote", "Promote the selected files into the 9drive cache now?");
+    });
+
+    $("#bulkEvict").on("click", function () {
+        bulkRelayAction("evict", "Remove the selected files from the 9drive cache?");
+    });
+
+    $("#bulkDelete").on("click", function () {
+        bulkRelayAction("delete", "Delete the selected files from Telegram Drive and the cache?");
     });
 
     var relayLinkTable = null;
@@ -74,10 +168,131 @@ $(document).ready(function () {
 
     /* ------------------------------------------------------------- upload */
 
+    var RELAY_CHUNK_SIZE = 8 * 1024 * 1024; // 8MB per chunk
+
+    function setRelayProgress(percent, text) {
+        $("#relayProgressBar")
+            .css("width", percent + "%")
+            .attr("aria-valuenow", Math.round(percent))
+            .text(text !== undefined ? text : Math.round(percent) + "%");
+        $("#relayProgress").show();
+    }
+
+    /**
+     * Resumable upload: 8MB chunks appended server-side into one .part file.
+     * The upload id persists in localStorage per file name+size, so a
+     * browser that closed mid-upload continues where it stopped.
+     */
+    function relayChunkedUpload(file) {
+        return new Promise((resolve, reject) => {
+            const hex = () => {
+                let h = "";
+                for (let i = 0; i < 32; i++) {
+                    h += "0123456789abcdef"[Math.floor(Math.random() * 16)];
+                }
+                return h;
+            };
+
+            const storageKey = "relayUpload:" + file.name + ":" + file.size;
+            let uploadId = localStorage.getItem(storageKey);
+
+            if (!uploadId) {
+                uploadId = hex();
+                localStorage.setItem(storageKey, uploadId);
+            }
+
+            const csrf = document.querySelector('meta[name="csrf-token"]').content;
+            const start = (received, offset) => {
+                if (offset >= file.size) {
+                    localStorage.removeItem(storageKey);
+                    $.ajax({
+                        type: "POST",
+                        url: `${domainUrl}uploadRelayComplete`,
+                        headers: { "X-CSRF-TOKEN": csrf },
+                        data: { upload_id: uploadId, name: file.name, mime: file.type || "application/octet-stream" },
+                        success: (r) => (r.status ? resolve(r) : reject(r.message || "Upload failed.")),
+                        error: (xhr) => reject((xhr.responseJSON && xhr.responseJSON.message) || "Upload failed."),
+                    });
+                    return;
+                }
+
+                const end = Math.min(offset + RELAY_CHUNK_SIZE, file.size);
+                const blob = file.slice(offset, end);
+
+                const form = new FormData();
+                form.append("upload_id", uploadId);
+                form.append("index", received);
+                form.append("file", blob, "chunk.bin");
+
+                $.ajax({
+                    type: "POST",
+                    url: `${domainUrl}uploadRelayChunk`,
+                    headers: { "X-CSRF-TOKEN": csrf },
+                    data: form,
+                    contentType: false,
+                    processData: false,
+                    success: (r) => {
+                        if (!r.status) {
+                            reject(r.message || "Chunk upload failed.");
+                            return;
+                        }
+                        setRelayProgress((r.received / file.size) * 100);
+                        start(r.index + 1, r.received);
+                    },
+                    error: (xhr) => reject((xhr.responseJSON && xhr.responseJSON.message) || "Chunk upload failed."),
+                });
+            };
+
+            // Ask the server how much it already has (resume support).
+            $.ajax({
+                type: "POST",
+                url: `${domainUrl}uploadRelayStatus`,
+                headers: { "X-CSRF-TOKEN": csrf },
+                data: { upload_id: uploadId },
+                success: (r) => {
+                    const received = r.status ? Math.max(0, parseInt(r.received, 10) || 0) : 0;
+                    start(0, received - (received % RELAY_CHUNK_SIZE));
+                },
+                error: () => start(0, 0),
+            });
+        });
+    }
+
     $(document).on("submit", "#addRelayFileForm", function (e) {
         e.preventDefault();
 
+        const fileInput = document.getElementById("relay_file");
+
+        if (!fileInput || !fileInput.files || fileInput.files.length === 0) {
+            notify("No file selected.", "error");
+            return;
+        }
+
         checkUserType(function () {
+            const file = fileInput.files[0];
+
+            if (file.size > RELAY_CHUNK_SIZE) {
+                relayChunkedUpload(file)
+                    .then((response) => {
+                        if (response.status) {
+                            if (response.duplicate) {
+                                notify(response.message, "info");
+                            } else {
+                                showSuccessToast();
+                            }
+                            relayFileTable.ajax.reload(null, false);
+                            $("#addRelayFileModal").modal("hide");
+                            $("#relayProgress").hide();
+                            fileInput.value = "";
+                        } else {
+                            notify(response.message || "Upload failed.", "error");
+                        }
+                    })
+                    .catch((message) => notify(String(message), "error"));
+
+                return;
+            }
+
             let formData = new FormData($("#addRelayFileForm")[0]);
 
             $.ajax({
@@ -106,10 +321,15 @@ $(document).ready(function () {
                 },
                 success: function (response) {
                     if (response.status) {
-                        showSuccessToast();
+                        if (response.duplicate) {
+                            notify(response.message, "info");
+                        } else {
+                            showSuccessToast();
+                        }
                         relayFileTable.ajax.reload(null, false);
                         $("#addRelayFileModal").modal("hide");
                         $("#relayProgress").hide();
+                        fileInput.value = "";
                     } else {
                         notify(response.message || "Upload failed.", "error");
                     }

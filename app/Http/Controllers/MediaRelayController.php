@@ -63,6 +63,11 @@ class MediaRelayController extends Controller
         $start = (int) $request->input('start', 0);
         $orderDir = $request->input('order.0.dir') === 'asc' ? 'asc' : 'desc';
         $searchValue = $request->input('search.value');
+        $state = strtolower((string) $request->input('state', ''));
+
+        if (in_array($state, [RelayFile::WARM, RelayFile::COLD, RelayFile::QUEUED, RelayFile::PROMOTING, RelayFile::FAILED], true)) {
+            $query->where('cache_state', $state);
+        }
 
         if (!empty($searchValue)) {
             $query->where('name', 'LIKE', "%{$searchValue}%");
@@ -90,6 +95,7 @@ class MediaRelayController extends Controller
             $delete = "<a href='#' rel='{$item->id}' class='btn btn-danger px-3 text-white delete'>" . __('delete') . "</a>";
 
             return [
+                "<input type='checkbox' class='relay-row-check' value='{$item->id}'>",
                 $thumb,
                 e($item->name),
                 $item->human_size,
@@ -122,7 +128,35 @@ class MediaRelayController extends Controller
             return response()->json(['status' => false, 'message' => 'Telegram Drive is not configured.']);
         }
 
-        $upload = $request->file('file');
+        // Identical bytes already stored? A fresh link to the existing copy
+        // beats a second multi-gigabyte upload.
+        $duplicate = $this->relay->storage()->findByChecksum($upload->getRealPath());
+
+        if ($duplicate) {
+            $link = new RelayLink();
+            $link->relay_file_id = $duplicate->id;
+            $link->token = Str::random(40);
+            $link->mode = RelayLink::MODE_STREAM;
+            $link->label = $request->filled('name') ? (string) $request->input('name') : $upload->getClientOriginalName();
+            $link->save();
+
+            RelayEvent::create([
+                'relay_file_id' => $duplicate->id,
+                'event' => 'uploaded',
+                'served_by' => 'telegram',
+                'bytes' => (int) $duplicate->size,
+                'message' => 'Deduplicated upload: reused the stored copy.',
+                'created_at' => now(),
+            ]);
+
+            return response()->json([
+                'status' => true,
+                'duplicate' => true,
+                'message' => 'Identical file already stored; a new link was created without re-uploading.',
+                'data' => $duplicate->only(['id', 'name', 'size', 'cache_state']),
+            ]);
+        }
+
         $name = $request->filled('name') ? (string) $request->input('name') : $upload->getClientOriginalName();
 
         try {
@@ -168,6 +202,243 @@ class MediaRelayController extends Controller
             'message' => 'Stored on Telegram Drive.',
             'created_at' => now(),
         ]);
+
+        return response()->json([
+            'status' => true,
+            'message' => 'File stored on Telegram Drive.',
+            'data' => $file,
+        ]);
+    }
+
+    /**
+     * Apply an action to many relay files at once.
+     */
+    public function bulkRelayAction(Request $request)
+    {
+        $request->validate([
+            'action' => 'required|in:promote,evict,delete',
+            'relay_file_ids' => 'required|array|max:200',
+            'relay_file_ids.*' => 'integer',
+        ]);
+
+        $ids = array_unique(array_map('intval', $request->input('relay_file_ids')));
+        $action = (string) $request->input('action');
+        $purgeTelegram = $request->boolean('purge_telegram');
+        $purgeCache = $request->boolean('purge_cache');
+
+        $done = 0;
+        $failed = 0;
+
+        foreach (RelayFile::whereIn('id', $ids)->get() as $file) {
+            try {
+                if ($action === 'promote') {
+                    $result = $this->promoter->promote($file);
+
+                    if (empty($result['ok']) && empty($result['skipped'])) {
+                        throw new \RuntimeException($result['message'] ?? 'promotion failed');
+                    }
+                } elseif ($action === 'evict') {
+                    $this->promoter->evict($file, $purgeCache);
+                } else {
+                    if ($purgeTelegram && !empty($file->tg_file_id)) {
+                        try {
+                            $this->relay->telegram()->deleteFile((string) $file->tg_file_id, true);
+                        } catch (\Throwable $e) {
+                            Log::warning('Telegram Drive purge failed', ['message' => $e->getMessage()]);
+                        }
+                    }
+
+                    if ($purgeCache && !empty($file->nine_file_id)) {
+                        $this->promoter->evict($file, true);
+                    }
+
+                    RelayLink::where('relay_file_id', $file->id)->delete();
+                    RelayEvent::where('relay_file_id', $file->id)->delete();
+                    $file->delete();
+                }
+
+                $done++;
+            } catch (\Throwable $e) {
+                Log::warning("Relay bulk {$action} failed", [
+                    'relay_file_id' => $file->id,
+                    'message' => $e->getMessage(),
+                ]);
+                $failed++;
+            }
+        }
+
+        return response()->json([
+            'status' => true,
+            'done' => $done,
+            'failed' => $failed,
+        ]);
+    }
+
+    /**
+     * Receive one chunk of a resumable upload. Chunks append to a single
+     * .part file under storage/app/tmp-uploads (persistently mounted), so a
+     * stalled browser can continue from the last acknowledged chunk.
+     */
+    public function uploadRelayChunk(Request $request)
+    {
+        $request->validate([
+            'upload_id' => 'required|regex:/^[a-f0-9]{32}$/',
+            'index' => 'required|integer|min:0',
+            'file' => 'required|file',
+        ]);
+
+        $dir = storage_path('app/tmp-uploads');
+
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0775, true);
+        }
+
+        $part = $dir . '/' . $request->input('upload_id') . '.part';
+        $handle = @fopen($part, 'ab');
+
+        if ($handle === false) {
+            return response()->json(['status' => false, 'message' => 'Cannot open the upload target.']);
+        }
+
+        $stream = fopen($request->file('file')->getRealPath(), 'rb');
+
+        while (!feof($stream)) {
+            fwrite($handle, fread($stream, 1048576));
+        }
+
+        fclose($stream);
+        fclose($handle);
+
+        return response()->json([
+            'status' => true,
+            'index' => (int) $request->input('index'),
+            'received' => filesize($part),
+        ]);
+    }
+
+    /**
+     * Acknowledge how many bytes the server already holds, so the browser
+     * can resume an interrupted upload at the right offset.
+     */
+    public function uploadRelayStatus(Request $request)
+    {
+        $request->validate([
+            'upload_id' => 'required|regex:/^[a-f0-9]{32}$/',
+        ]);
+
+        $part = storage_path('app/tmp-uploads/' . $request->input('upload_id') . '.part');
+
+        return response()->json([
+            'status' => true,
+            'received' => is_file($part) ? filesize($part) : 0,
+        ]);
+    }
+
+    /**
+     * Finish a resumable upload: dedup-check, push the assembled file into
+     * Telegram Drive, clean the temp part.
+     */
+    public function uploadRelayComplete(Request $request)
+    {
+        $request->validate([
+            'upload_id' => 'required|regex:/^[a-f0-9]{32}$/',
+            'name' => 'required|string|max:255',
+        ]);
+
+        $dir = storage_path('app/tmp-uploads');
+        $part = $dir . '/' . $request->input('upload_id') . '.part';
+
+        if (!is_file($part) || filesize($part) === 0) {
+            return response()->json(['status' => false, 'message' => 'No assembled upload found.']);
+        }
+
+        if (!$this->relay->telegram()->isConfigured()) {
+            return response()->json(['status' => false, 'message' => 'Telegram Drive is not configured.']);
+        }
+
+        $name = (string) $request->input('name');
+        $mime = (string) ($request->input('mime') ?: 'application/octet-stream');
+
+        try {
+            $duplicate = $this->relay->storage()->findByChecksum($part);
+
+            if ($duplicate) {
+                $link = new RelayLink();
+                $link->relay_file_id = $duplicate->id;
+                $link->token = Str::random(40);
+                $link->mode = RelayLink::MODE_STREAM;
+                $link->label = $name;
+                $link->save();
+
+                RelayEvent::create([
+                    'relay_file_id' => $duplicate->id,
+                    'event' => 'uploaded',
+                    'served_by' => 'telegram',
+                    'bytes' => (int) $duplicate->size,
+                    'message' => 'Deduplicated upload: reused the stored copy.',
+                    'created_at' => now(),
+                ]);
+
+                @unlink($part);
+
+                return response()->json([
+                    'status' => true,
+                    'duplicate' => true,
+                    'message' => 'Identical file already stored; a new link was created without re-uploading.',
+                    'data' => $duplicate->only(['id', 'name', 'size', 'cache_state']),
+                ]);
+            }
+
+            $result = $this->relay->telegram()->uploadFromPath(
+                $part,
+                $name,
+                $mime,
+                (string) config('media_relay.telegram.storage_chat', '')
+            );
+        } catch (Throwable $e) {
+            Log::error('Relay chunked upload failed', ['message' => $e->getMessage()]);
+
+            return response()->json(['status' => false, 'message' => $e->getMessage()]);
+        }
+
+        $fileId = $result['file_id'] ?? ($result['id'] ?? null);
+
+        if (empty($fileId)) {
+            return response()->json(['status' => false, 'message' => 'Telegram Drive did not return a file id.']);
+        }
+
+        $file = new RelayFile();
+        $file->name = $name;
+        $file->size = (int) ($result['size'] ?? filesize($part));
+        $file->mime = $result['mime'] ?? $mime;
+        $file->extension = pathinfo($name, PATHINFO_EXTENSION);
+        $file->checksum = hash_file('sha256', $part) ?: null;
+        $file->tg_file_id = (string) $fileId;
+        $file->tg_backend = (string) config('media_relay.telegram.default_backend', 'telegram');
+        $file->tg_storage_chat = (string) config('media_relay.telegram.storage_chat', '');
+        $file->cache_state = RelayFile::COLD;
+        $file->owner = (string) $request->session()->get('admin_name', 'panel');
+        $file->save();
+
+        Thumbnail::make($part, (string) ($file->mime ?? $mime), $file);
+
+        $link = new RelayLink();
+        $link->relay_file_id = $file->id;
+        $link->token = Str::random(40);
+        $link->mode = RelayLink::MODE_STREAM;
+        $link->label = $name;
+        $link->save();
+
+        RelayEvent::create([
+            'relay_file_id' => $file->id,
+            'event' => 'uploaded',
+            'served_by' => 'telegram',
+            'bytes' => (int) $file->size,
+            'message' => 'Stored on Telegram Drive (chunked upload).',
+            'created_at' => now(),
+        ]);
+
+        @unlink($part);
 
         return response()->json([
             'status' => true,

@@ -4,6 +4,7 @@ namespace App\Services\Relay;
 
 use App\RelayEvent;
 use App\RelayFile;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
@@ -110,6 +111,13 @@ class CachePromoter
                     'message' => $e->getMessage(),
                 ]);
                 $file->cache_error = 'Cached, but no share link: ' . $e->getMessage();
+            }
+
+            // Cheap post-promotion sanity check: the cached copy must be
+            // reachable and its length must match what the primary tier
+            // reported. HEAD only — no byte transfer.
+            if (config('media_relay.cache.verify_after_promote', true)) {
+                $this->verifyCachedCopy($file);
             }
 
             $file->cache_state = RelayFile::WARM;
@@ -237,6 +245,49 @@ class CachePromoter
         $this->logEvent($file, 'evicted', 'Removed from the cache tier.');
 
         return ['ok' => true, 'message' => 'Cache entry removed.'];
+    }
+
+    /**
+     * HEAD the public cache URL and compare its length with the stored size.
+     * Throws on mismatch so the queue retry machinery takes over.
+     */
+    protected function verifyCachedCopy(RelayFile $file): void
+    {
+        $url = null;
+
+        try {
+            if (!empty($file->nine_share_token)) {
+                $url = $this->ninedrive->previewUrl($file->nine_share_token);
+            } elseif (!empty($file->nine_provider_file_id)) {
+                $url = $this->ninedrive->driveUrl($file->nine_provider_file_id);
+            }
+        } catch (Throwable $e) {
+            return; // nothing verifiable; serving will fall back anyway
+        }
+
+        if (empty($url)) {
+            return;
+        }
+
+        try {
+            $response = Http::timeout(30)->head($url);
+        } catch (Throwable $e) {
+            throw new RuntimeException('Cache copy verification failed: ' . $e->getMessage());
+        }
+
+        if ($response->status() >= 400) {
+            throw new RuntimeException('Cache copy verification failed: HTTP ' . $response->status());
+        }
+
+        $length = (int) $response->header('Content-Length');
+
+        if ($length > 0 && (int) $file->size > 0 && $length !== (int) $file->size) {
+            throw new RuntimeException(sprintf(
+                'Cache copy verification failed: upstream length %d, expected %d.',
+                $length,
+                (int) $file->size
+            ));
+        }
     }
 
     protected function fail(RelayFile $file, string $message): array

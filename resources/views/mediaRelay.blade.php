@@ -89,9 +89,28 @@
                 </div>
             </div>
 
+            <div class="d-flex flex-wrap align-items-center justify-content-between mb-2">
+                <div class="d-flex align-items-center gap-2">
+                    <select id="relayStateFilter" class="form-control form-control-sm" style="width:auto">
+                        <option value="">{{ __('all') }}</option>
+                        <option value="warm">{{ __('warmFiles') }}</option>
+                        <option value="cold">{{ __('coldFiles') }}</option>
+                        <option value="queued">queued</option>
+                        <option value="failed">failed</option>
+                    </select>
+                </div>
+                <div class="d-flex align-items-center gap-2">
+                    <span id="relayBulkCount" class="text-muted small"></span>
+                    <button type="button" id="bulkPromote" class="btn btn-sm btn-warning text-white" disabled>{{ __('promote') }}</button>
+                    <button type="button" id="bulkEvict" class="btn btn-sm btn-secondary" disabled>{{ __('evict') }}</button>
+                    <button type="button" id="bulkDelete" class="btn btn-sm btn-danger" disabled>{{ __('delete') }}</button>
+                </div>
+            </div>
+
             <table class="table table-striped w-100" id="relayFileTable">
                 <thead>
                         <tr>
+                            <th width="40px"><input type="checkbox" id="relaySelectAll"></th>
                             <th width="90px">{{ __('thumb') }}</th>
                             <th>{{ __('title') }}</th>
                         <th width="110px">{{ __('relaySize') }}</th>
