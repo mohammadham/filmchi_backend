@@ -8,6 +8,7 @@ use App\RelayLink;
 use App\Services\Relay\CachePromoter;
 use App\Services\Relay\DemandTracker;
 use App\Services\Relay\RelayManager;
+use App\Services\Relay\Thumbnail;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
@@ -154,6 +155,10 @@ class MediaRelayController extends Controller
         $file->cache_state = RelayFile::COLD;
         $file->owner = (string) $request->session()->get('admin_name', 'panel');
         $file->save();
+
+        // The temp upload still exists at this point; this is the only
+        // moment a poster frame can be extracted cheaply.
+        Thumbnail::make($upload->getRealPath(), (string) ($result['mime'] ?? $upload->getMimeType() ?? ''), $file);
 
         RelayEvent::create([
             'relay_file_id' => $file->id,
