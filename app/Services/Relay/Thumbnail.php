@@ -71,6 +71,7 @@ class Thumbnail
     protected static function run(array $command, string $destPath, int $width): bool
     {
         $command = array_merge($command, [
+            '-update', '1',
             '-vf', 'scale=' . $width . ':-2', '-q:v', '4', $destPath,
         ]);
 
