@@ -76,6 +76,42 @@ class RelayManager
     }
 
     /**
+     * Decide whether the given upstream URL may be handed to nginx.
+     *
+     * Returns the encoded internal redirect target, or null when the URL is
+     * empty or its host is not one of the configured upstreams — in which
+     * case serve() falls back to streaming through PHP.
+     *
+     * @return string|null
+     */
+    protected function accelTarget(string $url): ?string
+    {
+        if ($url === '') {
+            return null;
+        }
+
+        $host = parse_url($url, PHP_URL_HOST);
+
+        if (!is_string($host) || $host === '') {
+            return null;
+        }
+
+        $allowed = [
+            parse_url((string) config('media_relay.telegram.base_url'), PHP_URL_HOST),
+            parse_url((string) config('media_relay.ninedrive.base_url'), PHP_URL_HOST),
+            parse_url((string) config('media_relay.ninedrive.frontend_url'), PHP_URL_HOST),
+            'drive.google.com',
+            'drive.usercontent.google.com',
+        ];
+
+        if (!in_array(strtolower($host), array_filter(array_map('strtolower', $allowed)), true)) {
+            return null;
+        }
+
+        return '/relay-upstream/' . rawurlencode($url);
+    }
+
+    /**
      * Response that defers the byte transfer to nginx.
      *
      * Only headers the client should see are set here; Content-Type and
@@ -85,7 +121,7 @@ class RelayManager
      *
      * @param  array{tier:string,url:string,headers:array<string,string>}  $source
      */
-    protected function accelResponse(RelayFile $file, array $source, Request $request, bool $download): Response
+    protected function accelResponse(RelayFile $file, array $source, Request $request, bool $download, string $target): Response
     {
         $headers = [
             'Cache-Control' => 'private, max-age=3600',
@@ -100,8 +136,7 @@ class RelayManager
             return response('', 200, $headers);
         }
 
-        return response('', 200, $headers)
-            ->header('X-Accel-Redirect', '/relay-upstream?u=' . rawurlencode($source['url']));
+        return response('', 200, $headers)->header('X-Accel-Redirect', $target);
     }
 
     /**
@@ -235,8 +270,8 @@ class RelayManager
         // Hand the byte streaming to nginx: the response only carries an
         // X-Accel-Redirect to the internal pass-through location, and nginx
         // proxies the upstream itself (Range included) without any PHP work.
-        if ((bool) config('media_relay.relay.x_accel', true) && !empty($source['url'])) {
-            return $this->accelResponse($file, $source, $request, $download);
+        if ((bool) config('media_relay.relay.x_accel', true) && ($accel = $this->accelTarget($source['url'] ?? '')) !== null) {
+            return $this->accelResponse($file, $source, $request, $download, $accel);
         }
 
         $upstreamHeaders = $source['headers'];
