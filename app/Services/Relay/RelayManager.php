@@ -209,7 +209,7 @@ class RelayManager
             // If-Range carries the validator the client based its range on.
             // A stale validator means the client's cache no longer matches,
             // so the range must be ignored and the full body returned.
-            if ($request->filled('If-Range') && !$this->ifRangeMatches($request, $etag)) {
+            if (trim((string) $request->header('If-Range')) !== '' && !$this->ifRangeMatches($request, $etag)) {
                 unset($upstreamHeaders['Range']);
             } else {
                 $upstreamHeaders['Range'] = (string) $request->header('Range');
