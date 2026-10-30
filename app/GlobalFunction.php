@@ -4,6 +4,7 @@ namespace App;
 
 use Illuminate\Database\Eloquent\Model;
 use Google\Client;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -224,7 +225,16 @@ class GlobalFunction extends Model
         $appName = env('APP_NAME') ? env('APP_NAME') . '/' : '';
         $filePath = ($storageDisk === 'public') ? 'uploads/' . $fileName : $appName . 'uploads/' . $fileName;
 
-        Storage::disk($storageDisk)->put($filePath, file_get_contents($file), 'public');
+        // Stream from the temp file instead of file_get_contents(), which
+        // would load multi-gigabyte uploads into memory in one piece.
+        $stream = fopen($file->getRealPath(), 'rb');
+        try {
+            Storage::disk($storageDisk)->put($filePath, $stream, 'public');
+        } finally {
+            if (is_resource($stream)) {
+                fclose($stream);
+            }
+        }
 
         return $baseUrl . $filePath;
     }
@@ -242,17 +252,30 @@ class GlobalFunction extends Model
             $storage = app(\App\Services\Relay\RelayStorage::class);
 
             if (!$storage->isReady()) {
+                self::markRelayDegraded('relay is not configured or disabled');
+
                 return null;
             }
 
             return $storage->storeUploadedFile($file);
         } catch (\Throwable $e) {
-            Log::warning('Relay storage failed; falling back to the local disk.', [
-                'message' => $e->getMessage(),
-            ]);
+            self::markRelayDegraded($e->getMessage());
 
             return null;
         }
+    }
+
+    /**
+     * Record that an upload fell back to the local disk. The flag is picked
+     * up by `relay:status` so the degradation is visible, not silent.
+     */
+    protected static function markRelayDegraded(string $reason): void
+    {
+        Log::warning('Relay storage failed; falling back to the local disk.', [
+            'reason' => $reason,
+        ]);
+
+        Cache::put('relay:degraded_at', now()->toIso8601String() . ' — ' . $reason, now()->addHours(24));
     }
 
     public static function saveImageFromUrl($url)

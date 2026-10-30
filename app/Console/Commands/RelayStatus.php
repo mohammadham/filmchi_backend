@@ -7,6 +7,7 @@ use App\Services\Relay\DemandTracker;
 use App\Services\Relay\NineDriveClient;
 use App\Services\Relay\TelegramDriveClient;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Cache;
 
 /**
  * Shows whether the two storage services are reachable and how the tiers
@@ -57,6 +58,12 @@ class RelayStatus extends Command
             $this->warn('The demand store is "' . $demand->storeName() . '": counters are discarded after every');
             $this->warn('request, so no file will ever be promoted automatically. Set CACHE_DRIVER=redis');
             $this->warn('(or RELAY_STATE_STORE=redis) to enable demand-based cache tiering.');
+        }
+
+        if ($degraded = Cache::get('relay:degraded_at')) {
+            $this->newLine();
+            $this->warn('Uploads degraded to the local disk within the last 24h:');
+            $this->warn((string) $degraded);
         }
 
         return 0;

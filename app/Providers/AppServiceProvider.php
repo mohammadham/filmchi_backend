@@ -3,6 +3,9 @@
 namespace App\Providers;
 
 use App\Services\Relay\RelaySettings;
+use Illuminate\Cache\RateLimiting\Limit;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Facades\Schema;
 
@@ -28,6 +31,24 @@ class AppServiceProvider extends ServiceProvider
         Schema::defaultStringLength(191);
 
         $this->applyRelaySettings();
+        $this->defineRateLimiters();
+    }
+
+    /**
+     * Named rate limiters for the public relay endpoints and the login form.
+     *
+     * The streams are cheap per request but easy to hammer; the login is the
+     * only credential gate on the panel.
+     */
+    protected function defineRateLimiters(): void
+    {
+        RateLimiter::for('relayStream', function (Request $request) {
+            return Limit::perMinute(120)->by($request->ip());
+        });
+
+        RateLimiter::for('panelLogin', function (Request $request) {
+            return Limit::perMinute(10)->by($request->ip());
+        });
     }
 
     /**

@@ -109,7 +109,7 @@ class MediaRelayController extends Controller
     public function uploadRelayFile(Request $request)
     {
         $request->validate([
-            'file' => 'required|file',
+            'file' => 'required|file|max:' . ((int) config('media_relay.upload.max_size', 2048) * 1024),
         ]);
 
         if (!$this->relay->telegram()->isConfigured()) {

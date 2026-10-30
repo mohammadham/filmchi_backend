@@ -21,6 +21,18 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Upload limits
+    |--------------------------------------------------------------------------
+    | Maximum accepted upload size in megabytes, enforced by the panel
+    | endpoints before the bytes ever leave the browser. Keep this at or
+    | below the nginx client_max_body_size (2048m in the image).
+    */
+    'upload' => [
+        'max_size' => (int) env('RELAY_MAX_UPLOAD_MB', 2048),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Telegram Drive — primary storage (FastAPI "TelegramDrive")
     |--------------------------------------------------------------------------
     */

@@ -68,6 +68,9 @@ class MediaGalleryController extends Controller
 
     public function addMedia(Request $request)
     {
+        $request->validate([
+            'file' => 'required|file|max:' . ((int) config('media_relay.upload.max_size', 2048) * 1024),
+        ]);
 
         $file = $request->file('file');
         $path = GlobalFunction::saveFileAndGivePath($file);

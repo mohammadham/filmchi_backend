@@ -34,8 +34,12 @@ Route::get('/linkstorage', function () {
 $relayStreamPath = config('media_relay.relay.stream_path') ?: 'r/{token}';
 $relayDownloadPath = config('media_relay.relay.download_path') ?: 'd/{token}';
 
-Route::get($relayStreamPath, [RelayController::class, 'stream'])->name('relayStream');
-Route::get($relayDownloadPath, [RelayController::class, 'download'])->name('relayDownload');
+Route::get($relayStreamPath, [RelayController::class, 'stream'])
+    ->middleware('throttle:relayStream')
+    ->name('relayStream');
+Route::get($relayDownloadPath, [RelayController::class, 'download'])
+    ->middleware('throttle:relayStream')
+    ->name('relayDownload');
 
 Route::get('healthz', [HealthController::class, 'index'])->name('healthz');
 
@@ -47,7 +51,9 @@ Route::get('login', function () {
     return redirect(url('/'));
 })->name('loginPage');
 
-Route::post('login', [LoginController::class, 'checklogin'])->middleware(['checkLogin'])->name('login');
+Route::post('login', [LoginController::class, 'checklogin'])
+    ->middleware(['checkLogin', 'throttle:panelLogin'])
+    ->name('login');
 Route::get('index', [SettingController::class, 'index'])->middleware(['checkLogin'])->name('index');
 Route::get('logout', [LoginController::class, 'logout'])->middleware(['checkLogin'])->name('logout');
 
