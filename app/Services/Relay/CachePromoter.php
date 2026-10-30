@@ -139,6 +139,76 @@ class CachePromoter
     }
 
     /**
+     * Total bytes currently held on the cache tier.
+     */
+    public function cacheUsage(): int
+    {
+        return (int) RelayFile::where('cache_state', RelayFile::WARM)->sum('size');
+    }
+
+    /**
+     * How far the cache is over its budget, in bytes (0 when within it or
+     * when no budget is configured).
+     */
+    public function overBudgetBytes(): int
+    {
+        $budget = (int) config('media_relay.cache.max_cache_bytes', 0);
+
+        if ($budget <= 0) {
+            return 0;
+        }
+
+        return max(0, $this->cacheUsage() - $budget);
+    }
+
+    /**
+     * Evict warm files until the cache fits its budget again.
+     *
+     * Candidates are ordered least-recently-accessed first (never-accessed
+     * files are the best candidates), and files touched within the idle
+     * window are skipped so active viewers keep their copies.
+     *
+     * @param  int  $limit  maximum evictions in one pass
+     * @return array{evicted:int,bytes:int,usage:int,over:int}
+     */
+    public function evictToBudget(int $limit = 20): array
+    {
+        $over = $this->overBudgetBytes();
+        $idle = max(0, (int) config('media_relay.cache.evict_min_idle', 3600));
+        $evicted = 0;
+        $bytes = 0;
+
+        while ($over > 0 && $evicted < $limit) {
+            $candidate = RelayFile::where('cache_state', RelayFile::WARM)
+                ->where(function ($q) use ($idle) {
+                    $q->whereNull('last_access_at')
+                        ->orWhere('last_access_at', '<', now()->subSeconds($idle));
+                })
+                ->orderBy('last_access_at', 'asc')
+                ->first();
+
+            if (!$candidate) {
+                break;
+            }
+
+            $size = (int) $candidate->size;
+
+            $this->evict($candidate, true);
+
+            $evicted++;
+            $bytes += $size;
+            $over = max(0, $over - $size);
+        }
+
+        return [
+            'evicted' => $evicted,
+            'bytes' => $bytes,
+            'usage' => $this->cacheUsage(),
+            'over' => $this->overBudgetBytes(),
+        ];
+    }
+
+    /**
      * Drop the cached copy and fall back to the primary tier.
      */
     public function evict(RelayFile $file, bool $deleteRemote = false): array

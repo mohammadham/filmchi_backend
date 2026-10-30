@@ -147,6 +147,15 @@ return [
         // Cooldown between promotion attempts for one file (seconds).
         'retry_cooldown'   => (int) env('RELAY_RETRY_COOLDOWN', 3600),
         'max_attempts'     => (int) env('RELAY_MAX_ATTEMPTS', 5),
+        /*
+         * Cache budget in megabytes. When the total size of warm (cached)
+         * files grows past it, the least recently used warm files are
+         * demoted back to the primary tier by `relay:evict` until the
+         * usage fits again. 0 = unlimited (no automatic eviction).
+         */
+        'max_cache_bytes'  => (int) env('RELAY_MAX_CACHE_MB', 0) * 1048576,
+        // Files accessed within this window are never auto-evicted.
+        'evict_min_idle'   => (int) env('RELAY_EVICT_MIN_IDLE', 3600),
     ],
 
     /*

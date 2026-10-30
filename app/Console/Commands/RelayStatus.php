@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\RelayFile;
+use App\Services\Relay\CachePromoter;
 use App\Services\Relay\DemandTracker;
 use App\Services\Relay\NineDriveClient;
 use App\Services\Relay\TelegramDriveClient;
@@ -23,7 +24,7 @@ class RelayStatus extends Command
     /** @var string */
     protected $description = 'Show media relay health and tier statistics';
 
-    public function handle(TelegramDriveClient $telegram, NineDriveClient $ninedrive, DemandTracker $demand)
+    public function handle(TelegramDriveClient $telegram, NineDriveClient $ninedrive, DemandTracker $demand, CachePromoter $promoter)
     {
         $tg = $telegram->health();
         $nine = $ninedrive->health();
@@ -42,6 +43,14 @@ class RelayStatus extends Command
             ['cold', RelayFile::where('cache_state', RelayFile::COLD)->count()],
             ['queued', RelayFile::where('cache_state', RelayFile::QUEUED)->count()],
             ['failed', RelayFile::where('cache_state', RelayFile::FAILED)->count()],
+        ]);
+
+        $usage = $promoter->cacheUsage();
+        $budget = (int) config('media_relay.cache.max_cache_bytes', 0);
+        $this->table(['Cache usage', 'Value'], [
+            ['Warm bytes', number_format($usage / 1048576, 1) . ' MB'],
+            ['Budget', $budget > 0 ? number_format($budget / 1048576, 1) . ' MB' : 'unlimited (RELAY_MAX_CACHE_MB=0)'],
+            ['Over budget', $budget > 0 ? number_format(max(0, $usage - $budget) / 1048576, 1) . ' MB' : '-'],
         ]);
 
         $this->line('Promotion threshold: ' . $demand->threshold() . ' requests inside a '
