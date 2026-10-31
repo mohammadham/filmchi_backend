@@ -214,6 +214,64 @@ class MediaRelayController extends Controller
     }
 
     /**
+     * Queue a source URL for ingestion into the combined storage.
+     */
+    public function ingestSourceUrl(Request $request)
+    {
+        if (!config('media_relay.ingest.enabled', true)) {
+            return response()->json(['status' => false, 'message' => 'URL ingestion is disabled.']);
+        }
+
+        $request->validate([
+            'source_type' => 'required|in:content,episode',
+            'source_id' => 'required|integer',
+            'url' => 'required|url',
+        ]);
+
+        $sourceType = (string) $request->input('source_type');
+        $sourceId = (int) $request->input('source_id');
+
+        $source = $sourceType === 'content'
+            ? ContentSource::find($sourceId)
+            : EpisodeSource::find($sourceId);
+
+        if (!$source) {
+            return response()->json(['status' => false, 'message' => 'Source not found.']);
+        }
+
+        $url = (string) $request->input('url');
+
+        // Never queue a URL that already lives on our own relay.
+        if (str_starts_with($url, url('/'))) {
+            return response()->json(['status' => false, 'message' => 'This link is already on the relay.']);
+        }
+
+        $source->ingest_status = 'queued';
+        $source->ingest_progress = 0;
+        $source->ingest_error = null;
+        $source->save();
+
+        \App\Jobs\IngestUrlJob::dispatch($sourceType, $sourceId, $url, $this->ingestName($source));
+
+        return response()->json([
+            'status' => true,
+            'message' => 'Queued for ingestion; the source will switch to the relay link when done.',
+        ]);
+    }
+
+    protected function ingestName($source): string
+    {
+        $name = $source->title ?: 'ingest-' . $source->id;
+        $extension = strtolower(pathinfo(parse_url($source->source, PHP_URL_PATH) ?? '', PATHINFO_EXTENSION));
+
+        if ($extension && !str_ends_with(strtolower($name), '.' . $extension)) {
+            $name .= '.' . $extension;
+        }
+
+        return $name;
+    }
+
+    /**
      * Apply an action to many relay files at once.
      */
     public function bulkRelayAction(Request $request)
