@@ -50,3 +50,7 @@ tdrive-compose.yml
 tdrive-env.example
 site-*.conf.phpunit.result.cache
 read_1p_settings.py
+.phpunit.result.cache
+/site-9drive.conf
+/site-flixy.conf
+/site-tdrive.conf
