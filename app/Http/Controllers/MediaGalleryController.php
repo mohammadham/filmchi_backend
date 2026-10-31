@@ -26,7 +26,7 @@ class MediaGalleryController extends Controller
         $limit = $request->input('length');
         $start = $request->input('start');
         $orderColumn = $columns[(int) $request->input('order.0.column', 0)];
-        $orderDir = $request->input('order.0.dir');
+        $orderDir = $request->input('order.0.dir') === 'asc' ? 'asc' : 'desc';
         $searchValue = $request->input('search.value');
 
         if (!empty($searchValue)) {
