@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers;
 
+use App\ContentSource;
+use App\EpisodeSource;
 use App\RelayEvent;
 use App\RelayFile;
 use App\RelayLink;
