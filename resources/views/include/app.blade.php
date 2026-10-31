@@ -192,7 +192,7 @@
     <script src="{{ asset('assets/js/app.min.js') }}"></script>
     <script src="{{ asset('assets/bundles/izitoast/js/iziToast.min.js') }}"></script>
     <script src="{{ asset('assets/bundles/sweetalert/sweetalert.min.js') }}"></script>
-    <script src="{{ asset('assets/script/env.js') }}"></script>
+    <script src="{{ asset('assets/script/env.js') }}?v={{ @filemtime(public_path('assets/script/env.js')) }}"></script>
     <script src="{{ asset('assets/bundles/datatables/datatables.min.js') }}"></script>
     <script src="{{ asset('assets/js/custom.js') }}"></script>
     <script src="{{ asset('assets/js/bootstrap.min.js') }}"></script>
