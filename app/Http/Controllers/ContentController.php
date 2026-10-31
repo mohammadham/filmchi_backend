@@ -43,7 +43,7 @@ class ContentController extends Controller
             ]);
         }
 
-        $userWatchListContent = [];
+        $userWatchListContent = [X];
 
         $userWatchListContentIds = $user->watchlist_content_ids;
         $featuredContent = Content::where('is_featured', Constants::featured)->where('is_show', Constants::showContent)->get();
@@ -58,7 +58,7 @@ class ContentController extends Controller
         })->with('content')->orderBy('content_index', 'ASC')->get();
 
         $genres = Genre::get();
-        $genreContents = [];
+        $genreContents = [X];
 
         foreach ($genres as $genre) {
             $genreContent = Content::where('is_show', Constants::showContent)
@@ -69,7 +69,7 @@ class ContentController extends Controller
 
             if ($genreContent->isNotEmpty()) {
                 $genre->contents = $genreContent;
-                $genreContents[] = $genre;
+                $genreContents[X] = $genre;
             }
         }
 
@@ -107,7 +107,7 @@ class ContentController extends Controller
             ]);
         }
 
-        $userWatchListContent = [];
+        $userWatchListContent = [X];
 
         $userWatchListContentIds = $user->watchlist_content_ids;
 
@@ -444,7 +444,7 @@ class ContentController extends Controller
 
         $limit = $request->input('length');
         $start = $request->input('start');
-        $orderColumn = $columns[$request->input('order.0.column')];
+        $orderColumn = $columns[(int) $request->input('order.0.column', 0)];
         $orderDir = $request->input('order.0.dir');
         $searchValue = $request->input('search.value');
 
@@ -804,7 +804,7 @@ class ContentController extends Controller
 
         $limit = $request->input('length');
         $start = $request->input('start');
-        $orderColumn = $columns[$request->input('order.0.column')];
+        $orderColumn = $columns[(int) $request->input('order.0.column', 0)];
         $orderDir = $request->input('order.0.dir');
         $searchValue = $request->input('search.value');
 
@@ -964,7 +964,7 @@ class ContentController extends Controller
 
         $limit = $request->input('length');
         $start = $request->input('start');
-        $orderColumn = $columns[$request->input('order.0.column')];
+        $orderColumn = $columns[(int) $request->input('order.0.column', 0)];
         $orderDir = $request->input('order.0.dir');
         $searchValue = $request->input('search.value');
 
@@ -1084,7 +1084,7 @@ class ContentController extends Controller
 
         $limit = $request->input('length');
         $start = $request->input('start');
-        $orderColumn = $columns[$request->input('order.0.column')];
+        $orderColumn = $columns[(int) $request->input('order.0.column', 0)];
         $orderDir = $request->input('order.0.dir');
         $searchValue = $request->input('search.value');
 
@@ -1177,7 +1177,7 @@ class ContentController extends Controller
 
         $limit = $request->input('length');
         $start = $request->input('start');
-        $orderColumn = $columns[$request->input('order.0.column')];
+        $orderColumn = $columns[(int) $request->input('order.0.column', 0)];
         $orderDir = $request->input('order.0.dir');
         $searchValue = $request->input('search.value');
 
@@ -1401,7 +1401,7 @@ class ContentController extends Controller
 
         $limit = $request->input('length');
         $start = $request->input('start');
-        $orderColumn = $columns[$request->input('order.0.column')];
+        $orderColumn = $columns[(int) $request->input('order.0.column', 0)];
         $orderDir = $request->input('order.0.dir');
         $searchValue = $request->input('search.value');
 
@@ -1575,7 +1575,7 @@ class ContentController extends Controller
 
         $limit = $request->input('length');
         $start = $request->input('start');
-        $order = $columns[$request->input('order.0.column')];
+        $order = $columns[(int) $request->input('order.0.column', 0)];
         $dir = $request->input('order.0.dir');
 
 
@@ -1649,7 +1649,7 @@ class ContentController extends Controller
                     break;
             }
 
-            $data[] = array(
+            $data[X] = array(
                 $item->title,
                 $item->type,
                 $source,
@@ -1762,7 +1762,7 @@ class ContentController extends Controller
 
         $limit = $request->input('length');
         $start = $request->input('start');
-        $order = $columns[$request->input('order.0.column')];
+        $order = $columns[(int) $request->input('order.0.column', 0)];
         $dir = $request->input('order.0.dir');
 
 
@@ -1793,7 +1793,7 @@ class ContentController extends Controller
 
             $action = '<div class="text-end action"> '  . $download . $delete . ' </div>';
 
-            $data[] = array(
+            $data[X] = array(
                 $item->language->title,
                 $action,
             );

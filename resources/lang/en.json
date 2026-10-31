@@ -249,5 +249,11 @@
     "leaveBlankToKeep": "Leave blank to keep the current value",
     "secretStored": "saved",
     "panelLanguage": "Panel language",
-    "thumb": "Preview"
+    "thumb": "Preview",
+    "ingestFromLink": "Pull this link into the combined storage",
+    "ingestFromLinkHint": "The file is queued, downloaded and stored on Telegram Drive; the source then points at this site's relay link.",
+    "ingestQueued": "Queued for ingest",
+    "ingestRunning": "Ingesting",
+    "ingestFailed": "Ingest failed",
+    "ingestDone": "Ingested"
 }

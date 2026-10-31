@@ -143,6 +143,22 @@
                     <div class="progress mb-2" id="progress" style="height: 25px; display: none;">
                         <div class="progress-bar" id="progress-bar" role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">0%</div>
                     </div>
+                    @if(isset($storageType) && $storageType === \App\GlobalSettings::STORAGE_COMBINED)
+                    <div class="checkbox-slider d-flex align-items-center justify-content-between mb-2" id="ingestRow">
+                        <span class="me-3">
+                            {{ __('ingestFromLink') }}
+                            <br>
+                            <span class="text-muted small">{{ __('ingestFromLinkHint') }}</span>
+                        </span>
+                        <label>
+                            <input type="checkbox" id="ingest_url" name="ingest_url" class="d-none" value="1">
+                            <span class="toggle_background">
+                                <div class="circle-icon"></div>
+                                <div class="vertical_line"></div>
+                            </span>
+                        </label>
+                    </div>
+                    @endif
                     <div class="d-flex align-items-center">
                         <div class="form-group mb-0  w-100">
                             <label for="access_type" class="form-label">{{ __('selectAccessType')}}</label>

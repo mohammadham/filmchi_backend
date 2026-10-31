@@ -25,7 +25,7 @@ class CustomAdsController extends Controller
 
         $limit = $request->input('length');
         $start = $request->input('start');
-        $orderColumn = $columns[$request->input('order.0.column')];
+        $orderColumn = $columns[(int) $request->input('order.0.column', 0)];
         $orderDir = $request->input('order.0.dir');
         $searchValue = $request->input('search.value');
 
@@ -281,7 +281,7 @@ class CustomAdsController extends Controller
 
         $limit = $request->input('length');
         $start = $request->input('start');
-        $orderColumn = $columns[$request->input('order.0.column')];
+        $orderColumn = $columns[(int) $request->input('order.0.column', 0)];
         $orderDir = $request->input('order.0.dir');
         $searchValue = $request->input('search.value');
 
@@ -418,7 +418,7 @@ class CustomAdsController extends Controller
 
         $limit = $request->input('length');
         $start = $request->input('start');
-        $orderColumn = $columns[$request->input('order.0.column')];
+        $orderColumn = $columns[(int) $request->input('order.0.column', 0)];
         $orderDir = $request->input('order.0.dir');
         $searchValue = $request->input('search.value');
 

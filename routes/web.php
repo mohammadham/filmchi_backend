@@ -215,6 +215,7 @@ Route::post('bulkRelayAction', [MediaRelayController::class, 'bulkRelayAction'])
 Route::post('uploadRelayChunk', [MediaRelayController::class, 'uploadRelayChunk'])->middleware(['checkLogin'])->name('uploadRelayChunk');
 Route::post('uploadRelayStatus', [MediaRelayController::class, 'uploadRelayStatus'])->middleware(['checkLogin'])->name('uploadRelayStatus');
 Route::post('uploadRelayComplete', [MediaRelayController::class, 'uploadRelayComplete'])->middleware(['checkLogin'])->name('uploadRelayComplete');
+Route::post('ingestSourceUrl', [MediaRelayController::class, 'ingestSourceUrl'])->middleware(['checkLogin'])->name('ingestSourceUrl');
 Route::post('toggleRelayBlock', [MediaRelayController::class, 'toggleRelayBlock'])->middleware(['checkLogin'])->name('toggleRelayBlock');
 Route::post('relayLinkList', [MediaRelayController::class, 'relayLinkList'])->middleware(['checkLogin'])->name('relayLinkList');
 Route::post('createRelayLink', [MediaRelayController::class, 'createRelayLink'])->middleware(['checkLogin'])->name('createRelayLink');

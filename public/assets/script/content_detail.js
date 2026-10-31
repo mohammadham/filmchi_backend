@@ -278,6 +278,7 @@ $(document).ready(function () {
         e.preventDefault();
         checkUserType(function (e) {
             let formData = new FormData($("#addSourceForm")[0]);
+            const shouldIngest = $("#ingest_url").prop("checked") && $("#sourceURL").val().trim() !== "";
             $.ajax({
                 type: "POST",
                 url: `${domainUrl}addSource`,
@@ -287,6 +288,9 @@ $(document).ready(function () {
                 success: function (response) {
                     if (response.status) {
                         showSuccessToast();
+                        if (shouldIngest) {
+                            queueIngest("content", response.source_id, $("#sourceURL").val().trim());
+                        }
                         $("#sourceTable").DataTable().ajax.reload(null, false);
                         $("#addSourceModal").modal("hide");
                     }
@@ -294,6 +298,20 @@ $(document).ready(function () {
             });
         });
     });
+
+    function queueIngest(sourceType, sourceId, url) {
+        $.ajax({
+            type: "POST",
+            url: `${domainUrl}ingestSourceUrl`,
+            data: { source_type: sourceType, source_id: sourceId, url: url },
+            success: function (r) {
+                notify(r.message || "Queued for ingestion.", r.status ? "info" : "error");
+            },
+            error: function (xhr) {
+                notify((xhr.responseJSON && xhr.responseJSON.message) || "Ingest failed.", "error");
+            },
+        });
+    }
     
     $("#sourceTable").on("click", ".edit", function (e) {
         e.preventDefault();
@@ -802,6 +820,7 @@ $(document).ready(function () {
         e.preventDefault();
         checkUserType(function (e) {
             let formData = new FormData($("#addEpisodeSourceForm")[0]);
+            const shouldIngest = $("#ingest_url").prop("checked") && $("#sourceURL").val().trim() !== "";
             $.ajax({
                 type: "POST",
                 url: `${domainUrl}addEpisodeSource`,
@@ -811,6 +830,9 @@ $(document).ready(function () {
                 success: function (response) {
                     if (response.status) {
                         showSuccessToast();
+                        if (shouldIngest) {
+                            queueIngest("episode", response.source_id, $("#sourceURL").val().trim());
+                        }
                         $("#episodeSourceTable")
                             .DataTable()
                             .ajax.reload(null, false);

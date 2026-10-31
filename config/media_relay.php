@@ -21,6 +21,20 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | URL ingestion (pull remote links into the relay)
+    |--------------------------------------------------------------------------
+    | Sources added with the "ingest" option are queued: the worker downloads
+    | the file, dedup-checks it and uploads to Telegram Drive, then points
+    | the source at the relay link. Ingests run serially (one worker) so the
+    | server's bandwidth is not shredded by parallel pulls.
+    */
+    'ingest' => [
+        'enabled' => (bool) env('RELAY_INGEST', true),
+        'timeout' => (int) env('RELAY_INGEST_TIMEOUT', 3600),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Upload limits
     |--------------------------------------------------------------------------
     | Maximum accepted upload size in megabytes, enforced by the panel
