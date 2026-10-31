@@ -255,5 +255,7 @@
     "ingestQueued": "در صف دریافت",
     "ingestRunning": "در حال دریافت",
     "ingestFailed": "دریافت ناموفق",
-    "ingestDone": "دریافت شد"
+    "ingestDone": "دریافت شد",
+    "linkAlive": "لینک سالم",
+    "linkDead": "لینک مرده"
 }

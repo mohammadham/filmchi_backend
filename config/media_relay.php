@@ -35,6 +35,19 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | External link health checks
+    |--------------------------------------------------------------------------
+    | sources:check probes external source links; a link is declared dead
+    | only after this many consecutive failures, and dead links are hidden
+    | from the app while they stay visible in the panel.
+    */
+    'linkcheck' => [
+        'timeout' => (int) env('RELAY_LINKCHECK_TIMEOUT', 15),
+        'dead_after' => (int) env('RELAY_LINKCHECK_DEAD_AFTER', 3),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Upload limits
     |--------------------------------------------------------------------------
     | Maximum accepted upload size in megabytes, enforced by the panel

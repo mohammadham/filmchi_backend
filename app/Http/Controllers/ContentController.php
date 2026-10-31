@@ -43,7 +43,7 @@ class ContentController extends Controller
             ]);
         }
 
-        $userWatchListContent = [X];
+        $userWatchListContent = [];
 
         $userWatchListContentIds = $user->watchlist_content_ids;
         $featuredContent = Content::where('is_featured', Constants::featured)->where('is_show', Constants::showContent)->get();
@@ -58,7 +58,7 @@ class ContentController extends Controller
         })->with('content')->orderBy('content_index', 'ASC')->get();
 
         $genres = Genre::get();
-        $genreContents = [X];
+        $genreContents = [];
 
         foreach ($genres as $genre) {
             $genreContent = Content::where('is_show', Constants::showContent)
@@ -69,7 +69,7 @@ class ContentController extends Controller
 
             if ($genreContent->isNotEmpty()) {
                 $genre->contents = $genreContent;
-                $genreContents[X] = $genre;
+                $genreContents[] = $genre;
             }
         }
 
@@ -107,7 +107,7 @@ class ContentController extends Controller
             ]);
         }
 
-        $userWatchListContent = [X];
+        $userWatchListContent = [];
 
         $userWatchListContentIds = $user->watchlist_content_ids;
 
@@ -212,14 +212,14 @@ class ContentController extends Controller
             $contentCast = ContentCast::with('actor')->where('content_id', $request->content_id)->get();
             $content->contentCast = $contentCast;
 
-            $content->content_sources = $content->sources;
+            $content->content_sources = $content->appSources()->get();
             $content->content_subtitles = $content->subtitles;
         }
 
         if ($content->type == Constants::series) {
             $seasons = Season::with([
-                                    'episodes', 
-                                    'episodes.sources',
+                                    'episodes',
+                                    'episodes.appSources',
                                     'episodes.subtitles'
                                     ])
                                     ->where('content_id', $request->content_id)
@@ -855,8 +855,17 @@ class ContentController extends Controller
 
             $typeName = array_search($item->type, $typeMappings) ?: "File";
 
+            $linkBadge = '';
+            if (!in_array((int) $item->type, [1, 7], true)) {
+                if ($item->link_status === 'dead') {
+                    $linkBadge = '<br><span class="badge bg-danger">' . __('linkDead') . '</span>';
+                } elseif ($item->link_status === 'alive') {
+                    $linkBadge = '<br><span class="badge bg-success">' . __('linkAlive') . '</span>';
+                }
+            }
+
             return [
-                $item->title,
+                $item->title . $linkBadge,
                 $typeName,
                 $source,
                 $item->quality,
@@ -1625,6 +1634,15 @@ class ContentController extends Controller
 
             $action = '<div class="text-end action"> '  . $edit . $delete . ' </div>';
 
+            $linkBadge = '';
+            if (!in_array((int) $item->type, [1, 7], true)) {
+                if ($item->link_status === 'dead') {
+                    $linkBadge = '<br><span class="badge bg-danger">' . __('linkDead') . '</span>';
+                } elseif ($item->link_status === 'alive') {
+                    $linkBadge = '<br><span class="badge bg-success">' . __('linkAlive') . '</span>';
+                }
+            }
+
             switch ($item->type) {
                 case 1:
                     $item->type = "Youtube";
@@ -1649,8 +1667,8 @@ class ContentController extends Controller
                     break;
             }
 
-            $data[X] = array(
-                $item->title,
+            $data[] = array(
+                $item->title . $linkBadge,
                 $item->type,
                 $source,
                 $item->quality,
@@ -1793,7 +1811,7 @@ class ContentController extends Controller
 
             $action = '<div class="text-end action"> '  . $download . $delete . ' </div>';
 
-            $data[X] = array(
+            $data[] = array(
                 $item->language->title,
                 $action,
             );

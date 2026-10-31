@@ -255,5 +255,7 @@
     "ingestQueued": "Queued for ingest",
     "ingestRunning": "Ingesting",
     "ingestFailed": "Ingest failed",
-    "ingestDone": "Ingested"
+    "ingestDone": "Ingested",
+    "linkAlive": "link OK",
+    "linkDead": "link dead"
 }
