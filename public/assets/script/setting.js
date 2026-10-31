@@ -50,7 +50,9 @@ $(document).ready(function () {
                 success: function (response) {
                     if (response.status) {
                     showSuccessToast();
-                    $("#reloadContent").load(location.href + " #reloadContent>*","");
+                    // The language switch changes locale and direction for
+                    // every page; only a full reload applies it.
+                    location.reload();
                     }
                 },
             });
