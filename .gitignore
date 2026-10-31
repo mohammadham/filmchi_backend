@@ -48,4 +48,5 @@ vid_*
 ninedrive-compose.yml
 tdrive-compose.yml
 tdrive-env.example
-site-*.conf
+site-*.conf.phpunit.result.cache
+read_1p_settings.py
