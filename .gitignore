@@ -53,4 +53,5 @@ read_1p_settings.py
 .phpunit.result.cache
 /site-9drive.conf
 /site-flixy.conf
-/site-tdrive.conf
+/site-tdrive.conf.veilway-debug/
+conversation_tail.txt

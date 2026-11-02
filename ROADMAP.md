@@ -7,7 +7,7 @@
 - [ ] **Cloudflare cache برای استریم‌های warm**: در داشبورد CF یک Cache Rule روی `filmchi.sanduqche.top/r/*` بسازید با `Eligible for cache` + `Edge TTL: respect origin` و برای 200/206. نکته: چون `Cache-Control: private` می‌فرستیم، CF به‌صورت پیش‌فرض کش نمی‌کند و باید در همان rule گزینه‌ی «Use cache-control header if present, bypass if not» را با Edge TTL صریح جایگزین کنید. قبل از فعال‌سازی، تست نشت لینک‌های پسورددار انجام شود.
 - [ ] **چرخش اعتبارنامه‌ها**: کلید API مربوط به `googleCredentials.json` (که در تاریخچه‌ی گیت بود) و پسورد/کلیدهای پنل 9drive و tdrive از داخل خود پنل‌ها عوض شوند.
 - [ ] **2FA حساب GitHub و محدودسازی IP پنل** (اختیاری ولی توصیه‌شده).
-- [ ] **سناریوی split/merge در tdrive برای فایل‌های بزرگ**: فشرده‌سازی + اسپلیت در tdrive و ادغام اسپلیت‌ها هنگام درخواست برای کش شدن روی 9drive. پس از پیاده‌سازی، اطلاع بدهید تا اینگست و آپلود پنل با آن تطبیق داده شوند (فعلاً فایل‌های بالای RELAY_MAX_UPLOAD_MB با پیام واضح رد می‌شوند).
+- [x] **سناریوی split/merge برای فایل‌های بزرگ**: tdrive از قبل دارد (اسپلیت ≤1.9GB + merge مجازی با Range کامل)؛ `max_upload_size` روی ۱۰GB تنظیم شد، فلیکسی با wait-for-ready و sha256 خود tdrive تطبیق یافت. FAKE mode خاموش شد و ذخیره واقعی فعال است.
 
 ## فاز ۴ — اینگست لینک به ذخیره‌سازی ترکیبی (تکمیل شد)
 
