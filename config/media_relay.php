@@ -90,6 +90,9 @@ return [
         'connect_timeout' => (int) env('TGDRIVE_CONNECT_TIMEOUT', 15),
         // How long an issued presigned link is asked to live (seconds).
         'link_ttl'      => (int) env('TGDRIVE_LINK_TTL', 3600),
+        // Seconds to wait for a queued upload to reach "ready" on Telegram
+        // (large files split into parts; this can take minutes).
+        'ready_timeout' => (int) env('TGDRIVE_READY_TIMEOUT', 1800),
     ],
 
     /*

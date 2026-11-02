@@ -143,7 +143,9 @@ class RelayStorage
         $file->size = (int) ($result['size'] ?? $size);
         $file->mime = $result['mime'] ?? $mime;
         $file->extension = $extension;
-        $file->checksum = $this->checksumOf($path);
+        // Prefer Telegram Drive's sha256 (hash of the original file before
+        // any split); fall back to hashing the local copy.
+        $file->checksum = $result['sha256'] ?? $this->checksumOf($path);
         $file->tg_file_id = (string) $fileId;
         $file->tg_backend = (string) config('media_relay.telegram.default_backend', 'telegram');
         $file->tg_storage_chat = $chat;

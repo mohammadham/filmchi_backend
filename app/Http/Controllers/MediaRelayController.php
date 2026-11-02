@@ -187,7 +187,9 @@ class MediaRelayController extends Controller
         $file->size = (int) ($result['size'] ?? $upload->getSize());
         $file->mime = $result['mime'] ?? $upload->getMimeType();
         $file->extension = $upload->getClientOriginalExtension();
-        $file->checksum = hash_file('sha256', $upload->getRealPath()) ?: null;
+        // Prefer Telegram Drive's sha256 (hash of the original file before
+        // any split); fall back to hashing the local upload.
+        $file->checksum = $result['sha256'] ?? (hash_file('sha256', $upload->getRealPath()) ?: null);
         $file->tg_file_id = (string) $fileId;
         $file->tg_backend = (string) config('media_relay.telegram.default_backend', 'telegram');
         $file->tg_storage_chat = (string) config('media_relay.telegram.storage_chat', '');
@@ -475,7 +477,7 @@ class MediaRelayController extends Controller
         $file->size = (int) ($result['size'] ?? filesize($part));
         $file->mime = $result['mime'] ?? $mime;
         $file->extension = pathinfo($name, PATHINFO_EXTENSION);
-        $file->checksum = hash_file('sha256', $part) ?: null;
+        $file->checksum = $result['sha256'] ?? (hash_file('sha256', $part) ?: null);
         $file->tg_file_id = (string) $fileId;
         $file->tg_backend = (string) config('media_relay.telegram.default_backend', 'telegram');
         $file->tg_storage_chat = (string) config('media_relay.telegram.storage_chat', '');

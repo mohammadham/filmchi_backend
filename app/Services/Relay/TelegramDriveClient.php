@@ -233,7 +233,59 @@ class TelegramDriveClient
             break;
         }
 
-        return $this->decode($response, 'upload');
+        $result = $this->decode($response, 'upload');
+
+        // The queued job uploads (and splits) asynchronously; multi-GB files
+        // take minutes. Wait for "ready" so callers never presign too early.
+        $fileId = $result['file_id'] ?? ($result['id'] ?? null);
+
+        if (!empty($fileId)) {
+            $ready = $this->waitForReady((string) $fileId);
+            $result['sha256'] = $ready['sha256'] ?? null;
+            $result['parts'] = $ready['parts'] ?? null;
+        }
+
+        return $result;
+    }
+
+    /**
+     * Wait until a freshly uploaded file is fully stored on Telegram.
+     *
+     * The upload request returns with the job queued; for multi-gigabyte
+     * files the queue then uploads (and splits) for minutes. A presign or
+     * stream before "ready" answers 404, so callers of uploadFromPath get
+     * the file record polled here instead of guessing.
+     */
+    public function waitForReady(string $fileId): array
+    {
+        $timeout = (int) ($this->config['ready_timeout'] ?? 900);
+        $deadline = microtime(true) + $timeout;
+
+        while (microtime(true) < $deadline) {
+            try {
+                $response = $this->request('GET', 'api/v1/files/' . rawurlencode($fileId));
+                $data = $this->decode($response, 'file');
+                $status = (string) ($data['status'] ?? '');
+
+                if ($status === 'ready') {
+                    return $data;
+                }
+
+                if (str_contains($status, 'fail') || str_contains($status, 'error')) {
+                    throw new RuntimeException('Telegram Drive failed to store the file: ' . (string) ($data['error'] ?? $status));
+                }
+            } catch (RuntimeException $e) {
+                // 404 right after the queued response is normal; keep polling.
+                if (stripos($e->getMessage(), 'not found') === false
+                    && stripos($e->getMessage(), 'failed to store') !== false) {
+                    throw $e;
+                }
+            }
+
+            sleep(3);
+        }
+
+        throw new RuntimeException('Telegram Drive did not finish storing the file within ' . $timeout . 's.');
     }
 
     /**
