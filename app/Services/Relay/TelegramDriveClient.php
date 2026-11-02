@@ -135,7 +135,13 @@ class TelegramDriveClient
 
         if ($retry && $response->getStatusCode() === 401 && !$this->hasApiKey()) {
             $this->token(true);
-            $options['headers'] = array_merge($this->authHeaders(), $options['headers'] ?? []);
+
+            // Drop the stale credentials BEFORE merging the fresh ones, or
+            // the attempt-1 Authorization header (last in array_merge) would
+            // override the renewed token and the retry would 401 again.
+            unset($options['headers']['Authorization'], $options['headers']['X-API-Key']);
+            $options['headers'] = array_merge($options['headers'], $this->authHeaders());
+
             $response = $this->http()->request($method, ltrim($path, '/'), $options);
         }
 
