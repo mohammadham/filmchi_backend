@@ -1,0 +1,29 @@
+# Never part of the image: the build context is only the Laravel source.
+.git
+.gitignore
+.github
+.freebuff
+.idea
+.vscode
+
+# Runtime data. These paths are docker volume mounts; whatever is here on the
+# host (partial media downloads above all) must not be baked into a layer.
+storage/app
+storage/logs
+storage/framework
+
+# Locally installed dependencies and generated caches
+vendor
+node_modules
+public/storage
+bootstrap/cache/*.php
+
+# Scratch files from local experiments
+*.part
+*.b64
+*.log
+error_log
+cap*.png
+cap*.html
+conversation_tail.txt
+database_flixy.sql.gz

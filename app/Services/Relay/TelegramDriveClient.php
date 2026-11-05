@@ -396,6 +396,21 @@ class TelegramDriveClient
         }
 
         try {
+            // A panel-issued key (td_…) authenticates the file API as a bearer
+            // token but is not a panel session, so /auth/me answers 401 for it.
+            // Probing /auth/me with a key therefore reported a perfectly working
+            // service as offline; probe an endpoint that accepts the credential
+            // that is actually configured.
+            if ($this->hasApiKey()) {
+                $response = $this->request('GET', 'api/v1/files', ['query' => ['limit' => 1]]);
+                $status = $response->getStatusCode();
+
+                return [
+                    'ok' => $status < 400,
+                    'message' => $status < 400 ? 'reachable (api key)' : 'HTTP ' . $status,
+                ];
+            }
+
             $response = $this->request('GET', 'api/v1/auth/me');
             $status = $response->getStatusCode();
 
