@@ -10,11 +10,25 @@ the same queue keeps working even if n8n is offline.
 
 ## What the workflow does
 
-1. Every 10 minutes it reads `GET /api/automation/status`.
-2. If no download/upload is running, no job is already queued, something is
-   still pending and the disk is above the configured floor, it calls
+Every 10 minutes it reads `GET /api/automation/status` and then runs two
+independent branches on that answer:
+
+1. **Catalogue branch.** When `catalogue.due` is true (no pass running and the
+   last one is older than `RELAY_AUTOMATION_CATALOGUE_HOURS`, default 6) it
+   calls `POST /api/automation/catalogue`. Flixy starts a detached
+   `farsanime:sync` pass that re-reads the series sitemap and adds whatever is
+   new: new series, new seasons, new episodes and their qualities. The pass
+   reports progress through `catalogue.heartbeat_at`, so `status` tells the
+   workflow when it is running or dead.
+2. **Download branch.** When nothing is transferring, nothing is queued, the
+   backlog is non-empty and the disk is above the floor, it calls
    `POST /api/automation/queue` with `{"limit": 1}`.
-3. Otherwise it does nothing. The next tick tries again.
+
+Both branches can fire in the same tick, because the catalogue pass only
+writes database rows while the worker moves file bytes. When the queue reaches
+zero the workflow keeps ticking: the next pass picks up newly published
+episodes and the download branch drains them again, so the catalogue keeps
+growing without anyone touching the server.
 
 ## Load protection
 
@@ -28,6 +42,12 @@ the same queue keeps working even if n8n is offline.
 - **Abandoned transfers.** A row stuck in `downloading`/`uploading` without
   progress for 20 minutes belongs to a restarted worker; the next `queue` call
   releases it back to pending and reports `released_stale`.
+- **One catalogue pass at a time.** The pass takes a cache lock, and a second
+  `catalogue` call answers `202 already_running`; a pass whose heartbeat stops
+  for 15 minutes is treated as dead so a deploy cannot wedge it.
+- **Catalogue crawl is gentle.** `RELAY_AUTOMATION_CATALOGUE_SLEEP` (250 ms)
+  paces series pages and probes run four at a time, so the pass does not fight
+  the download for bandwidth.
 - **No 9drive writes.** Ingestion only stores on Telegram Drive. A file moves to
   the 9drive cache later, when demand crosses `RELAY_PROMOTE_THRESHOLD`
   (`relay:promote` can also do it manually).

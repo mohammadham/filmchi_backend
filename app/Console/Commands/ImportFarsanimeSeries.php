@@ -93,6 +93,8 @@ class ImportFarsanimeSeries extends Command
                 break;
             }
 
+            $this->heartbeat();
+
             $slug = $this->slugOf($url);
 
             try {
@@ -165,6 +167,22 @@ class ImportFarsanimeSeries extends Command
         ));
 
         return 0;
+    }
+
+    /**
+     * Liveness for the orchestrator: a pass whose heartbeat stopped moving
+     * belongs to a process that a deploy or an OOM kill has taken down.
+     */
+    protected function heartbeat(): void
+    {
+        try {
+            \Illuminate\Support\Facades\Cache::forever(
+                SyncFarsanimeCatalogue::HEARTBEAT_KEY,
+                now()->toIso8601String()
+            );
+        } catch (\Throwable $e) {
+            // The cache is a hint only; a cache outage must not stop the import.
+        }
     }
 
     /* ------------------------------------------------------------- fetching */

@@ -48,6 +48,17 @@ return [
         'token' => env('RELAY_AUTOMATION_TOKEN', ''),
         'min_free_gb' => (int) env('RELAY_AUTOMATION_MIN_FREE_GB', 8),
         'max_batch' => (int) env('RELAY_AUTOMATION_MAX_BATCH', 3),
+
+        /*
+         * How often the orchestrator may start a catalogue pass (new series,
+         * new episodes/qualities). The pass runs as a detached CLI process, so
+         * it never sits in front of the download queue; sleep_ms keeps its
+         * series-page crawl gentle on the source site.
+         */
+        'catalogue' => [
+            'interval_hours' => (int) env('RELAY_AUTOMATION_CATALOGUE_HOURS', 6),
+            'sleep_ms' => (int) env('RELAY_AUTOMATION_CATALOGUE_SLEEP', 250),
+        ],
     ],
 
     /*

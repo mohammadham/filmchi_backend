@@ -16,7 +16,7 @@
       "name": "Every 10 minutes",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
-      "position": [-520, 0]
+      "position": [-640, 0]
     },
     {
       "parameters": {
@@ -38,7 +38,72 @@
       "name": "Ingest status",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [-300, 0]
+      "position": [-400, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "catalogue-due",
+              "leftValue": "={{ $json.catalogue.due === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b1a1f0d2-0001-4000-8000-000000000007",
+      "name": "Catalogue due?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-160, -200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://flixy:80/api/automation/catalogue",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Fliksy-Token",
+              "value": "REPLACE_WITH_TOKEN"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "b1a1f0d2-0001-4000-8000-000000000008",
+      "name": "Start catalogue pass",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [80, -200]
+    },
+    {
+      "parameters": {},
+      "id": "b1a1f0d2-0001-4000-8000-000000000009",
+      "name": "Catalogue pass started",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [320, -200]
     },
     {
       "parameters": {
@@ -69,7 +134,7 @@
       "name": "Worker idle and disk ok?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
-      "position": [-80, 0]
+      "position": [-160, 100]
     },
     {
       "parameters": {
@@ -95,7 +160,7 @@
       "name": "Queue one source",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [140, -100]
+      "position": [80, 40]
     },
     {
       "parameters": {},
@@ -103,7 +168,7 @@
       "name": "Queued",
       "type": "n8n-nodes-base.noOp",
       "typeVersion": 1,
-      "position": [360, -100]
+      "position": [320, 40]
     },
     {
       "parameters": {},
@@ -111,7 +176,7 @@
       "name": "Nothing to do",
       "type": "n8n-nodes-base.noOp",
       "typeVersion": 1,
-      "position": [140, 100]
+      "position": [80, 220]
     }
   ],
   "connections": {
@@ -130,7 +195,34 @@
       "main": [
         [
           {
+            "node": "Catalogue due?",
+            "type": "main",
+            "index": 0
+          },
+          {
             "node": "Worker idle and disk ok?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Catalogue due?": {
+      "main": [
+        [
+          {
+            "node": "Start catalogue pass",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start catalogue pass": {
+      "main": [
+        [
+          {
+            "node": "Catalogue pass started",
             "type": "main",
             "index": 0
           }

@@ -52,4 +52,5 @@ Route::post('deleteFile', [ActorController::class, 'deleteFile'])->middleware('c
 Route::middleware('automationToken')->group(function () {
     Route::get('automation/status', [AutomationController::class, 'status']);
     Route::post('automation/queue', [AutomationController::class, 'queue']);
+    Route::post('automation/catalogue', [AutomationController::class, 'catalogue']);
 });

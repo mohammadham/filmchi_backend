@@ -7,7 +7,10 @@ use App\Episode;
 use App\EpisodeSource;
 use App\Jobs\IngestUrlJob;
 use App\Season;
+use App\Console\Commands\SyncFarsanimeCatalogue;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
 use Throwable;
@@ -22,6 +25,10 @@ use Throwable;
  *
  * Files are stored on Telegram Drive only. The 9drive copy is created later by
  * the demand-based promotion policy (RELAY_PROMOTE_THRESHOLD), never here.
+ *
+ * The catalogue endpoint keeps the list itself fresh: new series, new seasons
+ * and new episodes/qualities are discovered by the importer, which runs as a
+ * detached CLI pass so it never blocks the download queue.
  */
 class AutomationController extends Controller
 {
@@ -35,6 +42,9 @@ class AutomationController extends Controller
      * workflow forever.
      */
     protected const STALE_MINUTES = 20;
+
+    /** A catalogue pass that has not reported progress for this long is dead. */
+    protected const CATALOGUE_STALE_MINUTES = 15;
 
     public function status()
     {
@@ -72,7 +82,84 @@ class AutomationController extends Controller
             'disk_free_gb' => $this->diskFreeGb(),
             'min_free_gb' => (int) config('media_relay.automation.min_free_gb', 25),
             'queue_depth' => $this->queueDepth(),
+            'catalogue' => $this->catalogueState(),
         ]);
+    }
+
+    /**
+     * Start a catalogue pass when one is due.
+     *
+     * The pass adds new series, new seasons and new episodes/qualities to the
+     * same tables the queue reads, so the next `queue` call naturally continues
+     * with whatever the pass just found. `force` ignores the interval.
+     */
+    public function catalogue(Request $request)
+    {
+        $state = $this->catalogueState();
+
+        if ($state['running']) {
+            return response()->json([
+                'ok' => true,
+                'started' => false,
+                'reason' => 'already_running',
+                'catalogue' => $state,
+            ], 202);
+        }
+
+        if (!$request->boolean('force') && !$state['due']) {
+            return response()->json([
+                'ok' => true,
+                'started' => false,
+                'reason' => 'not_due',
+                'catalogue' => $state,
+            ], 202);
+        }
+
+        // Two orchestrator ticks must never spawn two passes.
+        if (!Cache::add('automation:catalogue:spawning', true, now()->addMinutes(3))) {
+            return response()->json([
+                'ok' => true,
+                'started' => false,
+                'reason' => 'spawning',
+                'catalogue' => $state,
+            ], 202);
+        }
+
+        $log = storage_path('logs/catalogue-sync.log');
+        $command = sprintf(
+            'nohup %s %s farsanime:sync --sleep=%d >> %s 2>&1 &',
+            escapeshellarg((string) env('PHP_CLI_BINARY', 'php')),
+            escapeshellarg(base_path('artisan')),
+            (int) config('media_relay.automation.catalogue.sleep_ms', 250),
+            escapeshellarg($log)
+        );
+
+        try {
+            @exec($command);
+        } catch (Throwable $e) {
+            Cache::forget('automation:catalogue:spawning');
+
+            return response()->json([
+                'ok' => false,
+                'started' => false,
+                'reason' => 'spawn_failed',
+                'message' => mb_substr($e->getMessage(), 0, 200),
+                'catalogue' => $state,
+            ], 500);
+        }
+
+        // Let the child take the lock so the answer reflects reality instead of
+        // a spawn attempt the caller has to poll for.
+        usleep(2000000);
+
+        $state = $this->catalogueState();
+
+        return response()->json([
+            'ok' => true,
+            'started' => $state['running'],
+            'reason' => $state['running'] ? 'started' : 'spawn_unconfirmed',
+            'catalogue' => $state,
+        ], 202);
     }
 
     public function queue(Request $request)
@@ -168,6 +255,41 @@ class AutomationController extends Controller
             'released_stale' => $released,
             'disk_free_gb' => $freeGb,
         ]);
+    }
+
+    /**
+     * Whether a catalogue pass is running, when the last one finished and when
+     * the next one is due. A pass whose heartbeat stopped moving is treated as
+     * dead (a deploy kills the detached child).
+     */
+    protected function catalogueState(): array
+    {
+        $intervalHours = max(1, (int) config('media_relay.automation.catalogue.interval_hours', 6));
+
+        $running = (bool) Cache::get(SyncFarsanimeCatalogue::RUNNING_KEY);
+        $heartbeat = Cache::get(SyncFarsanimeCatalogue::HEARTBEAT_KEY);
+        $lastPass = Cache::get(SyncFarsanimeCatalogue::LAST_PASS_KEY);
+
+        if ($running && $heartbeat) {
+            $beat = Carbon::parse($heartbeat);
+
+            if ($beat->lt(now()->subMinutes(self::CATALOGUE_STALE_MINUTES))) {
+                $running = false;
+            }
+        }
+
+        $next = $lastPass ? Carbon::parse($lastPass)->addHours($intervalHours) : null;
+
+        return [
+            'running' => $running,
+            'started_at' => Cache::get(SyncFarsanimeCatalogue::STARTED_KEY),
+            'heartbeat_at' => $heartbeat,
+            'last_pass_at' => $lastPass,
+            'last_exit_code' => Cache::get(SyncFarsanimeCatalogue::LAST_EXIT_KEY),
+            'interval_hours' => $intervalHours,
+            'due' => !$running && ($next === null || $next->isPast()),
+            'next_run_at' => $next ? $next->toIso8601String() : null,
+        ];
     }
 
     /**
