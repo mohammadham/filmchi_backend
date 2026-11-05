@@ -190,8 +190,11 @@ class TelegramDriveClient
     /**
      * Upload a local file (an upload buffer, not a persistent copy) and return
      * the created record. Nothing is written to this server's storage.
+     *
+     * $folder is a virtual folder path inside the storage chat; the service
+     * creates parents as needed, so "Anime/Season 1" works on the first call.
      */
-    public function uploadFromPath(string $path, string $name, string $mime = null, string $storageChat = null): array
+    public function uploadFromPath(string $path, string $name, string $mime = null, string $storageChat = null, string $folder = null): array
     {
         $attempt = 0;
 
@@ -208,6 +211,12 @@ class TelegramDriveClient
 
             if ($storageChat !== null && $storageChat !== '') {
                 $headers['X-Storage-Chat'] = $storageChat;
+            }
+
+            // Telegram Drive resolves (and creates) a nested virtual folder
+            // from this path, e.g. "Under-the-Gate/S01".
+            if ($folder !== null && $folder !== '') {
+                $headers['X-Folder'] = $folder;
             }
 
             try {

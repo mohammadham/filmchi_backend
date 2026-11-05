@@ -190,6 +190,56 @@ class NineDriveClient
     }
 
     /**
+     * Resolve a root folder by name, creating it (and the matching Google
+     * Drive folder) on first use. Returns null when no panel session is
+     * configured — uploads then land in the configured default folder.
+     */
+    public function ensureFolder(string $name): ?string
+    {
+        $name = trim($name);
+
+        if ($name === '' || !$this->hasSession()) {
+            return null;
+        }
+
+        $key = 'relay:nine:folder:' . md5($this->baseUrl() . '|' . $name);
+        $cached = Cache::get($key);
+
+        if (!empty($cached)) {
+            return (string) $cached;
+        }
+
+        $list = $this->decode(
+            $this->http()->get('folders', ['headers' => $this->sessionHeaders()]),
+            'list folders'
+        );
+
+        foreach ($list['folders'] ?? [] as $folder) {
+            if (($folder['name'] ?? null) === $name && empty($folder['parentId'])) {
+                Cache::put($key, (string) $folder['id'], 3600);
+
+                return (string) $folder['id'];
+            }
+        }
+
+        $created = $this->decode(
+            $this->http()->post('folders', [
+                'headers' => $this->sessionHeaders(),
+                'json' => ['name' => $name],
+            ]),
+            'create folder'
+        );
+
+        $id = $created['folder']['id'] ?? null;
+
+        if (!empty($id)) {
+            Cache::put($key, (string) $id, 3600);
+        }
+
+        return $id ? (string) $id : null;
+    }
+
+    /**
      * Stream an already-open stream straight into 9drive (no local copy).
      *
      * @param  resource|\Psr\Http\Message\StreamInterface  $stream  readable stream of the file bytes

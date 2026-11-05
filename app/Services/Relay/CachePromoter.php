@@ -87,13 +87,31 @@ class CachePromoter
                 throw new \RuntimeException('Unknown file size; refusing to promote.');
             }
 
+            // Cache the copy in the same per-title folder the primary tier
+            // uses, so the two tiers stay browsable side by side.
+            $folderId = null;
+
+            if (!empty($file->folder)) {
+                try {
+                    $folderId = $this->ninedrive->ensureFolder((string) $file->folder);
+                } catch (Throwable $e) {
+                    Log::warning('9drive folder resolution failed; uploading to the default folder', [
+                        'relay_file_id' => $file->id,
+                        'folder' => $file->folder,
+                        'message' => $e->getMessage(),
+                    ]);
+                }
+            }
+
             $uploaded = $this->ninedrive->uploadStream(
                 $opened['stream'],
                 $size,
                 $file->name,
-                $file->mime ?: 'application/octet-stream'
+                $file->mime ?: 'application/octet-stream',
+                $folderId
             );
 
+            $file->nine_folder_id = $folderId;
             $file->nine_file_id = $uploaded['id'] ?? null;
             $file->nine_provider_file_id = $uploaded['providerFileId'] ?? null;
             $file->nine_account = $uploaded['connectedAccount']['email'] ?? null;

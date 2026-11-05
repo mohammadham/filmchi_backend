@@ -32,7 +32,7 @@ class RelayStorage
         return (bool) config('media_relay.enabled') && $this->relay->telegram()->isConfigured();
     }
 
-    public function storeUploadedFile(UploadedFile $file, string $name = null): string
+    public function storeUploadedFile(UploadedFile $file, string $name = null, string $folder = null): string
     {
         $name = $name ?: $file->getClientOriginalName();
 
@@ -41,7 +41,8 @@ class RelayStorage
             $name,
             $file->getMimeType(),
             $file->getClientOriginalExtension(),
-            (int) $file->getSize()
+            (int) $file->getSize(),
+            $folder
         );
     }
 
@@ -93,8 +94,10 @@ class RelayStorage
         }
     }
 
-    public function storePath(string $path, string $name, string $mime = null, string $extension = null, int $size = 0): string
+    public function storePath(string $path, string $name, string $mime = null, string $extension = null, int $size = 0, string $folder = null): string
     {
+        $folder = trim((string) $folder, " /\\") ?: null;
+
         if (!$this->isReady()) {
             throw new RuntimeException('Media relay is disabled or Telegram Drive is not configured.');
         }
@@ -129,7 +132,8 @@ class RelayStorage
             $path,
             $name,
             $mime ?: 'application/octet-stream',
-            $chat
+            $chat,
+            $folder
         );
 
         $fileId = $result['file_id'] ?? ($result['id'] ?? null);
@@ -149,6 +153,7 @@ class RelayStorage
         $file->tg_file_id = (string) $fileId;
         $file->tg_backend = (string) config('media_relay.telegram.default_backend', 'telegram');
         $file->tg_storage_chat = $chat;
+        $file->folder = $folder;
         $file->cache_state = RelayFile::COLD;
         $file->owner = 'panel';
         $file->save();

@@ -2,8 +2,11 @@
 
 namespace App\Jobs;
 
+use App\Content;
 use App\ContentSource;
+use App\Episode;
 use App\EpisodeSource;
+use App\Season;
 use App\RelayLink;
 use App\Services\Relay\RelayStorage;
 use Illuminate\Bus\Queueable;
@@ -88,7 +91,14 @@ class IngestUrlJob implements ShouldQueue
 
             $this->setStatus($source, 'uploading', 100);
 
-            $relayUrl = $storage->storePath($part, $this->name, $this->guessMime($source->source));
+            $relayUrl = $storage->storePath(
+                $part,
+                $this->name,
+                $this->guessMime($source->source),
+                null,
+                0,
+                $this->folderFor($source)
+            );
 
             $source->source = $relayUrl;
             $source->ingest_status = 'completed';
@@ -124,6 +134,33 @@ class IngestUrlJob implements ShouldQueue
         }
 
         return null;
+    }
+
+    /**
+     * The title's storage folder: files of one anime live together on both
+     * tiers instead of piling up in the root. Falls back to the title itself.
+     */
+    protected function folderFor($source): ?string
+    {
+        $content = null;
+
+        if ($source instanceof ContentSource) {
+            $content = Content::find($source->content_id);
+        } elseif ($source instanceof EpisodeSource) {
+            $episode = Episode::find($source->episode_id);
+            $season = $episode ? Season::find($episode->season_id) : null;
+            $content = $season ? Content::find($season->content_id) : null;
+        }
+
+        if (!$content) {
+            return null;
+        }
+
+        $folder = (string) ($content->storage_folder ?: $content->title);
+        $folder = preg_replace('#[\\\\/]+#', ' ', $folder);
+        $folder = preg_replace('/\s+/u', ' ', (string) $folder);
+
+        return trim((string) $folder) ?: null;
     }
 
     protected function setStatus($source, string $status, int $progress): void
