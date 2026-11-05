@@ -2,28 +2,33 @@
 
 namespace Tests\Feature;
 
-use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
 use Throwable;
 
 class AutomationApiTest extends TestCase
 {
     /**
-     * The status payload needs episode_sources; the local test box has no
-     * database reachable (CI and the server do), so skip instead of failing.
+     * The catalogue tables come from the production SQL dump, not from the
+     * migrations, so the migrated test schema has no episode_sources. The
+     * payload is verified against the real database instead.
      */
-    protected function requireDatabase(): void
+    protected function requireCatalogueTables(): void
     {
         try {
-            DB::select('select 1');
+            if (Schema::hasTable('episode_sources')) {
+                return;
+            }
         } catch (Throwable $e) {
-            $this->markTestSkipped('No database connection in this environment: ' . $e->getMessage());
+            $this->markTestSkipped('No database connection: ' . $e->getMessage());
         }
+
+        $this->markTestSkipped('The migrated test schema does not include the catalogue tables.');
     }
 
     public function test_status_requires_the_shared_token()
     {
-        $this->requireDatabase();
+        $this->requireCatalogueTables();
 
         config(['media_relay.automation.token' => 'secret-token']);
 
@@ -49,7 +54,7 @@ class AutomationApiTest extends TestCase
 
     public function test_status_accepts_a_bearer_token()
     {
-        $this->requireDatabase();
+        $this->requireCatalogueTables();
 
         config(['media_relay.automation.token' => 'secret-token']);
 

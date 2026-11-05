@@ -46,7 +46,7 @@ return [
     */
     'automation' => [
         'token' => env('RELAY_AUTOMATION_TOKEN', ''),
-        'min_free_gb' => (int) env('RELAY_AUTOMATION_MIN_FREE_GB', 25),
+        'min_free_gb' => (int) env('RELAY_AUTOMATION_MIN_FREE_GB', 8),
         'max_batch' => (int) env('RELAY_AUTOMATION_MAX_BATCH', 3),
     ],
 
