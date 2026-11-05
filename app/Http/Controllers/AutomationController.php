@@ -28,6 +28,14 @@ class AutomationController extends Controller
     /** Qualities in the order the catalogue grows: small files first. */
     protected const QUALITY_ORDER = ['480p', '720p', '1080p', '360p', '2160p'];
 
+    /**
+     * A downloading/uploading row is updated every few percent, so a row that
+     * has not moved for this long belongs to a worker that was restarted (a
+     * deploy, an OOM kill). Such a row is released instead of blocking the
+     * workflow forever.
+     */
+    protected const STALE_MINUTES = 20;
+
     public function status()
     {
         $counts = EpisodeSource::query()
@@ -56,7 +64,8 @@ class AutomationController extends Controller
             'ok' => true,
             'pending' => $this->pendingQuery()->count(),
             'queued' => (int) ($counts['queued'] ?? 0),
-            'active' => (int) ($counts['downloading'] ?? 0) + (int) ($counts['uploading'] ?? 0),
+            'active' => $this->freshActive()->count(),
+            'stale' => $this->staleActive()->count(),
             'completed' => (int) ($counts['completed'] ?? 0),
             'failed' => (int) ($counts['failed'] ?? 0),
             'current' => $active,
@@ -85,10 +94,21 @@ class AutomationController extends Controller
             ], 409);
         }
 
+        // A worker killed mid-download never flips its row back, so release the
+        // abandoned rows first; otherwise the guard below would block forever.
+        $released = 0;
+
+        foreach ($this->staleActive()->get() as $stale) {
+            $stale->ingest_status = 'pending';
+            $stale->ingest_error = 'released: the worker stopped mid-transfer';
+            $stale->save();
+            $released++;
+        }
+
         // One download at a time is what the worker does anyway; refuse to grow
         // the queue beyond a small buffer so a stuck file cannot pile up work.
         $queued = EpisodeSource::where('ingest_status', 'queued')->count();
-        $active = EpisodeSource::whereIn('ingest_status', ['downloading', 'uploading'])->count();
+        $active = $this->freshActive()->count();
 
         if ($queued + $active >= $maxBatch) {
             return response()->json([
@@ -145,8 +165,27 @@ class AutomationController extends Controller
             'queued' => $dispatched,
             'skipped' => $skipped,
             'pending' => $this->pendingQuery()->count(),
+            'released_stale' => $released,
             'disk_free_gb' => $freeGb,
         ]);
+    }
+
+    /**
+     * Transfers that are still moving bytes right now.
+     */
+    protected function freshActive()
+    {
+        return EpisodeSource::whereIn('ingest_status', ['downloading', 'uploading'])
+            ->where('updated_at', '>=', now()->subMinutes(self::STALE_MINUTES));
+    }
+
+    /**
+     * Transfers nobody is working on any more (restarted worker, killed job).
+     */
+    protected function staleActive()
+    {
+        return EpisodeSource::whereIn('ingest_status', ['downloading', 'uploading'])
+            ->where('updated_at', '<', now()->subMinutes(self::STALE_MINUTES));
     }
 
     /**
