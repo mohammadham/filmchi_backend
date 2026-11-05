@@ -1,0 +1,176 @@
+{
+  "name": "Flixy — Farsanime ingest",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 10
+            }
+          ]
+        }
+      },
+      "id": "b1a1f0d2-0001-4000-8000-000000000001",
+      "name": "Every 10 minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-520, 0]
+    },
+    {
+      "parameters": {
+        "url": "http://flixy:80/api/automation/status",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Fliksy-Token",
+              "value": "REPLACE_WITH_TOKEN"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "id": "b1a1f0d2-0001-4000-8000-000000000002",
+      "name": "Ingest status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-300, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "idle-and-pending",
+              "leftValue": "={{ $json.active === 0 && $json.pending > 0 && $json.disk_free_gb > $json.min_free_gb }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b1a1f0d2-0001-4000-8000-000000000003",
+      "name": "Worker idle and disk ok?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-80, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://flixy:80/api/automation/queue",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Fliksy-Token",
+              "value": "REPLACE_WITH_TOKEN"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"limit\": 1}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "b1a1f0d2-0001-4000-8000-000000000004",
+      "name": "Queue one source",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [140, -100]
+    },
+    {
+      "parameters": {},
+      "id": "b1a1f0d2-0001-4000-8000-000000000005",
+      "name": "Queued",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [360, -100]
+    },
+    {
+      "parameters": {},
+      "id": "b1a1f0d2-0001-4000-8000-000000000006",
+      "name": "Nothing to do",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [140, 100]
+    }
+  ],
+  "connections": {
+    "Every 10 minutes": {
+      "main": [
+        [
+          {
+            "node": "Ingest status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ingest status": {
+      "main": [
+        [
+          {
+            "node": "Worker idle and disk ok?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Worker idle and disk ok?": {
+      "main": [
+        [
+          {
+            "node": "Queue one source",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Nothing to do",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Queue one source": {
+      "main": [
+        [
+          {
+            "node": "Queued",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": false
+  },
+  "active": false,
+  "pinData": {}
+}
