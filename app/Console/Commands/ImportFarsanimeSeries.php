@@ -138,7 +138,15 @@ class ImportFarsanimeSeries extends Command
                     $seasonSources
                 ));
             } else {
-                $this->store($page, $seasons, $slug);
+                try {
+                    $this->store($page, $seasons, $slug);
+                } catch (\Throwable $e) {
+                    // One broken title must not abort a 180-series pass.
+                    $this->warn("[{$slug}] store failed: " . $e->getMessage());
+                    $skipped++;
+                    usleep(max(0, (int) $this->option('sleep')) * 1000);
+                    continue;
+                }
 
                 $this->line(sprintf(
                     '[%s] %s — %d season(s), %d episode(s), %d source(s)',
@@ -721,13 +729,16 @@ class ImportFarsanimeSeries extends Command
             'type' => Constants::series,
         ]);
 
-        $content->description = $page['description'] ?: $content->description;
-        $content->release_year = $page['year'] ?: $content->release_year;
+        // description and genre_ids are NOT NULL; assigning null explicitly is
+        // what MySQL rejects, even in its lenient mode.
+        $content->description = $page['description'] ?: ($content->description ?: '');
+        $content->release_year = $this->releaseYear($page['year'], $page['description'], $content->release_year);
         $content->tags = empty($page['tags']) ? $content->tags : implode(', ', $page['tags']);
         $content->vertical_poster = $page['poster'] ?: $content->vertical_poster;
         $content->horizontal_poster = $page['poster'] ?: $content->horizontal_poster;
-        $content->genre_ids = $this->genreIds($page['genres'], $content->genre_ids);
-        $content->language_id = $this->languageId($page['language']) ?: $content->language_id;
+        $content->genre_ids = $this->genreIds($page['genres'], $content->genre_ids) ?: ($content->genre_ids ?: '');
+        $content->language_id = $this->languageId($page['language'])
+            ?: ($content->language_id ?: $this->fallbackLanguageId());
         $content->storage_folder = Str::slug($page['title'] ?: $slug) ?: $slug;
         $content->is_show = Constants::showContent;
         $content->is_featured = $content->is_featured ?? 0;
@@ -752,7 +763,7 @@ class ImportFarsanimeSeries extends Command
                 ]);
 
                 $episode->title = $episode->title ?: 'Episode ' . $number;
-                $episode->description = $episode->description ?: ($page['description'] ?: null);
+                $episode->description = $episode->description ?: ($page['description'] ?: '');
                 $episode->thumbnail = $episode->thumbnail ?: $page['poster'];
                 $episode->save();
 
@@ -833,6 +844,54 @@ class ImportFarsanimeSeries extends Command
         $ids = array_values(array_unique($ids));
 
         return $ids ? implode(',', $ids) : $existing;
+    }
+
+    /**
+     * release_year is NOT NULL and some titles carry no year at all, so fall
+     * back to the year in the description, then to 0 (unknown) instead of
+     * letting the insert fail.
+     */
+    protected function releaseYear(string $year, string $description, $existing): int
+    {
+        if ((int) $year > 1800) {
+            return (int) $year;
+        }
+
+        if ((int) $existing > 0) {
+            return (int) $existing;
+        }
+
+        if ($description !== '' && preg_match('#\b(19|20)\d{2}\b#', $this->asciiDigits($description), $m)) {
+            return (int) $m[0];
+        }
+
+        return 0;
+    }
+
+    /**
+     * language_id is NOT NULL too; a title with no language line gets the
+     * explicit "unknown" row rather than breaking the pass.
+     */
+    protected function fallbackLanguageId(): int
+    {
+        $known = Language::where('title', 'نامشخص')->first();
+
+        if ($known) {
+            return (int) $known->id;
+        }
+
+        try {
+            $language = new Language();
+            $language->title = 'نامشخص';
+            $language->code = 'und';
+            $language->save();
+
+            return (int) $language->id;
+        } catch (\Throwable $e) {
+            $any = Language::where('code', 'und')->first() ?: Language::first();
+
+            return (int) ($any->id ?? 0);
+        }
     }
 
     protected function languageId(string $name): ?int
