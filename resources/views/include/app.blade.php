@@ -196,7 +196,7 @@
     <script src="{{ asset('assets/bundles/datatables/datatables.min.js') }}"></script>
     <script src="{{ asset('assets/js/custom.js') }}"></script>
     <script src="{{ asset('assets/js/bootstrap.min.js') }}"></script>
-    <script src="{{ asset('assets/js/app.js') }}"></script>
+    <script src="{{ asset('assets/js/app.js') }}?v={{ @filemtime(public_path('assets/js/app.js')) }}"></script>
     <script src="{{ asset('assets/js/selectric.min.js') }}"></script>
     <script src="{{ asset('assets/js/fancybox.umd.js') }}"></script>
     <script src="{{ asset('assets/js/flatpickr.js') }}"></script>
@@ -226,6 +226,7 @@
             <div class="modal-content">
                 <div class="videoPreview">
                     <video src="" id="showVideoUrl" playsinline autoplay controls type="video/mp4"></video>
+                    <img src="" id="showImageUrl" alt="" style="display:none; width:100%; border-radius:12px;">
                 </div>
             </div>
         </div>

@@ -41,17 +41,24 @@ class MediaGalleryController extends Controller
             ->get();
 
         $data = $result->map(function ($item) {
- 
-            $source = '<a href="javascript:;" 
-                            rel="' . $item->id . '"  
-                            data-source_url="' . $item->file . '" 
-                            class="me-2 btn btn-primary px-4 text-white source_file_video"> Video Preview </a>';
-            $edit = "<a rel='{$item->id}' data-title='{$item->title}' data-file='{$item->file}' class='me-2 btn btn-success px-3 text-white edit'>" . __('edit') . "</a>";
+            $preview = '<a href="javascript:;"
+                            rel="' . $item->id . '"
+                            data-media-preview="' . e($item->file) . '"
+                            data-media-title="' . e($item->title) . '"
+                            class="me-2 btn btn-primary px-4 text-white">' . __('preview') . '</a>';
+            $edit = "<a rel='{$item->id}' data-title='" . e($item->title) . "' data-file='" . e($item->file) . "' class='me-2 btn btn-success px-3 text-white edit'>" . __('edit') . "</a>";
             $delete = "<a href='#' class='btn btn-danger px-3 text-white delete' rel='{$item->id}'>" . __('delete') . "</a>";
-            $action = "<div class='text-end action'>{$edit}{$delete}</div>";
+            $action = "<div class='text-end action'>{$preview}{$edit}{$delete}</div>";
+
+            $title = e($item->title);
+
+            if (!empty($item->relay_file_id)) {
+                $title .= " <span class='badge bg-info'>" . __('relayHosted') . '</span>';
+            }
+
             return [
-                $source,
-                $item->title,
+                $preview,
+                $title,
                 $action,
             ];
         });
@@ -80,6 +87,10 @@ class MediaGalleryController extends Controller
         $media->file = $path;
         $media->save();
 
+        // Combined storage uploads come back as a /r/{token} link; remember
+        // which relay file that is so Content can trace it back.
+        $media->linkRelayFileFromUrl();
+
         return response()->json([
             'status' => true,
             'message' => 'Media Added Successfully',
@@ -107,6 +118,7 @@ class MediaGalleryController extends Controller
         }
 
         $media->save();
+        $media->linkRelayFileFromUrl();
 
         return response()->json([
             'status' => true,

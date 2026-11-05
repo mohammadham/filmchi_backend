@@ -11,6 +11,8 @@ use App\EpisodeSource;
 use App\EpisodeSubtitle;
 use App\Genre;
 use App\GlobalFunction;
+use App\GlobalSettings;
+use App\Jobs\IngestUrlJob;
 use App\Language;
 use App\ContentCast;
 use App\MediaGallery;
@@ -796,6 +798,7 @@ class ContentController extends Controller
             "Mp4 Url" => 4,
             "Mkv Url" => 5,
             "Webm Url" => 6,
+            "Embedded Url" => 8,
             "File" => 7,
         ];
 
@@ -826,27 +829,29 @@ class ContentController extends Controller
                         ->get();
 
         $data = $result->map(function ($item) use ($typeMappings) {
-            
-            if ($item->type == Constants::FileType) {
-                $source = '<a href="javascript:;" 
-                            rel="' . $item->id . '"  
-                            data-source_url="' . $item->media->file . '" 
-                            class="me-2 btn btn-primary px-4 text-white source_file_video">' . __('videoPreview') . ' </a>';
-            } elseif ($item->type == Constants::Youtube) {
+            if ((int) $item->type === Constants::FileType) {
+                $mediaUrl = optional($item->media)->file;
+                $source = $mediaUrl
+                    ? '<a href="javascript:;" data-media-preview="' . e($mediaUrl) . '" class="me-2 btn btn-primary px-4 text-white">' . __('preview') . ' </a>'
+                    : '<span class="text-danger small">' . __('fileMissing') . '</span>';
+            } elseif ((int) $item->type === Constants::Youtube) {
                 $sourceUrl = 'https://youtu.be/' . $item->source;
-                $source = '<a href="' . $sourceUrl . '" target="_blank" class="sourceUrlLink"> ' . __('preview') . ' </a>';
+                $source = '<a href="' . e($sourceUrl) . '" target="_blank" class="sourceUrlLink"> ' . __('preview') . ' </a>';
+            } elseif ((int) $item->type === 8) {
+                $source = '<a href="' . e($item->source) . '" target="_blank" class="sourceUrlLink"> ' . __('preview') . ' </a>';
             } else {
-                $source = '<a href="' . $item->source . '" target="_blank" class="sourceUrlLink"> ' . __('preview') . ' </a>';
+                $source = '<a href="javascript:;" data-media-preview="' . e($item->source) . '" class="me-2 btn btn-primary px-4 text-white">' . __('preview') . ' </a>';
             }
 
             $edit = '<a rel="' . $item->id . '"
-                        data-title="' . $item->title . '" 
-                        data-quality="' . $item->quality . '" 
-                        data-size="' . $item->size . '" 
+                        data-title="' . e($item->title) . '" 
+                        data-quality="' . e($item->quality) . '" 
+                        data-size="' . e($item->size) . '" 
                         data-download="' . $item->is_download . '" 
                         data-accesstype="' . $item->access_type . '"
+                        data-provider="' . e($item->provider) . '"
                         data-type="' . $item->type . '" 
-                        data-source="' . $item->source . '" 
+                        data-source="' . e($item->source) . '" 
                         class="me-2 btn btn-success px-3 text-white edit">' . __('edit') . '</a>';
 
             $delete = '<a href="#" class="btn btn-danger px-3 text-white delete" rel=' . $item->id . '>' . __('delete') . '</a>';
@@ -854,6 +859,8 @@ class ContentController extends Controller
             $action = '<div class="text-end action">' . $edit . $delete . '</div>';
 
             $typeName = array_search($item->type, $typeMappings) ?: "File";
+
+            $title = e($item->title);
 
             $linkBadge = '';
             if (!in_array((int) $item->type, [1, 7], true)) {
@@ -865,10 +872,11 @@ class ContentController extends Controller
             }
 
             return [
-                $item->title . $linkBadge,
+                $title . $linkBadge,
                 $typeName,
                 $source,
-                $item->quality,
+                e($item->quality),
+                !empty($item->provider) ? '<span class="badge bg-secondary">' . e($item->provider) . '</span>' : '<span class="text-muted">—</span>',
                 $action,
             ];
         });
@@ -885,27 +893,127 @@ class ContentController extends Controller
 
     public function addSource(Request $request)
     {
+        $type = (int) $request->input('type');
+        $provider = $request->filled('provider') ? (string) $request->input('provider') : null;
+
+        if ($type === Constants::FileType) {
+            $media = MediaGallery::find((int) $request->input('media'));
+
+            if (!$media) {
+                return response()->json(['status' => false, 'message' => 'Select a file from the media library.']);
+            }
+
+            $source = $this->storeContentSource($request, $type, $provider, (string) $media->id, $media->relay_file_id);
+
+            return response()->json([
+                'status' => true,
+                'message' => 'Source Added Successfully',
+                'source_id' => $source->id,
+                'source_ids' => [$source->id],
+            ]);
+        }
+
+        $links = $this->splitSourceLinks($request->input('source_url'));
+
+        if (empty($links)) {
+            return response()->json(['status' => false, 'message' => 'Add at least one source URL.']);
+        }
+
+        $created = [];
+
+        foreach ($links as $link) {
+            $source = $this->storeContentSource($request, $type, $provider, $link);
+            $this->queueIngestIfRequested($request, 'content', $source, $link);
+            $created[] = $source->id;
+        }
+
+        return response()->json([
+            'status' => true,
+            'message' => count($created) > 1
+                ? count($created) . ' sources added'
+                : 'Source Added Successfully',
+            'source_id' => $created[0],
+            'source_ids' => $created,
+        ]);
+    }
+
+    /**
+     * One source row. `source` is either a Media Gallery id (file upload) or
+     * the URL itself (external link).
+     */
+    protected function storeContentSource(Request $request, int $type, ?string $provider, string $value, $relayFileId = null): ContentSource
+    {
         $source = new ContentSource();
         $source->content_id = $request->content_id;
         $source->title = $request->title;
         $source->quality = $request->quality;
+        $source->provider = $provider;
         $source->size = $request->size;
-        $source->is_download = $request->is_download;
-        $source->type = $request->type;
+        $source->is_download = (int) $request->input('is_download', 0);
+        $source->type = $type;
         $source->access_type = $request->access_type;
-
-        if ($request->has('media')) {
-            $source->source = $request->media;
-        } else {
-            $source->source = $request->source_url;
-        }
+        $source->source = $value;
+        $source->relay_file_id = $relayFileId;
         $source->save();
 
-        return response()->json([
-            'status' => true,
-            'message' => 'Source Added Successfully',
-        ]);
+        return $source;
+    }
 
+    /**
+     * A source field may hold several URLs (one per line), which is how the
+     * panel records multiple mirrors for the same quality in one go.
+     *
+     * @return array<int, string>
+     */
+    protected function splitSourceLinks($value): array
+    {
+        $links = preg_split('/[\r\n]+/', (string) $value) ?: [];
+
+        return array_values(array_filter(array_map('trim', $links), function ($link) {
+            return $link !== '';
+        }));
+    }
+
+    /**
+     * Queue a freshly added external link for ingestion when the operator
+     * asked for it and the panel is on combined storage.
+     */
+    protected function queueIngestIfRequested(Request $request, string $sourceType, $source, string $url): void
+    {
+        if (!$request->boolean('ingest_url')) {
+            return;
+        }
+
+        if (in_array((int) $source->type, [Constants::FileType, Constants::Youtube], true)) {
+            return;
+        }
+
+        if (!preg_match('#^https?://#i', $url) || str_starts_with($url, url('/'))) {
+            return;
+        }
+
+        if ((int) (optional(GlobalSettings::first())->storage_type ?? 0) !== GlobalSettings::STORAGE_COMBINED) {
+            return;
+        }
+
+        $source->ingest_status = 'queued';
+        $source->ingest_progress = 0;
+        $source->ingest_error = null;
+        $source->save();
+
+        IngestUrlJob::dispatch($sourceType, $source->id, $url, $this->ingestNameFor($source, $url));
+    }
+
+    protected function ingestNameFor($source, string $url): string
+    {
+        $name = $source->title ?: 'ingest-' . $source->id;
+        $extension = strtolower(pathinfo(parse_url($url, PHP_URL_PATH) ?: '', PATHINFO_EXTENSION));
+
+        if ($extension && !str_ends_with(strtolower($name), '.' . $extension)) {
+            $name .= '.' . $extension;
+        }
+
+        return $name;
     }
 
     public function updateContentSource(Request $request)
@@ -924,15 +1032,23 @@ class ContentController extends Controller
 
         $contentSource->title = $request->title;
         $contentSource->quality = $request->quality;
+        $contentSource->provider = $request->filled('provider') ? (string) $request->input('provider') : null;
         $contentSource->size = $request->size;
-        $contentSource->is_download = $request->is_download;
-        $contentSource->type = $request->type;
+        $contentSource->is_download = (int) $request->input('is_download', 0);
+        $contentSource->type = (int) $request->type;
         $contentSource->access_type = $request->access_type;
 
-        if ($request->type == Constants::FileType) {
-            $contentSource->source = $request->media;
+        if ((int) $request->type === Constants::FileType) {
+            $media = MediaGallery::find((int) $request->input('media'));
+
+            if ($media) {
+                $contentSource->source = (string) $media->id;
+                $contentSource->relay_file_id = $media->relay_file_id;
+            }
         } elseif ($request->filled('source_url')) {
-            $contentSource->source = $request->source_url;
+            $links = $this->splitSourceLinks($request->input('source_url'));
+            $contentSource->source = $links[0] ?? $contentSource->source;
+            $contentSource->relay_file_id = null;
         }
 
         $contentSource->save();
@@ -1608,26 +1724,29 @@ class ContentController extends Controller
 
         $data = array();
         foreach ($result as $item) {
-            if ($item->type == Constants::FileType) {
-                $source = '<a href="javascript:;" 
-                    rel="' . $item->id . '"  
-                    data-source_url="' . $item->source . '" 
-                    class="me-2 btn btn-primary px-4 text-white source_file_video"> Video Preview </a>';
-            } else if ($item->type == Constants::Youtube) {
+            if ((int) $item->type === Constants::FileType) {
+                $mediaUrl = optional($item->media)->file;
+                $source = $mediaUrl
+                    ? '<a href="javascript:;" data-media-preview="' . e($mediaUrl) . '" class="me-2 btn btn-primary px-4 text-white">' . __('preview') . ' </a>'
+                    : '<span class="text-danger small">' . __('fileMissing') . '</span>';
+            } else if ((int) $item->type === Constants::Youtube) {
                 $sourceUrl = 'https://youtu.be/' . $item->source;
-                $source = '<a href="' . $sourceUrl . '" target="_blank" class="sourceUrlLink"> Preview </a>';
+                $source = '<a href="' . e($sourceUrl) . '" target="_blank" class="sourceUrlLink"> ' . __('preview') . ' </a>';
+            } else if ((int) $item->type === 8) {
+                $source = '<a href="' . e($item->source) . '" target="_blank" class="sourceUrlLink"> ' . __('preview') . ' </a>';
             } else {
-                $source = '<a href="' . $item->source . '" target="_blank" class="sourceUrlLink"> Preview </a>';
+                $source = '<a href="javascript:;" data-media-preview="' . e($item->source) . '" class="me-2 btn btn-primary px-4 text-white">' . __('preview') . ' </a>';
             }
 
             $edit = '<a rel="' . $item->id . '"
-                        data-title="' . $item->title . '" 
-                        data-quality="' . $item->quality . '" 
-                        data-size="' . $item->size . '" 
+                        data-title="' . e($item->title) . '" 
+                        data-quality="' . e($item->quality) . '" 
+                        data-size="' . e($item->size) . '" 
                         data-download="' . $item->is_download . '" 
                         data-accesstype="' . $item->access_type . '"
+                        data-provider="' . e($item->provider) . '"
                         data-type="' . $item->type . '" 
-                        data-source="' . $item->source . '" 
+                        data-source="' . e($item->source) . '" 
                         class="me-2 btn btn-success px-3 text-white edit">' . __('edit') . '</a>';
 
             $delete = '<a href="#" class="btn btn-danger px-3 text-white delete" rel=' . $item->id . ' >' . __('delete') . '</a>';
@@ -1662,16 +1781,20 @@ class ContentController extends Controller
                 case 6:
                     $item->type = "Webm Url";
                     break;
+                case 8:
+                    $item->type = "Embedded Url";
+                    break;
                 default:
                     $item->type = "File";
                     break;
             }
 
             $data[] = array(
-                $item->title . $linkBadge,
+                e($item->title) . $linkBadge,
                 $item->type,
                 $source,
-                $item->quality,
+                e($item->quality),
+                !empty($item->provider) ? '<span class="badge bg-secondary">' . e($item->provider) . '</span>' : '<span class="text-muted">—</span>',
                 $action,
             );
         }
@@ -1688,27 +1811,66 @@ class ContentController extends Controller
 
     public function addEpisodeSource(Request $request)
     {
+        $type = (int) $request->input('type');
+        $provider = $request->filled('provider') ? (string) $request->input('provider') : null;
+
+        if ($type === Constants::FileType) {
+            $media = MediaGallery::find((int) $request->input('media'));
+
+            if (!$media) {
+                return response()->json(['status' => false, 'message' => 'Select a file from the media library.']);
+            }
+
+            $source = $this->storeEpisodeSource($request, $type, $provider, (string) $media->id, $media->relay_file_id);
+
+            return response()->json([
+                'status' => true,
+                'message' => 'Source Added Successfully',
+                'source_id' => $source->id,
+                'source_ids' => [$source->id],
+            ]);
+        }
+
+        $links = $this->splitSourceLinks($request->input('source_url'));
+
+        if (empty($links)) {
+            return response()->json(['status' => false, 'message' => 'Add at least one source URL.']);
+        }
+
+        $created = [];
+
+        foreach ($links as $link) {
+            $source = $this->storeEpisodeSource($request, $type, $provider, $link);
+            $this->queueIngestIfRequested($request, 'episode', $source, $link);
+            $created[] = $source->id;
+        }
+
+        return response()->json([
+            'status' => true,
+            'message' => count($created) > 1
+                ? count($created) . ' sources added'
+                : 'Source Added Successfully',
+            'source_id' => $created[0],
+            'source_ids' => $created,
+        ]);
+    }
+
+    protected function storeEpisodeSource(Request $request, int $type, ?string $provider, string $value, $relayFileId = null): EpisodeSource
+    {
         $source = new EpisodeSource();
         $source->episode_id = $request->episode_id;
         $source->title = $request->title;
         $source->quality = $request->quality;
+        $source->provider = $provider;
         $source->size = $request->size;
-        $source->is_download = $request->is_download;
-        $source->type = $request->type;
+        $source->is_download = (int) $request->input('is_download', 0);
+        $source->type = $type;
         $source->access_type = $request->access_type;
-
-        if ($request->has('media')) {
-            $source->source = $request->media;
-        } else {
-            $source->source = $request->source_url;
-        }
-
+        $source->source = $value;
+        $source->relay_file_id = $relayFileId;
         $source->save();
 
-        return response()->json([
-            'status' => true,
-            'message' => 'Source Added Successfully',
-        ]);
+        return $source;
     }
 
     public function updateEpisodeSource(Request $request)
@@ -1727,15 +1889,23 @@ class ContentController extends Controller
 
         $episodeSource->title = $request->title;
         $episodeSource->quality = $request->quality;
+        $episodeSource->provider = $request->filled('provider') ? (string) $request->input('provider') : null;
         $episodeSource->size = $request->size;
-        $episodeSource->is_download = $request->is_download;
-        $episodeSource->type = $request->type;
+        $episodeSource->is_download = (int) $request->input('is_download', 0);
+        $episodeSource->type = (int) $request->type;
         $episodeSource->access_type = $request->access_type;
 
-        if ($request->type == Constants::FileType) {
-            $episodeSource->source = $request->media;
+        if ((int) $request->type === Constants::FileType) {
+            $media = MediaGallery::find((int) $request->input('media'));
+
+            if ($media) {
+                $episodeSource->source = (string) $media->id;
+                $episodeSource->relay_file_id = $media->relay_file_id;
+            }
         } elseif ($request->filled('source_url')) {
-            $episodeSource->source = $request->source_url;
+            $links = $this->splitSourceLinks($request->input('source_url'));
+            $episodeSource->source = $links[0] ?? $episodeSource->source;
+            $episodeSource->relay_file_id = null;
         }
 
         $episodeSource->save();

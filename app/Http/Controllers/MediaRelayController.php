@@ -4,6 +4,8 @@ namespace App\Http\Controllers;
 
 use App\ContentSource;
 use App\EpisodeSource;
+use App\Jobs\IngestRelayUrlJob;
+use App\MediaGallery;
 use App\RelayEvent;
 use App\RelayFile;
 use App\RelayLink;
@@ -77,12 +79,16 @@ class MediaRelayController extends Controller
 
         $totalFiltered = $query->count();
 
-        $result = $query->orderBy('id', $orderDir)
+        $result = $query->with('links')->orderBy('id', $orderDir)
             ->offset($start)
             ->limit($limit)
             ->get();
 
-        $data = $result->map(function (RelayFile $item) {
+        // One query instead of a count per row: which relay files already
+        // have a Media Gallery entry that Content can pick.
+        $libraryIds = MediaGallery::whereNotNull('relay_file_id')->pluck('relay_file_id')->all();
+
+        $data = $result->map(function (RelayFile $item) use ($libraryIds) {
             $tier = $item->cache_state === RelayFile::WARM
                 ? '<span class="badge bg-success">cache</span>'
                 : '<span class="badge bg-secondary">' . e($item->cache_state) . '</span>';
@@ -90,6 +96,34 @@ class MediaRelayController extends Controller
             $thumb = $item->thumb
                 ? "<img src='" . e(asset('storage/' . $item->thumb)) . "' width='72' height='40' class='rounded' style='object-fit:cover'>"
                 : "<span class='text-muted'>—</span>";
+
+            $name = e($item->name);
+
+            if (in_array($item->id, $libraryIds, true)) {
+                $name .= " <span class='badge bg-info' title='" . e(__('mediaLibraryHint')) . "'>" . __('inMediaLibrary') . '</span>';
+            }
+
+            if ($item->source_url) {
+                $name .= "<br><span class='text-muted small d-inline-block text-truncate' style='max-width:280px' title='" . e($item->source_url) . "'>" . e(parse_url($item->source_url, PHP_URL_HOST) ?: $item->source_url) . '</span>';
+            }
+
+            if ($item->ingest_status && $item->ingest_status !== 'completed') {
+                if ($item->ingest_status === 'failed') {
+                    $name .= "<br><span class='badge bg-danger' title='" . e((string) $item->ingest_error) . "'>" . __('ingestFailed') . '</span>';
+                } else {
+                    $name .= "<br><span class='badge bg-warning text-dark'>" . e($item->ingest_status) . ' ' . (int) $item->ingest_progress . '%</span>';
+                }
+            }
+
+            $previewUrl = optional($item->links->first(function ($link) {
+                return !$link->is_disabled;
+            }))->streamUrl();
+
+            $previewKind = str_starts_with((string) $item->mime, 'image/') ? 'image' : 'video';
+
+            $preview = $previewUrl
+                ? "<a href='#' class='me-2 btn btn-info px-3 text-white' data-media-preview='" . e($previewUrl) . "' data-media-kind='{$previewKind}'>" . __('preview') . '</a>'
+                : '';
 
             $links = "<a rel='{$item->id}' class='me-2 btn btn-primary px-3 text-white relayLinks'>" . __('links') . "</a>";
             $promote = "<a href='#' rel='{$item->id}' class='me-2 btn btn-warning px-3 text-white promote'>" . __('promote') . "</a>";
@@ -99,13 +133,13 @@ class MediaRelayController extends Controller
             return [
                 "<input type='checkbox' class='relay-row-check' value='{$item->id}'>",
                 $thumb,
-                e($item->name),
+                $name,
                 $item->human_size,
                 $tier,
                 (int) $this->demand->count($item),
                 (int) $item->hits,
                 $item->last_access_at ? $item->last_access_at->diffForHumans() : '-',
-                "<div class='text-end action'>{$links}{$promote}{$evict}{$delete}</div>",
+                "<div class='text-end action'>{$preview}{$links}{$promote}{$evict}{$delete}</div>",
             ];
         });
 
@@ -143,6 +177,8 @@ class MediaRelayController extends Controller
             $link->mode = RelayLink::MODE_STREAM;
             $link->label = $request->filled('name') ? (string) $request->input('name') : $upload->getClientOriginalName();
             $link->save();
+
+            MediaGallery::registerRelayFile($duplicate, $link->streamUrl(), $link->label);
 
             RelayEvent::create([
                 'relay_file_id' => $duplicate->id,
@@ -201,6 +237,17 @@ class MediaRelayController extends Controller
         // moment a poster frame can be extracted cheaply.
         Thumbnail::make($upload->getRealPath(), (string) ($result['mime'] ?? $upload->getMimeType() ?? ''), $file);
 
+        // Hand out a public link right away and expose the file in the media
+        // library, so it is immediately usable inside Content.
+        $link = new RelayLink();
+        $link->relay_file_id = $file->id;
+        $link->token = Str::random(40);
+        $link->mode = RelayLink::MODE_STREAM;
+        $link->label = $name;
+        $link->save();
+
+        MediaGallery::registerRelayFile($file, $link->streamUrl(), $name);
+
         RelayEvent::create([
             'relay_file_id' => $file->id,
             'event' => 'uploaded',
@@ -215,6 +262,87 @@ class MediaRelayController extends Controller
             'message' => 'File stored on Telegram Drive.',
             'data' => $file,
         ]);
+    }
+
+    /**
+     * Add a file to the relay from a public URL. The row shows up immediately
+     * (queued) and the job fills in the size, tier and link as it progresses.
+     */
+    public function relayFileFromUrl(Request $request)
+    {
+        $request->validate([
+            'url' => 'required|url',
+            'name' => 'nullable|string|max:255',
+        ]);
+
+        if (!$this->relay->telegram()->isConfigured()) {
+            return response()->json(['status' => false, 'message' => 'Telegram Drive is not configured.']);
+        }
+
+        $url = trim((string) $request->input('url'));
+
+        if (str_starts_with($url, url('/'))) {
+            return response()->json(['status' => false, 'message' => 'This link is already on the relay.']);
+        }
+
+        $name = trim((string) $request->input('name'));
+
+        if ($name === '') {
+            $path = parse_url($url, PHP_URL_PATH) ?: '';
+            $name = rawurldecode(basename($path)) ?: 'relay-' . Str::random(6);
+        }
+
+        $file = new RelayFile();
+        $file->name = $name;
+        $file->size = 0;
+        $file->mime = $this->mimeFromName($name);
+        $file->extension = pathinfo($name, PATHINFO_EXTENSION);
+        $file->cache_state = RelayFile::COLD;
+        $file->owner = (string) $request->session()->get('admin_name', 'panel');
+        $file->source_url = $url;
+        $file->ingest_status = 'queued';
+        $file->ingest_progress = 0;
+        $file->save();
+
+        IngestRelayUrlJob::dispatch($file->id, $url);
+
+        return response()->json([
+            'status' => true,
+            'message' => 'Queued: the file will appear here once it is on Telegram Drive.',
+            'data' => $file->only(['id', 'name', 'ingest_status']),
+        ]);
+    }
+
+    protected function mimeFromName(string $name): string
+    {
+        return match (strtolower(pathinfo($name, PATHINFO_EXTENSION))) {
+            'mp4' => 'video/mp4',
+            'mkv' => 'video/x-matroska',
+            'mov' => 'video/quicktime',
+            'webm' => 'video/webm',
+            'm3u8' => 'application/vnd.apple.mpegurl',
+            'png' => 'image/png',
+            'jpg', 'jpeg' => 'image/jpeg',
+            'webp' => 'image/webp',
+            default => 'application/octet-stream',
+        };
+    }
+
+    /**
+     * Remove the Media Gallery entries (and any source rows pointing at them)
+     * for a relay file that is being deleted, so Content never keeps a dead id.
+     */
+    protected function purgeLibraryEntries(RelayFile $file): void
+    {
+        $mediaIds = MediaGallery::where('relay_file_id', $file->id)->pluck('id')->all();
+
+        if (empty($mediaIds)) {
+            return;
+        }
+
+        ContentSource::where('type', \App\Constants::FileType)->whereIn('source', $mediaIds)->delete();
+        EpisodeSource::where('type', \App\Constants::FileType)->whereIn('source', $mediaIds)->delete();
+        MediaGallery::whereIn('id', $mediaIds)->delete();
     }
 
     /**
@@ -317,6 +445,7 @@ class MediaRelayController extends Controller
                         $this->promoter->evict($file, true);
                     }
 
+                    $this->purgeLibraryEntries($file);
                     RelayLink::where('relay_file_id', $file->id)->delete();
                     RelayEvent::where('relay_file_id', $file->id)->delete();
                     $file->delete();
@@ -435,6 +564,8 @@ class MediaRelayController extends Controller
                 $link->label = $name;
                 $link->save();
 
+                MediaGallery::registerRelayFile($duplicate, $link->streamUrl(), $name);
+
                 RelayEvent::create([
                     'relay_file_id' => $duplicate->id,
                     'event' => 'uploaded',
@@ -493,6 +624,8 @@ class MediaRelayController extends Controller
         $link->mode = RelayLink::MODE_STREAM;
         $link->label = $name;
         $link->save();
+
+        MediaGallery::registerRelayFile($file, $link->streamUrl(), $name);
 
         RelayEvent::create([
             'relay_file_id' => $file->id,
@@ -570,6 +703,7 @@ class MediaRelayController extends Controller
             $this->promoter->evict($file, true);
         }
 
+        $this->purgeLibraryEntries($file);
         RelayLink::where('relay_file_id', $file->id)->delete();
         RelayEvent::where('relay_file_id', $file->id)->delete();
         $file->delete();

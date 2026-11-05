@@ -274,11 +274,53 @@ $(document).ready(function () {
         },
     });
 
+    function notify(message, type) {
+        if (typeof iziToast !== "undefined") {
+            iziToast[type === "error" ? "error" : "info"]({
+                message: message,
+                position: "topRight",
+                timeout: 5000,
+            });
+            return;
+        }
+        console.log(message);
+    }
+
+    // The type decides which input is relevant: a library file or a URL.
+    function toggleSourceFields(type) {
+        var isFile = type == "7";
+
+        $("#addSourceForm .mediaGallery, #addEpisodeSourceForm .mediaGallery").toggle(isFile);
+        $("#addSourceForm .sourceURL, #addEpisodeSourceForm .sourceURL").toggle(!isFile);
+        $("#media").prop("required", isFile);
+        $("#sourceURL").prop("required", !isFile);
+        $("#ingestRow").toggle(!isFile && type != "1");
+    }
+
+    $(document).on("change", "#type", function () {
+        toggleSourceFields($(this).val());
+    });
+
+    $(document).on("change", "#edit_type", function () {
+        var isFile = $(this).val() == "7";
+        var form = $(this).closest("form");
+
+        form.find(".mediaGallery").toggle(isFile);
+        form.find(".sourceURL").toggle(!isFile);
+    });
+
+    toggleSourceFields($("#type").val());
+
+    $("#addSourceModal, #addEpisodeSourceModal").on("hidden.bs.modal", function () {
+        $("#type").val("").selectric("refresh");
+        toggleSourceFields("");
+        $("#ingest_url").prop("checked", false);
+    });
+
     $(document).on("submit", "#addSourceForm", function (e) {
         e.preventDefault();
         checkUserType(function (e) {
             let formData = new FormData($("#addSourceForm")[0]);
-            const shouldIngest = $("#ingest_url").prop("checked") && $("#sourceURL").val().trim() !== "";
             $.ajax({
                 type: "POST",
                 url: `${domainUrl}addSource`,
@@ -288,30 +330,19 @@ $(document).ready(function () {
                 success: function (response) {
                     if (response.status) {
                         showSuccessToast();
-                        if (shouldIngest) {
-                            queueIngest("content", response.source_id, $("#sourceURL").val().trim());
-                        }
+                        notify(response.message, "info");
                         $("#sourceTable").DataTable().ajax.reload(null, false);
                         $("#addSourceModal").modal("hide");
+                    } else {
+                        notify(response.message || "Could not add the source.", "error");
                     }
+                },
+                error: function (xhr) {
+                    notify((xhr.responseJSON && xhr.responseJSON.message) || "Could not add the source.", "error");
                 },
             });
         });
     });
-
-    function queueIngest(sourceType, sourceId, url) {
-        $.ajax({
-            type: "POST",
-            url: `${domainUrl}ingestSourceUrl`,
-            data: { source_type: sourceType, source_id: sourceId, url: url },
-            success: function (r) {
-                notify(r.message || "Queued for ingestion.", r.status ? "info" : "error");
-            },
-            error: function (xhr) {
-                notify((xhr.responseJSON && xhr.responseJSON.message) || "Ingest failed.", "error");
-            },
-        });
-    }
     
     $("#sourceTable").on("click", ".edit", function (e) {
         e.preventDefault();
@@ -326,6 +357,7 @@ $(document).ready(function () {
         $("#edit_is_download_hidden").val(data.download == 1 ? 1 : 0);
         $("#edit_type").val(data.type).selectric("refresh");
         $("#edit_media").val(data.source).selectric("refresh");
+        $("#edit_provider").val(data.provider || "");
 
         const sourceURL = $(".sourceURL");
         const mediaGallery = $(".mediaGallery");
@@ -820,7 +852,6 @@ $(document).ready(function () {
         e.preventDefault();
         checkUserType(function (e) {
             let formData = new FormData($("#addEpisodeSourceForm")[0]);
-            const shouldIngest = $("#ingest_url").prop("checked") && $("#sourceURL").val().trim() !== "";
             $.ajax({
                 type: "POST",
                 url: `${domainUrl}addEpisodeSource`,
@@ -830,14 +861,17 @@ $(document).ready(function () {
                 success: function (response) {
                     if (response.status) {
                         showSuccessToast();
-                        if (shouldIngest) {
-                            queueIngest("episode", response.source_id, $("#sourceURL").val().trim());
-                        }
+                        notify(response.message, "info");
                         $("#episodeSourceTable")
                             .DataTable()
                             .ajax.reload(null, false);
                         $("#addEpisodeSourceModal").modal("hide");
+                    } else {
+                        notify(response.message || "Could not add the source.", "error");
                     }
+                },
+                error: function (xhr) {
+                    notify((xhr.responseJSON && xhr.responseJSON.message) || "Could not add the source.", "error");
                 },
             });
         });
@@ -856,6 +890,7 @@ $(document).ready(function () {
         $("#edit_is_download_hidden").val(data.download == 1 ? 1 : 0);
         $("#edit_type").val(data.type).selectric("refresh");
         $("#edit_media").val(data.source).selectric("refresh");
+        $("#edit_provider").val(data.provider || "");
 
         const sourceURL = $(".sourceURL");
         const mediaGallery = $(".mediaGallery");

@@ -1,6 +1,6 @@
 @extends('include.app')
 @section('script')
-<script src="{{ asset('assets/script/mediaRelay.js') }}"></script>
+<script src="{{ asset('assets/script/mediaRelay.js') }}?v={{ @filemtime(public_path('assets/script/mediaRelay.js')) }}"></script>
 @endsection
 
 @section('content')
@@ -10,13 +10,22 @@
             <div class="page-title w-100">
                 <div class="d-flex align-items-center justify-content-between">
                     <h4 class="mb-0 fw-semibold">{{ __('mediaRelay') }}</h4>
-                    <button type="button" class="btn btn-primary text-light px-4" data-bs-toggle="modal" data-bs-target="#addRelayFileModal">
-                        {{ __('addRelayFile') }}
-                    </button>
+                    <div class="d-flex align-items-center gap-2">
+                        <button type="button" class="btn btn-secondary text-light px-4" data-bs-toggle="modal" data-bs-target="#addRelayUrlModal">
+                            {{ __('addFromLink') }}
+                        </button>
+                        <button type="button" class="btn btn-primary text-light px-4" data-bs-toggle="modal" data-bs-target="#addRelayFileModal">
+                            {{ __('addRelayFile') }}
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>
         <div class="card-body">
+
+            <div class="alert alert-info">
+                {{ __('mediaRelayHint') }}
+            </div>
 
             @if(!$stateStoreOk)
             <div class="alert alert-danger">
@@ -154,6 +163,35 @@
                                 <div class="progress-bar" id="relayProgressBar" role="progressbar" style="width: 0%;">0%</div>
                             </div>
                         </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn text-light" data-bs-dismiss="modal">{{ __('close') }}</button>
+                    <button type="submit" class="btn theme-btn text-light px-4 saveButton">{{ __('save') }}</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Add from link -->
+<div class="modal fade" id="addRelayUrlModal" data-bs-backdrop="static" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-md">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title fw-semibold mb-0 text-white">{{ __('addFromLink') }}</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <form id="addRelayUrlForm" method="POST">
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label for="relay_url" class="form-label">{{ __('sourceURL') }}</label>
+                        <input name="url" id="relay_url" type="url" class="form-control" placeholder="https://..." required>
+                        <span class="text-muted small">{{ __('addFromLinkHint') }}</span>
+                    </div>
+                    <div class="form-group">
+                        <label for="relay_url_name" class="form-label">{{ __('title') }}</label>
+                        <input name="name" id="relay_url_name" type="text" class="form-control" placeholder="{{ __('optional') }}">
                     </div>
                 </div>
                 <div class="modal-footer">

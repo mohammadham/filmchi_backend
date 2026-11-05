@@ -1,6 +1,6 @@
 @extends('include.app')
 @section('script')
-<script src="{{ asset('assets/script/content_detail.js') }}"></script>
+<script src="{{ asset('assets/script/content_detail.js') }}?v={{ @filemtime(public_path('assets/script/content_detail.js')) }}"></script>
 @endsection
 
 @section('content')
@@ -57,6 +57,7 @@
                                     <th> {{ __('type') }}</th>
                                     <th> {{ __('source') }}</th>
                                     <th> {{ __('quality') }}</th>
+                                    <th> {{ __('provider') }}</th>
                                     <th class="text-end" width="200px"> {{ __('action') }} </th>
                                 </tr>
                             </thead>
@@ -105,7 +106,12 @@
                     </div>
                     <div class="form-group">
                         <label for="quality" class="form-label">{{ __('sourceQuality')}}</label>
-                        <input name="quality" id="quality" type="text" class="form-control" required>
+                        <input name="quality" id="quality" type="text" class="form-control" placeholder="1080p" required>
+                        <span class="text-muted small">{{ __('providerHint') }}</span>
+                    </div>
+                    <div class="form-group">
+                        <label for="provider" class="form-label">{{ __('provider')}}</label>
+                        <input name="provider" id="provider" type="text" class="form-control" placeholder="{{ __('providerPlaceholder') }}">
                     </div>
                     <div class="form-group">
                         <label for="size" class="form-label">{{ __('sourceSize')}}</label>
@@ -137,7 +143,8 @@
                         </div>
                         <div class="sourceURL">
                             <label for="sourceURL" class="form-label" id="sourceURL_label">{{ __('sourceURL')}}</label>
-                            <input name="source_url" id="sourceURL" type="text" class="form-control" aria-describedby="sourceURL">
+                            <textarea name="source_url" id="sourceURL" class="form-control" rows="3" aria-describedby="sourceURL"></textarea>
+                            <span class="text-muted small">{{ __('multipleLinksHint') }}</span>
                         </div>
                     </div>
                     <div class="progress mb-2" id="progress" style="height: 25px; display: none;">
@@ -213,6 +220,10 @@
                     <div class="form-group">
                         <label for="quality" class="form-label">{{ __('sourceQuality')}}</label>
                         <input name="quality" id="edit_quality" type="text" class="form-control">
+                    </div>
+                    <div class="form-group">
+                        <label for="edit_provider" class="form-label">{{ __('provider')}}</label>
+                        <input name="provider" id="edit_provider" type="text" class="form-control" placeholder="{{ __('providerPlaceholder') }}">
                     </div>
                     <div class="form-group">
                         <label for="size" class="form-label">{{ __('sourceSize')}}</label>

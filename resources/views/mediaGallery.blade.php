@@ -1,6 +1,6 @@
 @extends('include.app')
 @section('script')
-<script src="{{ asset('assets/script/mediaGallery.js') }}"></script>
+<script src="{{ asset('assets/script/mediaGallery.js') }}?v={{ @filemtime(public_path('assets/script/mediaGallery.js')) }}"></script>
 @endsection
 
 @section('content')
@@ -17,10 +17,13 @@
             </div>
         </div>
         <div class="card-body">
+            <div class="alert alert-info">
+                {{ __('mediaLibraryHint') }}
+            </div>
             <table class="table table-striped w-100" id="mediaGalleryTable">
                 <thead>
                     <tr>
-                        <th width="80px"> {{ __('source') }}</th>
+                        <th width="110px"> {{ __('preview') }}</th>
                         <th width="100%"> {{ __('title') }}</th>
                         <th class="text-end" width="200px"> {{ __('action') }} </th>
                     </tr>
@@ -48,7 +51,7 @@
                         <div class="form-group sourceMediaFile">
                             <label for="source_file" class="form-label">{{ __('sourceFile')}}</label>
                             <div class="file-input form-control w-100">
-                                <input name="file" id="file" type="file" class="form-control" aria-describedby="sourceFile" accept="video/*,video/x-matroska" required>
+                                <input name="file" id="file" type="file" class="form-control" aria-describedby="sourceFile" accept="video/*,video/x-matroska,image/*" required>
                                 <span class='button'>{{ __('choose')}}</span>
                                 <span class='label' data-js-label>{{ __('noFileSelected')}}</label>
                             </div>

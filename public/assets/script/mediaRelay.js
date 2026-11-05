@@ -346,6 +346,50 @@ $(document).ready(function () {
         $("#relayProgress").hide();
     });
 
+    /**
+     * The queue fills the row in asynchronously, so refresh the list a few
+     * times after a link is queued instead of asking the operator to reload.
+     */
+    function pollRelayTable(cycles) {
+        if (cycles <= 0) {
+            return;
+        }
+
+        setTimeout(function () {
+            relayFileTable.ajax.reload(null, false);
+            pollRelayTable(cycles - 1);
+        }, 5000);
+    }
+
+    $(document).on("submit", "#addRelayUrlForm", function (e) {
+        e.preventDefault();
+
+        checkUserType(function () {
+            $.ajax({
+                type: "POST",
+                url: `${domainUrl}relayFileFromUrl`,
+                dataType: "json",
+                data: {
+                    url: $("#relay_url").val().trim(),
+                    name: $("#relay_url_name").val().trim(),
+                },
+                success: function (response) {
+                    if (response.status) {
+                        notify(response.message, "info");
+                        relayFileTable.ajax.reload(null, false);
+                        $("#addRelayUrlModal").modal("hide");
+                        pollRelayTable(12);
+                    } else {
+                        notify(response.message || "Could not queue this link.", "error");
+                    }
+                },
+                error: function (xhr) {
+                    notify((xhr.responseJSON && xhr.responseJSON.message) || "Could not queue this link.", "error");
+                },
+            });
+        });
+    });
+
     /* ------------------------------------------------------------ tiering */
 
     $(document).on("click", ".promote", function (e) {

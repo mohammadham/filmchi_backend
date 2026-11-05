@@ -1,6 +1,6 @@
 @extends('include.app')
 @section('script')
-<script src="{{ asset('assets/script/content_detail.js') }}"></script>
+<script src="{{ asset('assets/script/content_detail.js') }}?v={{ @filemtime(public_path('assets/script/content_detail.js')) }}"></script>
 @endsection
 @section('content')
 

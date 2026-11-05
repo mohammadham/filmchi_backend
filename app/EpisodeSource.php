@@ -16,4 +16,9 @@ class EpisodeSource extends Model
         return $this->hasOne(MediaGallery::class, 'id', 'source');
     }
 
+    public function relayFile()
+    {
+        return $this->belongsTo(RelayFile::class, 'relay_file_id');
+    }
+
 }

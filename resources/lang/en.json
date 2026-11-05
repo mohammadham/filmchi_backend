@@ -257,5 +257,17 @@
     "ingestFailed": "Ingest failed",
     "ingestDone": "Ingested",
     "linkAlive": "link OK",
-    "linkDead": "link dead"
+    "linkDead": "link dead",
+    "provider": "Provider / Mirror",
+    "providerPlaceholder": "Farsanime, Archive.org, ...",
+    "providerHint": "The same quality may be added more than once — one row per provider.",
+    "multipleLinksHint": "Paste one URL per line to add several mirrors for this quality at once.",
+    "mediaLibraryHint": "This is the file library used by Content. Upload a file here (or send a link to Media Relay) and it becomes selectable as a movie/episode source.",
+    "mediaRelayHint": "Hosting and delivery: uploads land on Telegram Drive, popular files are copied to the 9drive cache, and every file gets a public /r link. Relay files are also listed in the Media Gallery so Content can pick them.",
+    "addFromLink": "Add from link",
+    "addFromLinkHint": "The URL is downloaded in the background and stored on Telegram Drive; progress appears in the list.",
+    "inMediaLibrary": "In library",
+    "relayHosted": "Relay",
+    "optional": "Optional",
+    "fileMissing": "File is missing from the library"
 }

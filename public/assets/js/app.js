@@ -74,6 +74,49 @@ $(document).on("click", ".source_file_video", function (e) {
     $("#videoPreviewModal").modal("show");
 });
 
+// One preview path for the media library, relay files and content sources.
+$(document).on("click", "[data-media-preview]", function (e) {
+    e.preventDefault();
+
+    var url = $(this).data("media-preview");
+
+    if (!url) {
+        return;
+    }
+
+    var video = document.getElementById("showVideoUrl");
+    var image = document.getElementById("showImageUrl");
+    var isImage = $(this).data("media-kind") === "image" || /\.(png|jpe?g|webp|gif|avif)(\?|$)/i.test(url);
+
+    if (video && video._hls) {
+        video._hls.destroy();
+        video._hls = null;
+    }
+
+    if (isImage && image) {
+        $(video).hide().removeAttr("src");
+        $(image).attr("src", url).show();
+    } else {
+        if (image) {
+            $(image).hide().removeAttr("src");
+        }
+
+        $(video).show();
+
+        if (window.Hls && /\.m3u8(\?|$)/i.test(url) && video) {
+            var hls = new Hls();
+            hls.loadSource(url);
+            hls.attachMedia(video);
+            video._hls = hls;
+            video.removeAttribute("src");
+        } else {
+            $(video).attr("src", url);
+        }
+    }
+
+    $("#videoPreviewModal").modal("show");
+});
+
 function showSuccessToast() {
     iziToast.show({
         title: "Success",
@@ -170,7 +213,15 @@ $(document).on("hidden.bs.modal", ".modal", function () {
     modal.find("#edit_duration").prop("required", true);
     modal.find(".saveButton, .saveButton1").removeClass("spinning disabled");
 
+    var previewVideo = modal.find("#showVideoUrl")[0];
+
+    if (previewVideo && previewVideo._hls) {
+        previewVideo._hls.destroy();
+        previewVideo._hls = null;
+    }
+
     modal.find("#showVideoUrl").attr("src", ``);
+    modal.find("#showImageUrl").attr("src", ``).hide();
     modal.removeData("bs.modal");
 });
 
