@@ -95,7 +95,6 @@ class AutomationController extends Controller
      */
     public function catalogue(Request $request)
     {
-        $this->reapDeadPass();
         $state = $this->catalogueState();
 
         if ($state['running']) {
@@ -269,13 +268,30 @@ class AutomationController extends Controller
      */
     protected function reapDeadPass(): void
     {
-        if (!Cache::get(SyncFarsanimeCatalogue::RUNNING_KEY)) {
+        $flagged = (bool) Cache::get(SyncFarsanimeCatalogue::RUNNING_KEY);
+        $heartbeat = Cache::get(SyncFarsanimeCatalogue::HEARTBEAT_KEY);
+
+        // The lock, not the cache flag, says whether a process is alive: a
+        // flushed cache must not make a running pass look dead (or the other
+        // way around).
+        $lock = Cache::lock(SyncFarsanimeCatalogue::LOCK_KEY, 10);
+
+        if (!$lock->get()) {
+            if (!$flagged) {
+                Cache::put(SyncFarsanimeCatalogue::RUNNING_KEY, true, 7200);
+                Cache::put(
+                    SyncFarsanimeCatalogue::STARTED_KEY,
+                    $heartbeat ?: now()->toIso8601String(),
+                    7200
+                );
+            }
+
             return;
         }
 
-        $heartbeat = Cache::get(SyncFarsanimeCatalogue::HEARTBEAT_KEY);
+        $lock->release();
 
-        if ($heartbeat && Carbon::parse($heartbeat)->gt(now()->subMinutes(self::CATALOGUE_STALE_MINUTES))) {
+        if (!$flagged) {
             return;
         }
 
@@ -300,6 +316,11 @@ class AutomationController extends Controller
      */
     protected function catalogueState(): array
     {
+        // Heal the flag against the pass lock before reporting it, so the
+        // orchestrator never sees a dead pass as running (or a live one as
+        // idle) just because the cache was flushed.
+        $this->reapDeadPass();
+
         $intervalHours = max(1, (int) config('media_relay.automation.catalogue.interval_hours', 6));
 
         $running = (bool) Cache::get(SyncFarsanimeCatalogue::RUNNING_KEY);

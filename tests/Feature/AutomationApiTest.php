@@ -76,6 +76,8 @@ class AutomationApiTest extends TestCase
     {
         config(['media_relay.automation.token' => 'secret-token']);
 
+        // A live pass holds its lock; the flag alone is not proof of life.
+        $this->assertTrue(Cache::lock(SyncFarsanimeCatalogue::LOCK_KEY, 600)->get());
         Cache::put(SyncFarsanimeCatalogue::RUNNING_KEY, true, 600);
         Cache::forever(SyncFarsanimeCatalogue::HEARTBEAT_KEY, now()->toIso8601String());
 
