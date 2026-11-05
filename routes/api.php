@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\ActorController;
+use App\Http\Controllers\AutomationController;
 use App\Http\Controllers\ContentController;
 use App\Http\Controllers\CustomAdsController;
 use App\Http\Controllers\SettingController;
@@ -40,3 +41,15 @@ Route::post('increaseAdMetric', [CustomAdsController::class, 'increaseAdMetric']
 
 Route::post('fetchActorDetails', [ActorController::class, 'fetchActorDetails'])->middleware('checkHeader');
 Route::post('deleteFile', [ActorController::class, 'deleteFile'])->middleware('checkHeader');
+
+/*
+|--------------------------------------------------------------------------
+| Automation API (n8n orchestrator)
+|--------------------------------------------------------------------------
+| Token-protected, session-free endpoints: read the ingest backlog and queue
+| the next slice of episode sources. The single queue worker does the pulling.
+*/
+Route::middleware('automationToken')->group(function () {
+    Route::get('automation/status', [AutomationController::class, 'status']);
+    Route::post('automation/queue', [AutomationController::class, 'queue']);
+});

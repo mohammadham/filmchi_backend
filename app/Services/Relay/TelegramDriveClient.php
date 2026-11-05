@@ -112,10 +112,20 @@ class TelegramDriveClient
     protected function authHeaders(): array
     {
         if ($this->hasApiKey()) {
-            return [
+            $key = (string) $this->config['api_key'];
+
+            $headers = [
                 'Accept' => 'application/json',
-                'X-API-Key' => (string) $this->config['api_key'],
+                'X-API-Key' => $key,
             ];
+
+            // Panel-issued keys (td_…) are also valid as bearer tokens, and
+            // the read endpoints only accept that form, so send both.
+            if (str_starts_with($key, 'td_')) {
+                $headers['Authorization'] = 'Bearer ' . $key;
+            }
+
+            return $headers;
         }
 
         $token = $this->token();

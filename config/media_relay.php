@@ -35,6 +35,23 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Automation API (n8n orchestrator)
+    |--------------------------------------------------------------------------
+    | These endpoints let an external scheduler (n8n) read the ingest backlog
+    | and queue the next slice of sources without an admin session. The shared
+    | token is required; an empty value disables the endpoints entirely.
+    |
+    | The disk floor stops the workflow long before the worker fills the disk,
+    | and max_batch caps how much work may sit in the queue at once.
+    */
+    'automation' => [
+        'token' => env('RELAY_AUTOMATION_TOKEN', ''),
+        'min_free_gb' => (int) env('RELAY_AUTOMATION_MIN_FREE_GB', 25),
+        'max_batch' => (int) env('RELAY_AUTOMATION_MAX_BATCH', 3),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | External link health checks
     |--------------------------------------------------------------------------
     | sources:check probes external source links; a link is declared dead

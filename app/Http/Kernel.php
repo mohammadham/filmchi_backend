@@ -68,5 +68,6 @@ class Kernel extends HttpKernel
         'checkLogin' => \App\Http\Middleware\CheckLogin::class,
         'checkHeader' => \App\Http\Middleware\CheckHeader::class,
         'checkRole' =>\App\Http\Middleware\checkRole::class,
+        'automationToken' => \App\Http\Middleware\VerifyAutomationToken::class,
     ];
 }
