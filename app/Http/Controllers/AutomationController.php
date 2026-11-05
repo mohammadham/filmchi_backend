@@ -277,19 +277,27 @@ class AutomationController extends Controller
         $lock = Cache::lock(SyncFarsanimeCatalogue::LOCK_KEY, 10);
 
         if (!$lock->get()) {
-            if (!$flagged) {
-                Cache::put(SyncFarsanimeCatalogue::RUNNING_KEY, true, 7200);
-                Cache::put(
-                    SyncFarsanimeCatalogue::STARTED_KEY,
-                    $heartbeat ?: now()->toIso8601String(),
-                    7200
-                );
+            $beat = $heartbeat ? Carbon::parse($heartbeat) : null;
+            $alive = $beat && $beat->gt(now()->subMinutes(self::CATALOGUE_STALE_MINUTES));
+
+            if ($alive) {
+                if (!$flagged) {
+                    Cache::put(SyncFarsanimeCatalogue::RUNNING_KEY, true, 7200);
+                    Cache::put(SyncFarsanimeCatalogue::STARTED_KEY, $heartbeat, 7200);
+                }
+
+                return;
             }
 
-            return;
+            // A deploy kills the child without releasing its lock, and the lock
+            // lives for two hours; releasing it here keeps a silent pass from
+            // blocking the next one for the rest of the afternoon.
+            Cache::lock(SyncFarsanimeCatalogue::LOCK_KEY)->forceRelease();
+            $flagged = true;
+            $heartbeat = $beat ? $beat->toIso8601String() : null;
+        } else {
+            $lock->release();
         }
-
-        $lock->release();
 
         if (!$flagged) {
             return;
