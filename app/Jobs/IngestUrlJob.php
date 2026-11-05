@@ -178,7 +178,10 @@ class IngestUrlJob implements ShouldQueue
     {
         $context = stream_context_create(['http' => [
             'method' => 'GET',
-            'timeout' => (int) config('media_relay.ingest.timeout', 3600),
+            // Per-read timeout: this is a stall guard, not a cap on the whole
+            // transfer, so a slow-but-alive source keeps working while a dead
+            // one frees the single worker within minutes.
+            'timeout' => (int) config('media_relay.ingest.stall_timeout', 300),
             'user_agent' => (string) config('media_relay.relay.user_agent', 'flixy-media-relay/1.0'),
             'follow_location' => 1,
         ]]);
@@ -246,6 +249,14 @@ class IngestUrlJob implements ShouldQueue
 
         if ($received === 0) {
             throw new \RuntimeException('the source URL returned no bytes');
+        }
+
+        if ($expected > 0 && $received < $expected) {
+            throw new \RuntimeException(sprintf(
+                'the transfer stopped early: %d of %d bytes (stall or dropped connection)',
+                $received,
+                $expected
+            ));
         }
     }
 

@@ -124,6 +124,24 @@ class AutomationApiTest extends TestCase
             ->assertJsonPath('catalogue.due', true);
     }
 
+    public function test_a_dead_pass_is_reaped_and_backed_off()
+    {
+        config(['media_relay.automation.token' => 'secret-token']);
+
+        Cache::put(SyncFarsanimeCatalogue::RUNNING_KEY, true, 7200);
+        Cache::forget(SyncFarsanimeCatalogue::LAST_PASS_KEY);
+        Cache::forever(
+            SyncFarsanimeCatalogue::HEARTBEAT_KEY,
+            now()->subMinutes(30)->toIso8601String()
+        );
+
+        $this->postJson('/api/automation/catalogue', [], ['X-Fliksy-Token' => 'secret-token'])
+            ->assertStatus(202)
+            ->assertJsonPath('reason', 'not_due')
+            ->assertJsonPath('catalogue.running', false)
+            ->assertJsonPath('catalogue.last_exit_code', 'aborted');
+    }
+
     public function test_endpoints_are_disabled_without_a_configured_token()
     {
         config(['media_relay.automation.token' => '']);

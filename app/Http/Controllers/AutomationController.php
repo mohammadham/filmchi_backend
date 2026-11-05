@@ -95,6 +95,7 @@ class AutomationController extends Controller
      */
     public function catalogue(Request $request)
     {
+        $this->reapDeadPass();
         $state = $this->catalogueState();
 
         if ($state['running']) {
@@ -125,9 +126,13 @@ class AutomationController extends Controller
             ], 202);
         }
 
+        // setsid puts the pass in its own session, so a recycled php-fpm worker
+        // (or a request that ends) can no longer take it down with its group.
         $log = storage_path('logs/catalogue-sync.log');
+        $setsid = @is_executable('/usr/bin/setsid') ? 'setsid ' : '';
         $command = sprintf(
-            'nohup %s %s farsanime:sync --sleep=%d >> %s 2>&1 &',
+            'nohup %s%s %s farsanime:sync --sleep=%d >> %s 2>&1 &',
+            $setsid,
             escapeshellarg((string) env('PHP_CLI_BINARY', 'php')),
             escapeshellarg(base_path('artisan')),
             (int) config('media_relay.automation.catalogue.sleep_ms', 250),
@@ -255,6 +260,37 @@ class AutomationController extends Controller
             'released_stale' => $released,
             'disk_free_gb' => $freeGb,
         ]);
+    }
+
+    /**
+     * A pass that a deploy (or a kill) took down leaves its flag behind. Clear
+     * it and schedule the retry an hour later, so a crash loop cannot turn into
+     * a pass every ten minutes.
+     */
+    protected function reapDeadPass(): void
+    {
+        if (!Cache::get(SyncFarsanimeCatalogue::RUNNING_KEY)) {
+            return;
+        }
+
+        $heartbeat = Cache::get(SyncFarsanimeCatalogue::HEARTBEAT_KEY);
+
+        if ($heartbeat && Carbon::parse($heartbeat)->gt(now()->subMinutes(self::CATALOGUE_STALE_MINUTES))) {
+            return;
+        }
+
+        $intervalHours = max(1, (int) config('media_relay.automation.catalogue.interval_hours', 6));
+        $diedAt = $heartbeat ? Carbon::parse($heartbeat) : now();
+
+        Cache::put(
+            SyncFarsanimeCatalogue::LAST_PASS_KEY,
+            $diedAt->copy()->subHours($intervalHours - 1)->toIso8601String(),
+            now()->addDays(30)
+        );
+        Cache::put(SyncFarsanimeCatalogue::LAST_EXIT_KEY, 'aborted', now()->addDays(30));
+        Cache::forget(SyncFarsanimeCatalogue::RUNNING_KEY);
+        Cache::forget(SyncFarsanimeCatalogue::STARTED_KEY);
+        Cache::forget(SyncFarsanimeCatalogue::HEARTBEAT_KEY);
     }
 
     /**

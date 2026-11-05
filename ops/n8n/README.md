@@ -44,7 +44,10 @@ growing without anyone touching the server.
   releases it back to pending and reports `released_stale`.
 - **One catalogue pass at a time.** The pass takes a cache lock, and a second
   `catalogue` call answers `202 already_running`; a pass whose heartbeat stops
-  for 15 minutes is treated as dead so a deploy cannot wedge it.
+  for 15 minutes is treated as dead, cleared, and retried an hour later.
+- **Stalled downloads give up.** `RELAY_INGEST_STALL_TIMEOUT` (300 s) aborts a
+  transfer that stops receiving bytes, and a short read is never uploaded, so a
+  dead source costs minutes instead of holding the worker for an hour.
 - **Catalogue crawl is gentle.** `RELAY_AUTOMATION_CATALOGUE_SLEEP` (250 ms)
   paces series pages and probes run four at a time, so the pass does not fight
   the download for bandwidth.

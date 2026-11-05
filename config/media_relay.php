@@ -31,6 +31,9 @@ return [
     'ingest' => [
         'enabled' => (bool) env('RELAY_INGEST', true),
         'timeout' => (int) env('RELAY_INGEST_TIMEOUT', 3600),
+        // Seconds a download may go without a single byte before it is treated
+        // as dead. Per read, so a slow source is unaffected.
+        'stall_timeout' => (int) env('RELAY_INGEST_STALL_TIMEOUT', 300),
     ],
 
     /*
