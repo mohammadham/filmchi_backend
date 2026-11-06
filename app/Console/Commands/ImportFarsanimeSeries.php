@@ -722,6 +722,32 @@ class ImportFarsanimeSeries extends Command
 
     /* --------------------------------------------------------------- storage */
 
+    /**
+     * Artwork is copied to our own disk once per title, so the panel never
+     * depends on the source host staying up or keeping its upload paths. The
+     * remote URL is the fallback: an image outage must not block an import.
+     */
+    protected function localPoster(?string $url, Content $content): ?string
+    {
+        $url = (string) $url;
+
+        if ($url === '') {
+            return null;
+        }
+
+        $store = app(\App\Services\PosterStore::class);
+
+        if ($store->isLocal($url)) {
+            return $url;
+        }
+
+        if ($content->exists && $store->isLocal($content->vertical_poster)) {
+            return (string) $content->vertical_poster;
+        }
+
+        return $store->localize($url) ?: $url;
+    }
+
     protected function store(array $page, array $seasons, string $slug): void
     {
         $content = $this->firstOrNew(Content::class, [
@@ -734,8 +760,9 @@ class ImportFarsanimeSeries extends Command
         $content->description = $page['description'] ?: ($content->description ?: '');
         $content->release_year = $this->releaseYear($page['year'], $page['description'], $content->release_year);
         $content->tags = empty($page['tags']) ? $content->tags : implode(', ', $page['tags']);
-        $content->vertical_poster = $page['poster'] ?: $content->vertical_poster;
-        $content->horizontal_poster = $page['poster'] ?: $content->horizontal_poster;
+        $poster = $this->localPoster($page['poster'] ?? null, $content);
+        $content->vertical_poster = $poster ?: $content->vertical_poster;
+        $content->horizontal_poster = $poster ?: $content->horizontal_poster;
         $content->genre_ids = $this->genreIds($page['genres'], $content->genre_ids) ?: ($content->genre_ids ?: '');
         $content->language_id = $this->languageId($page['language'])
             ?: ($content->language_id ?: $this->fallbackLanguageId());
@@ -764,7 +791,7 @@ class ImportFarsanimeSeries extends Command
 
                 $episode->title = $episode->title ?: 'Episode ' . $number;
                 $episode->description = $episode->description ?: ($page['description'] ?: '');
-                $episode->thumbnail = $episode->thumbnail ?: $page['poster'];
+                $episode->thumbnail = $episode->thumbnail ?: ($poster ?: $page['poster']);
                 $episode->save();
 
                 foreach ($qualities as $quality => $url) {

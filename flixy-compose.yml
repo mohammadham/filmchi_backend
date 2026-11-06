@@ -45,7 +45,7 @@ services:
       - --queue=default
       - --sleep=1
       - --tries=3
-      - --timeout=3600
+      - --timeout=7000
       - --max-time=3600
     volumes:
       - ./storage/app:/app/storage/app

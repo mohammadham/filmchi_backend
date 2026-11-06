@@ -34,6 +34,11 @@ return [
         // Seconds a download may go without a single byte before it is treated
         // as dead. Per read, so a slow source is unaffected.
         'stall_timeout' => (int) env('RELAY_INGEST_STALL_TIMEOUT', 300),
+        // The scraper host throttles each connection hard, so one file is fetched
+        // over several ranged connections. Sustained throughput measured on
+        // di.farsanime.ir: 8 conns = 327 KB/s, 24 = 838, 32 = 925, 48 = 1072.
+        // Twenty-four keeps most of the gain without a socket pile per file.
+        'connections' => (int) env('RELAY_INGEST_CONNECTIONS', 24),
     ],
 
     /*

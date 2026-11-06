@@ -171,10 +171,238 @@ class IngestUrlJob implements ShouldQueue
     }
 
     /**
-     * Stream the remote file to disk, updating the ingest progress every
-     * few percent so the panel can follow along.
+     * Fetch the remote file to disk.
+     *
+     * The scraper host throttles every connection to about 100 KB/s, so when
+     * it advertises byte ranges the file is pulled over several connections at
+     * once; a source without range support falls back to a plain stream.
      */
     protected function download($source, string $part): void
+    {
+        $probe = $this->probeSource();
+        $maxBytes = (int) config('media_relay.upload.max_size', 2048) * 1048576;
+
+        if ($probe['size'] > $maxBytes) {
+            throw new \RuntimeException(sprintf(
+                'Remote file is %d MB, above the %d MB limit for direct Telegram Drive uploads. '
+                . 'The split/merge scenario for large files is not wired up yet.',
+                (int) ($probe['size'] / 1048576),
+                (int) config('media_relay.upload.max_size', 2048)
+            ));
+        }
+
+        if ($probe['ranges'] && $probe['size'] > 0 && $this->connectionCount() > 1) {
+            try {
+                $this->downloadSegmented($source, $part, $probe['size']);
+
+                return;
+            } catch (Throwable $e) {
+                // A source can advertise ranges and still misbehave mid-transfer;
+                // the plain stream below is the safety net, not a second failure.
+                Log::info('Segmented ingest download failed; retrying as one stream', [
+                    'source_id' => $this->sourceId,
+                    'message' => $e->getMessage(),
+                ]);
+
+                @unlink($part);
+            }
+        }
+
+        $this->downloadStream($source, $part, $probe['size']);
+    }
+
+    /** Connections used for a single file. */
+    protected function connectionCount(): int
+    {
+        return max(1, (int) config('media_relay.ingest.connections', 8));
+    }
+
+    /**
+     * Ask for two bytes and read the answer: the total size and whether the
+     * source honours Range requests. A source that ignores the range answers
+     * 200 with the full length, which lands here as ranges = false.
+     */
+    protected function probeSource(): array
+    {
+        $context = stream_context_create(['http' => [
+            'method' => 'GET',
+            'header' => "Range: bytes=0-1\r\n",
+            'timeout' => 30,
+            'user_agent' => (string) config('media_relay.relay.user_agent', 'flixy-media-relay/1.0'),
+            'follow_location' => 1,
+        ]]);
+
+        $remote = @fopen($this->url, 'rb', false, $context);
+
+        if ($remote === false) {
+            throw new \RuntimeException('could not open the source URL');
+        }
+
+        $headers = $http_response_header ?? [];
+
+        @fread($remote, 2);
+        fclose($remote);
+
+        $size = 0;
+        $ranges = false;
+
+        foreach ($headers as $header) {
+            $header = (string) $header;
+
+            if (stripos($header, 'content-range:') === 0 && preg_match('#/(\d+)\s*$#', $header, $m)) {
+                $size = (int) $m[1];
+                $ranges = true;
+            } elseif (stripos($header, 'content-length:') === 0 && $size === 0) {
+                $size = (int) trim(substr($header, 15));
+            } elseif (stripos($header, 'accept-ranges:') === 0 && stripos($header, 'bytes') !== false) {
+                $ranges = true;
+            }
+        }
+
+        return ['size' => $size, 'ranges' => $ranges];
+    }
+
+    /**
+     * Split the file into equal ranged chunks and pull them concurrently into
+     * one pre-sized file. Writing at an offset keeps the completed chunks on
+     * disk and avoids doubling the space a concatenation pass would need.
+     */
+    protected function downloadSegmented($source, string $part, int $total): void
+    {
+        $minimumChunk = 2 * 1048576;
+        $connections = max(1, min($this->connectionCount(), (int) ceil($total / $minimumChunk)));
+        $chunk = (int) ceil($total / $connections);
+
+        $out = @fopen($part, 'c+b');
+
+        if ($out === false) {
+            throw new \RuntimeException('could not open the ingest target file');
+        }
+
+        if (!ftruncate($out, $total)) {
+            fclose($out);
+
+            throw new \RuntimeException('could not reserve space for the ingest target file');
+        }
+
+        $multi = curl_multi_init();
+        $handles = [];
+        $written = [];
+        $expectedBytes = [];
+        $received = 0;
+
+        try {
+            for ($i = 0; $i < $connections; $i++) {
+                $start = $i * $chunk;
+
+                if ($start >= $total) {
+                    break;
+                }
+
+                $length = min($chunk, $total - $start);
+                $written[$i] = 0;
+                $expectedBytes[$i] = $length;
+
+                $writer = function ($ch, string $data) use ($out, $start, $length, $i, &$written, &$received) {
+                    $remaining = $length - $written[$i];
+
+                    // A source that ignored the range and started sending the
+                    // whole file would run past the chunk; stop it there.
+                    if ($remaining <= 0) {
+                        return 0;
+                    }
+
+                    if (strlen($data) > $remaining) {
+                        $data = substr($data, 0, $remaining);
+                    }
+
+                    fseek($out, $start + $written[$i]);
+                    $bytes = (int) fwrite($out, $data);
+                    $written[$i] += $bytes;
+                    $received += $bytes;
+
+                    return strlen($data);
+                };
+
+                $handle = curl_init($this->url);
+
+                curl_setopt_array($handle, [
+                    CURLOPT_RANGE => $start . '-' . ($start + $length - 1),
+                    CURLOPT_FOLLOWLOCATION => true,
+                    CURLOPT_MAXREDIRS => 3,
+                    CURLOPT_CONNECTTIMEOUT => 30,
+                    CURLOPT_LOW_SPEED_LIMIT => 1,
+                    CURLOPT_LOW_SPEED_TIME => (int) config('media_relay.ingest.stall_timeout', 300),
+                    CURLOPT_USERAGENT => (string) config('media_relay.relay.user_agent', 'flixy-media-relay/1.0'),
+                    CURLOPT_WRITEFUNCTION => $writer,
+                ]);
+
+                curl_multi_add_handle($multi, $handle);
+                $handles[$i] = $handle;
+            }
+
+            $lastUpdate = microtime(true);
+
+            do {
+                $status = curl_multi_exec($multi, $running);
+
+                if ($running) {
+                    curl_multi_select($multi, 1.0);
+                }
+
+                if (microtime(true) - $lastUpdate >= 5) {
+                    $this->setStatus($source, 'downloading', (int) min(100, $received / $total * 100));
+                    $lastUpdate = microtime(true);
+                }
+            } while ($running && $status === CURLM_OK);
+
+            $problem = null;
+
+            foreach ($handles as $i => $handle) {
+                $errno = curl_errno($handle);
+                $code = (int) curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
+
+                if ($errno !== 0) {
+                    $problem = $problem ?: curl_error($handle);
+                } elseif ($code !== 206) {
+                    $problem = $problem ?: 'the source answered ' . $code . ' to a ranged request';
+                } elseif ($written[$i] !== $expectedBytes[$i]) {
+                    $problem = $problem ?: sprintf(
+                        'chunk %d stopped at %d of %d bytes',
+                        $i,
+                        $written[$i],
+                        $expectedBytes[$i]
+                    );
+                }
+
+                curl_multi_remove_handle($multi, $handle);
+                curl_close($handle);
+            }
+        } finally {
+            curl_multi_close($multi);
+            fflush($out);
+            fclose($out);
+        }
+
+        if (!empty($problem)) {
+            throw new \RuntimeException($problem);
+        }
+
+        clearstatcache(true, $part);
+
+        if ((int) filesize($part) !== $total) {
+            throw new \RuntimeException(sprintf(
+                'the assembled file is %d bytes, expected %d',
+                (int) filesize($part),
+                $total
+            ));
+        }
+    }
+
+    /**
+     * Single-connection fallback for sources without range support.
+     */
+    protected function downloadStream($source, string $part, int $expected): void
     {
         $context = stream_context_create(['http' => [
             'method' => 'GET',
@@ -192,27 +420,13 @@ class IngestUrlJob implements ShouldQueue
             throw new \RuntimeException("could not open the source URL");
         }
 
-        $meta = stream_get_meta_data($remote);
-        $expected = 0;
-
-        foreach ($meta['wrapper_data'] ?? [] as $header) {
-            if (stripos((string) $header, 'content-length:') === 0) {
-                $expected = (int) trim(substr((string) $header, 15));
-                break;
+        if ($expected === 0) {
+            foreach (stream_get_meta_data($remote)['wrapper_data'] ?? [] as $header) {
+                if (stripos((string) $header, 'content-length:') === 0) {
+                    $expected = (int) trim(substr((string) $header, 15));
+                    break;
+                }
             }
-        }
-
-        $maxBytes = (int) config('media_relay.upload.max_size', 2048) * 1048576;
-
-        if ($expected > $maxBytes) {
-            fclose($remote);
-
-            throw new \RuntimeException(sprintf(
-                'Remote file is %d MB, above the %d MB limit for direct Telegram Drive uploads. '
-                . 'The split/merge scenario for large files is not wired up yet.',
-                (int) ($expected / 1048576),
-                (int) config('media_relay.upload.max_size', 2048)
-            ));
         }
 
         $out = @fopen($part, 'wb');
