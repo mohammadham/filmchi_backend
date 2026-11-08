@@ -42,17 +42,9 @@ class Thumbnail
 
             $at = self::probePosition($ffprobe, $sourcePath);
 
-            $command = [$ffmpeg, '-y', '-i', $sourcePath, '-frames:v', '1'];
-
-            if ($at > 0) {
-                array_unshift($command, $at);
-                array_unshift($command, '-ss');
-                array_splice($command, 3, 0, ['-i']);
-                array_splice($command, 4, 1);
-                array_unshift($command, $ffmpeg);
-                // rebuild cleanly below instead of splicing games
-                $command = [$ffmpeg, '-ss', (string) $at, '-i', $sourcePath, '-frames:v', '1'];
-            }
+            $command = $at > 0
+                ? [$ffmpeg, '-y', '-ss', (string) $at, '-i', $sourcePath, '-frames:v', '1']
+                : [$ffmpeg, '-y', '-i', $sourcePath, '-frames:v', '1'];
 
             $result = self::run($command, $destPath, $width);
 
@@ -92,7 +84,7 @@ class Thumbnail
     }
 
     /**
-     * Sample point inside the video: ~10% in, at least 2s, capped at 120s.
+     * Sample point inside the video: the middle frame.
      */
     protected static function probePosition(string $ffprobe, string $sourcePath): int
     {
@@ -117,7 +109,9 @@ class Thumbnail
                 return 0;
             }
 
-            return min(120, max(2, (int) ($duration * 0.1)));
+            // A middle frame represents the whole clip; the old 10%-in
+            // sample (capped at 120s) showed the opening for long videos.
+            return max(0, (int) round($duration / 2));
         } catch (\Throwable $e) {
             return 0;
         }
