@@ -26,6 +26,7 @@ class CheckSourceLinks extends Command
     public function handle()
     {
         $staleHours = max(1, (int) $this->option('stale-hours'));
+        $limit = 50;
         $dispatched = 0;
 
         foreach (['content' => ContentSource::class, 'episode' => EpisodeSource::class] as $type => $model) {
@@ -39,7 +40,7 @@ class CheckSourceLinks extends Command
                         ->orWhere('link_checked_at', '<', now()->subHours($staleHours));
                 });
 
-            foreach ($query->get() as $source) {
+            foreach ($query->limit($limit)->get() as $source) {
                 if (empty($source->source) || !str_starts_with((string) $source->source, 'http')) {
                     continue;
                 }
