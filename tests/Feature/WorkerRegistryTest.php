@@ -34,18 +34,54 @@ class WorkerRegistryTest extends TestCase
         ], $attributes));
     }
 
-    public function test_pool_skips_disabled_cooldown_and_failed_workers(): void
+    public function test_pool_skips_disabled_cooling_and_parks_failed_last(): void
     {
         $fast = $this->worker(['name' => 'fast', 'last_speed_bps' => 5000000, 'last_latency_ms' => 100]);
         $slow = $this->worker(['name' => 'slow', 'last_speed_bps' => 1000000, 'last_latency_ms' => 50]);
         $unknown = $this->worker(['name' => 'unknown', 'last_status' => RelayWorker::STATUS_UNKNOWN, 'last_latency_ms' => 500]);
         $this->worker(['name' => 'disabled', 'enabled' => false, 'last_speed_bps' => 9000000]);
         $this->worker(['name' => 'cooling', 'cooldown_until' => now()->addMinutes(5)]);
-        $this->worker(['name' => 'failed', 'last_status' => RelayWorker::STATUS_FAILED, 'last_speed_bps' => 9000000]);
+        $failed = $this->worker(['name' => 'failed', 'last_status' => RelayWorker::STATUS_FAILED, 'last_speed_bps' => 9000000]);
 
         $pool = app(WorkerRegistry::class)->selectPool('https://di.farsanime.ir/test.mp4');
 
-        $this->assertSame([$fast->id, $slow->id, $unknown->id], $pool->pluck('id')->all());
+        // Disabled and still-cooling Workers are out; a failed one stays
+        // eligible but only after every healthy Worker has been tried.
+        $this->assertSame([$fast->id, $slow->id, $unknown->id, $failed->id], $pool->pluck('id')->all());
+    }
+
+    public function test_recovered_failed_worker_returns_to_the_pool_after_cooldown(): void
+    {
+        // The production outage: every Worker failed once, their cooldowns
+        // expired, and ingest kept failing on the unreachable direct route.
+        $recovered = $this->worker([
+            'name' => 'recovered',
+            'last_status' => RelayWorker::STATUS_FAILED,
+            'failure_count' => 1,
+            'cooldown_until' => now()->subMinute(),
+        ]);
+
+        $pool = app(WorkerRegistry::class)->selectPool('https://di.farsanime.ir/test.mp4');
+
+        $this->assertSame([$recovered->id], $pool->pluck('id')->all());
+    }
+
+    public function test_pool_prefers_least_recently_used_before_speed(): void
+    {
+        $fast = $this->worker([
+            'name' => 'fast',
+            'last_speed_bps' => 9000000,
+            'last_used_at' => now(),
+        ]);
+        $slow = $this->worker([
+            'name' => 'slow',
+            'last_speed_bps' => 1000000,
+            'last_used_at' => now()->subMinute(),
+        ]);
+
+        $pool = app(WorkerRegistry::class)->selectPool('https://di.farsanime.ir/test.mp4');
+
+        $this->assertSame([$slow->id, $fast->id], $pool->pluck('id')->all());
     }
 
     public function test_route_for_builds_a_ranged_worker_url(): void

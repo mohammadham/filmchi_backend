@@ -118,20 +118,27 @@ class WorkerRegistry
         try {
             $workers = RelayWorker::query()
                 ->available()
-                ->where('last_status', '!=', RelayWorker::STATUS_FAILED)
                 ->when(!empty($excludeIds), function ($query) use ($excludeIds) {
                     $query->whereNotIn('id', array_map('intval', $excludeIds));
                 })
-                // Highest measured throughput first. Unknown throughput is
-                // placed after measured ones, then latency and priority break
-                // ties. last_used_at keeps equal Workers round-robin.
+                // A failed status is not a permanent ban: the cooldown above is
+                // what actually parks a Worker. Keeping failed Workers in the
+                // pool (last, behind every healthy one) is what lets them come
+                // back on their own instead of shrinking the pool until a manual
+                // "Test All" — which used to leave ingest on the dead direct
+                // route and fail every file.
+                ->orderByRaw('CASE WHEN last_status = ? THEN 1 ELSE 0 END', [RelayWorker::STATUS_FAILED])
+                // Least-recently-used first. Speed is only a tie-breaker:
+                // otherwise the fastest Worker would take every in-flight
+                // slot while the rest of the pool sat idle. Unknown speed and
+                // latency are placed after measured values.
+                ->orderByRaw('last_used_at IS NOT NULL ASC')
+                ->orderBy('last_used_at')
                 ->orderByRaw('CASE WHEN last_speed_bps IS NULL THEN 1 ELSE 0 END')
                 ->orderByDesc('last_speed_bps')
                 ->orderByRaw('CASE WHEN last_latency_ms IS NULL THEN 1 ELSE 0 END')
                 ->orderBy('last_latency_ms')
                 ->orderBy('priority')
-                ->orderByRaw('last_used_at IS NOT NULL ASC')
-                ->orderBy('last_used_at')
                 ->orderBy('id')
                 ->get();
 

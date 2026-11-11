@@ -381,25 +381,29 @@ class IngestUrlJob implements ShouldQueue
     }
 
     /**
-     * Split the file into equal ranged chunks and pull them concurrently into
-     * one pre-sized file. Writing at an offset keeps the completed chunks on
-     * disk and avoids doubling the space a concatenation pass would need.
+     * Pull the file as a dynamic queue of small ranged chunks.
+     *
+     * Instead of slicing the file into one big equal chunk per connection
+     * (100-230 MB each), the file is cut into fixed-size chunks and every
+     * finished slot immediately picks up the next chunk. Fast Workers
+     * naturally take more chunks, a retry only repeats a few MB instead of a
+     * couple hundred, and no single chunk can sit for minutes without
+     * progress. Writing at an offset keeps completed chunks on disk.
      */
     protected function downloadSegmented($source, string $part, int $total): void
     {
-        $minimumChunk = 2 * 1048576;
+        $chunkSize = max(1, (int) config('media_relay.ingest.chunk_mb', 8)) * 1048576;
         $registry = app(WorkerRegistry::class);
         $pool = $registry->selectPool($this->url);
-        $connections = $this->connectionCount();
 
-        // One chunk per usable Worker uses the whole healthy pool. Without
-        // Workers the existing direct connection count still applies.
-        if ($pool->isNotEmpty()) {
-            $connections = min($connections, $pool->count());
-        }
+        // Each concurrent slot is one connection. With Workers the pool size
+        // times streams-per-worker sets the width and RELAY_INGEST_CONNECTIONS
+        // stays the ceiling; without Workers the direct count applies alone.
+        $slots = $pool->isNotEmpty()
+            ? min($pool->count() * max(1, (int) config('media_relay.ingest.streams_per_worker', 1)), $this->connectionCount())
+            : $this->connectionCount();
 
-        $connections = max(1, min($connections, (int) ceil($total / $minimumChunk)));
-        $chunk = (int) ceil($total / $connections);
+        $slots = max(1, min($slots, (int) ceil($total / $chunkSize)));
 
         $out = @fopen($part, 'c+b');
 
@@ -413,59 +417,91 @@ class IngestUrlJob implements ShouldQueue
             throw new \RuntimeException('could not reserve space for the ingest target file');
         }
 
+        // Pending queue: chunk index => ['start' => int, 'length' => int].
+        $pending = [];
+        $chunkCount = (int) ceil($total / $chunkSize);
+
+        for ($i = 0; $i < $chunkCount; $i++) {
+            $start = $i * $chunkSize;
+            $pending[$i] = ['start' => $start, 'length' => min($chunkSize, $total - $start)];
+        }
+
         $multi = curl_multi_init();
-        $handles = [];
-        $routes = [];
-        $written = [];
-        $expectedBytes = [];
-        $failed = [];
+        $handles = [];   // chunk index => curl handle
+        $routes = [];    // chunk index => route used
+        $written = [];   // chunk index => bytes written
+        $lengths = [];   // chunk index => expected bytes
+        $inFlight = [];  // chunk index => true, ordered by dispatch
+        $failed = [];    // chunk index => error message
         $received = 0;
 
         try {
-            for ($i = 0; $i < $connections; $i++) {
-                $start = $i * $chunk;
+            // Track the curl handle object hash -> chunk index. The write
+            // callback only receives the handle, and resource ids get reused,
+            // so an explicit map set at dispatch time is the safe binding.
+            $handleChunkMap = [];
 
-                if ($start >= $total) {
-                    break;
+            $bindHandle = function ($handle, int $index) use (&$handleChunkMap) {
+                $handleChunkMap[spl_object_id($handle)] = $index;
+            };
+
+            $chunkFor = function ($handle) use (&$handleChunkMap) {
+                return $handleChunkMap[spl_object_id($handle)] ?? null;
+            };
+
+            $writer = function ($ch, string $data) use ($out, $chunkSize, $chunkFor, &$lengths, &$written, &$received) {
+                $index = $chunkFor($ch);
+
+                if ($index === null) {
+                    return 0;
                 }
 
-                $length = min($chunk, $total - $start);
-                $written[$i] = 0;
-                $expectedBytes[$i] = $length;
+                $start = $index * $chunkSize;
+                $remaining = ($lengths[$index] ?? 0) - ($written[$index] ?? 0);
 
-                $writer = function ($ch, string $data) use ($out, $start, $length, $i, &$written, &$received) {
-                    $remaining = $length - $written[$i];
+                // A source that ignored the range and started sending the
+                // whole file would run past the chunk; stop it there.
+                if ($remaining <= 0) {
+                    return 0;
+                }
 
-                    // A source that ignored the range and started sending the
-                    // whole file would run past the chunk; stop it there.
-                    if ($remaining <= 0) {
-                        return 0;
-                    }
+                if (strlen($data) > $remaining) {
+                    $data = substr($data, 0, $remaining);
+                }
 
-                    if (strlen($data) > $remaining) {
-                        $data = substr($data, 0, $remaining);
-                    }
+                fseek($out, $start + ($written[$index] ?? 0));
+                $bytes = fwrite($out, $data);
 
-                    fseek($out, $start + $written[$i]);
-                    $bytes = (int) fwrite($out, $data);
-                    $written[$i] += $bytes;
-                    $received += $bytes;
+                if ($bytes === false || $bytes !== strlen($data)) {
+                    return 0;
+                }
 
-                    return strlen($data);
-                };
+                $written[$index] = ($written[$index] ?? 0) + $bytes;
+                $received += $bytes;
+
+                return $bytes;
+            };
+
+            $startChunk = function (int $index) use ($registry, $multi, &$pending, &$handles, &$routes, &$written, &$lengths, &$inFlight, $writer, $chunkSize, $bindHandle) {
+                $meta = $pending[$index];
+                unset($pending[$index]);
+
+                $start = $meta['start'];
+                $length = $meta['length'];
+                $written[$index] = 0;
+                $lengths[$index] = $length;
+                $inFlight[$index] = true;
 
                 $range = $start . '-' . ($start + $length - 1);
-                $worker = $pool->isNotEmpty() ? $pool->get($i % $pool->count()) : null;
-                $route = $worker
-                    ? $registry->routeFor($worker, $this->url, $range)
-                    : $registry->route($this->url, $range);
-                $routes[$i] = $route;
+                $route = $registry->route($this->url, $range);
+                $routes[$index] = $route;
                 $options = [
                     CURLOPT_FOLLOWLOCATION => true,
                     CURLOPT_MAXREDIRS => 3,
                     CURLOPT_CONNECTTIMEOUT => 30,
                     CURLOPT_LOW_SPEED_LIMIT => 1,
-                    CURLOPT_LOW_SPEED_TIME => (int) config('media_relay.ingest.stall_timeout', 300),
+                    CURLOPT_LOW_SPEED_TIME => (int) config('media_relay.ingest.chunk_stall_timeout', 60),
+                    CURLOPT_TCP_KEEPALIVE => 1,
                     CURLOPT_USERAGENT => (string) config('media_relay.relay.user_agent', 'flixy-media-relay/1.0'),
                     CURLOPT_WRITEFUNCTION => $writer,
                 ];
@@ -482,10 +518,88 @@ class IngestUrlJob implements ShouldQueue
                 curl_setopt_array($handle, $options);
 
                 curl_multi_add_handle($multi, $handle);
-                $handles[$i] = $handle;
+                $handles[$index] = $handle;
+                $bindHandle($handle, $index);
+            };
+
+            // Fill every slot with the first chunks of the queue.
+            for ($i = 0; $i < $slots; $i++) {
+                $index = array_key_first($pending);
+
+                if ($index === null) {
+                    break;
+                }
+
+                $startChunk($index);
             }
 
             $lastUpdate = microtime(true);
+
+            // curl_multi_info_read is the only reliable "this handle finished"
+            // signal, so the loop polls it and refills freed slots from the
+            // pending queue as soon as a chunk completes.
+            $harvest = function () use ($multi, $registry, &$handles, &$routes, &$written, &$lengths, &$inFlight, &$failed, &$received, &$pending, &$handleChunkMap, $startChunk) {
+                while (true) {
+                    $info = curl_multi_info_read($multi);
+
+                    if ($info === false) {
+                        break;
+                    }
+
+                    $handle = $info['handle'];
+                    $index = null;
+
+                    foreach ($handles as $candidate => $candidateHandle) {
+                        if ($candidateHandle === $handle) {
+                            $index = $candidate;
+                            break;
+                        }
+                    }
+
+                    if ($index === null) {
+                        continue;
+                    }
+
+                    $errno = curl_errno($handle);
+                    $code = (int) curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
+                    $durationMs = max(1, (int) round(((float) curl_getinfo($handle, CURLINFO_TOTAL_TIME)) * 1000));
+                    $route = $routes[$index] ?? [];
+                    $expected = $lengths[$index];
+                    $got = $written[$index] ?? 0;
+                    $message = null;
+
+                    if ($errno !== 0) {
+                        $message = curl_error($handle);
+                    } elseif ($code !== 206) {
+                        $message = 'the source answered ' . $code . ' to a ranged request';
+                    } elseif ($got !== $expected) {
+                        $message = sprintf(
+                            'chunk %d stopped at %d of %d bytes',
+                            $index,
+                            $got,
+                            $expected
+                        );
+                    }
+
+                    if ($message === null) {
+                        $registry->reportSuccess($route['worker_id'] ?? null, $got, $durationMs);
+                    } else {
+                        $registry->reportFailure($route['worker_id'] ?? null, $message);
+                        $failed[$index] = $message;
+                    }
+
+                    curl_multi_remove_handle($multi, $handle);
+                    curl_close($handle);
+                    unset($handles[$index], $inFlight[$index], $handleChunkMap[spl_object_id($handle)]);
+
+                    // Free slot: immediately pick up the next pending chunk.
+                    $next = array_key_first($pending);
+
+                    if ($next !== null) {
+                        $startChunk($next);
+                    }
+                }
+            };
 
             do {
                 $status = curl_multi_exec($multi, $running);
@@ -494,45 +608,15 @@ class IngestUrlJob implements ShouldQueue
                     curl_multi_select($multi, 1.0);
                 }
 
+                $harvest();
+
                 if (microtime(true) - $lastUpdate >= 5) {
                     $this->setStatus($source, 'downloading', (int) min(100, $received / $total * 100));
                     $lastUpdate = microtime(true);
                 }
-            } while ($running && $status === CURLM_OK);
+            } while ((!empty($handles) || !empty($pending)) && $status === CURLM_OK);
 
-            $problem = null;
-
-            foreach ($handles as $i => $handle) {
-                $errno = curl_errno($handle);
-                $code = (int) curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
-                $durationMs = max(1, (int) round(((float) curl_getinfo($handle, CURLINFO_TOTAL_TIME)) * 1000));
-                $route = $routes[$i] ?? [];
-                $message = null;
-
-                if ($errno !== 0) {
-                    $message = curl_error($handle);
-                } elseif ($code !== 206) {
-                    $message = 'the source answered ' . $code . ' to a ranged request';
-                } elseif ($written[$i] !== $expectedBytes[$i]) {
-                    $message = sprintf(
-                        'chunk %d stopped at %d of %d bytes',
-                        $i,
-                        $written[$i],
-                        $expectedBytes[$i]
-                    );
-                }
-
-                if ($message === null) {
-                    $registry->reportSuccess($route['worker_id'] ?? null, $written[$i], $durationMs);
-                } else {
-                    $registry->reportFailure($route['worker_id'] ?? null, $message);
-                    $failed[$i] = $message;
-                    $problem = $problem ?: $message;
-                }
-
-                curl_multi_remove_handle($multi, $handle);
-                curl_close($handle);
-            }
+            $harvest();
 
             // A failed chunk is retried on another Worker, not by restarting
             // the whole file. This is what keeps one bad endpoint from
@@ -555,16 +639,10 @@ class IngestUrlJob implements ShouldQueue
                 $next = [];
 
                 foreach ($failed as $i => $firstError) {
-                    $start = $i * $chunk;
-                    $length = min($chunk, $total - $start);
+                    $start = $i * $chunkSize;
+                    $length = min($chunkSize, $total - $start);
                     $range = $start . '-' . ($start + $length - 1);
                     $route = $registry->route($this->url, $range, $failedWorkerIds);
-
-                    if (!empty($route['worker_id'])) {
-                        $failedWorkerIds[] = (int) $route['worker_id'];
-                        $failedWorkerIds = array_values(array_unique($failedWorkerIds));
-                    }
-
                     $written[$i] = 0;
                     $result = $this->downloadChunk($route, $out, $start, $length, $range);
                     $written[$i] = (int) $result['bytes'];
@@ -573,6 +651,12 @@ class IngestUrlJob implements ShouldQueue
                         $registry->reportSuccess($route['worker_id'] ?? null, $result['bytes'], $result['duration_ms']);
                     } else {
                         $registry->reportFailure($route['worker_id'] ?? null, (string) $result['error']);
+
+                        if (!empty($route['worker_id'])) {
+                            $failedWorkerIds[] = (int) $route['worker_id'];
+                            $failedWorkerIds = array_values(array_unique($failedWorkerIds));
+                        }
+
                         $next[$i] = (string) $result['error'] ?: $firstError;
                     }
                 }
@@ -587,10 +671,6 @@ class IngestUrlJob implements ShouldQueue
             curl_multi_close($multi);
             fflush($out);
             fclose($out);
-        }
-
-        if (!empty($problem)) {
-            throw new \RuntimeException($problem);
         }
 
         clearstatcache(true, $part);
@@ -616,7 +696,8 @@ class IngestUrlJob implements ShouldQueue
             CURLOPT_MAXREDIRS => 3,
             CURLOPT_CONNECTTIMEOUT => 30,
             CURLOPT_LOW_SPEED_LIMIT => 1,
-            CURLOPT_LOW_SPEED_TIME => (int) config('media_relay.ingest.stall_timeout', 300),
+            CURLOPT_LOW_SPEED_TIME => (int) config('media_relay.ingest.chunk_stall_timeout', 60),
+            CURLOPT_TCP_KEEPALIVE => 1,
             CURLOPT_USERAGENT => (string) config('media_relay.relay.user_agent', 'flixy-media-relay/1.0'),
             CURLOPT_WRITEFUNCTION => function ($ch, string $data) use ($out, $start, $length, &$written) {
                 $remaining = $length - $written;
@@ -630,10 +711,15 @@ class IngestUrlJob implements ShouldQueue
                 }
 
                 fseek($out, $start + $written);
-                $bytes = (int) fwrite($out, $data);
+                $bytes = fwrite($out, $data);
+
+                if ($bytes === false || $bytes !== strlen($data)) {
+                    return 0;
+                }
+
                 $written += $bytes;
 
-                return strlen($data);
+                return $bytes;
             },
         ];
 

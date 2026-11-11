@@ -39,6 +39,15 @@ return [
         // di.farsanime.ir: 8 conns = 327 KB/s, 24 = 838, 32 = 925, 48 = 1072.
         // Twenty-four keeps most of the gain without a socket pile per file.
         'connections' => (int) env('RELAY_INGEST_CONNECTIONS', 24),
+        // Fixed range size for the dynamic chunk queue. Small chunks let a
+        // retry repeat only a few MB instead of a hundred-plus MB slice.
+        'chunk_mb' => (int) env('RELAY_INGEST_CHUNK_MB', 8),
+        // An 8 MB chunk that receives no byte for this long is dead; waiting
+        // the old full-file stall timeout would hold a slot for minutes.
+        'chunk_stall_timeout' => (int) env('RELAY_INGEST_CHUNK_STALL_TIMEOUT', 60),
+        // Target number of concurrent streams per Worker. The total is still
+        // capped by RELAY_INGEST_CONNECTIONS.
+        'streams_per_worker' => (int) env('RELAY_WORKER_STREAMS', 2),
     ],
 
     /*
