@@ -1,8 +1,8 @@
 @extends('include.app')
 @section('script')
 <script src="{{ asset('assets/script/setting.js') }}?v={{ @filemtime(public_path('assets/script/setting.js')) }}"></script>
-<script>
-    window.workerSettingsLabels = @json([
+@php
+    $workerSettingsLabels = [
         'systemSaved' => __('relayWorkerSystemSaved'),
         'saved' => __('relayWorkerSaved'),
         'removed' => __('relayWorkerRemoved'),
@@ -12,7 +12,10 @@
         'online' => __('relayWorkerOnline'),
         'offline' => __('relayWorkerOffline'),
         'justNow' => __('justNow'),
-    ]);
+    ];
+@endphp
+<script>
+    window.workerSettingsLabels = @json($workerSettingsLabels);
 </script>
 <script src="{{ asset('assets/script/worker-settings.js') }}?v={{ @filemtime(public_path('assets/script/worker-settings.js')) }}"></script>
 
