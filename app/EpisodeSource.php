@@ -11,6 +11,15 @@ class EpisodeSource extends Model
     use HasFactory;
     protected $table = 'episode_sources';
 
+    protected $casts = [
+        'upload_started_at' => 'datetime',
+        'upload_finished_at' => 'datetime',
+        'upload_bytes' => 'integer',
+        'upload_duration_ms' => 'integer',
+        'upload_speed_bps' => 'integer',
+        'upload_attempts' => 'integer',
+    ];
+
     public function media()
     {
         return $this->hasOne(MediaGallery::class, 'id', 'source');

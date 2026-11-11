@@ -17,6 +17,12 @@ class RelayFile extends Model
         'promoted_at' => 'datetime',
         'cache_checked_at' => 'datetime',
         'last_access_at' => 'datetime',
+        'upload_started_at' => 'datetime',
+        'upload_finished_at' => 'datetime',
+        'upload_bytes' => 'integer',
+        'upload_duration_ms' => 'integer',
+        'upload_speed_bps' => 'integer',
+        'upload_attempts' => 'integer',
     ];
 
     const COLD = 'cold';

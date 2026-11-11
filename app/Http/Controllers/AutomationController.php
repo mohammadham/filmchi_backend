@@ -6,6 +6,7 @@ use App\Content;
 use App\Episode;
 use App\EpisodeSource;
 use App\Jobs\IngestUrlJob;
+use App\Services\Relay\UploadMetrics;
 use App\Season;
 use App\Console\Commands\SyncFarsanimeCatalogue;
 use Illuminate\Http\Request;
@@ -57,7 +58,7 @@ class AutomationController extends Controller
         $active = EpisodeSource::whereIn('ingest_status', ['downloading', 'uploading'])
             ->orderBy('updated_at')
             ->limit(5)
-            ->get(['id', 'quality', 'ingest_status', 'ingest_progress', 'ingest_error', 'updated_at'])
+            ->get(['id', 'quality', 'ingest_status', 'ingest_progress', 'ingest_error', 'upload_status', 'upload_started_at', 'upload_finished_at', 'upload_bytes', 'upload_duration_ms', 'upload_speed_bps', 'upload_attempts', 'updated_at'])
             ->map(function (EpisodeSource $source) {
                 return [
                     'source_id' => (int) $source->id,
@@ -66,6 +67,13 @@ class AutomationController extends Controller
                     'progress' => (int) $source->ingest_progress,
                     'error' => $source->ingest_error ? mb_substr((string) $source->ingest_error, 0, 180) : null,
                     'updated_at' => optional($source->updated_at)->toIso8601String(),
+                    'upload_status' => $source->upload_status,
+                    'upload_started_at' => optional($source->upload_started_at)->toIso8601String(),
+                    'upload_finished_at' => optional($source->upload_finished_at)->toIso8601String(),
+                    'upload_bytes' => (int) $source->upload_bytes,
+                    'upload_duration_ms' => $source->upload_duration_ms ? (int) $source->upload_duration_ms : null,
+                    'upload_speed_bps' => $source->upload_speed_bps ? (int) $source->upload_speed_bps : null,
+                    'upload_attempts' => (int) $source->upload_attempts,
                 ];
             })
             ->all();
@@ -82,6 +90,7 @@ class AutomationController extends Controller
             'disk_free_gb' => $this->diskFreeGb(),
             'min_free_gb' => (int) config('media_relay.automation.min_free_gb', 25),
             'queue_depth' => $this->queueDepth(),
+            'upload' => UploadMetrics::summary(EpisodeSource::class),
             'catalogue' => $this->catalogueState(),
         ]);
     }

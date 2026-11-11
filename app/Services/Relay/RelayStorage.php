@@ -94,7 +94,7 @@ class RelayStorage
         }
     }
 
-    public function storePath(string $path, string $name, string $mime = null, string $extension = null, int $size = 0, string $folder = null): string
+    public function storePath(string $path, string $name, string $mime = null, string $extension = null, int $size = 0, string $folder = null, ?array &$metrics = null): string
     {
         $folder = trim((string) $folder, " /\\") ?: null;
 
@@ -107,6 +107,12 @@ class RelayStorage
         $existing = $this->findByChecksum($path);
 
         if ($existing) {
+            $metrics = [
+                'upload_status' => UploadMetrics::STATUS_DEDUPLICATED,
+                'upload_bytes' => 0,
+                'upload_duration_ms' => null,
+                'upload_speed_bps' => null,
+            ];
             $link = new RelayLink();
             $link->relay_file_id = $existing->id;
             $link->token = Str::random(40);
@@ -156,6 +162,8 @@ class RelayStorage
         $file->folder = $folder;
         $file->cache_state = RelayFile::COLD;
         $file->owner = 'panel';
+        $metrics = UploadMetrics::fromResult($result, (int) ($result['size'] ?? $size));
+        UploadMetrics::apply($file, $metrics);
         $file->save();
 
         // The temp upload still exists on this server, so this is the only

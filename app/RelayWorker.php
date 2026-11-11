@@ -24,6 +24,9 @@ class RelayWorker extends Model
         'priority',
         'last_status',
         'last_latency_ms',
+        'last_speed_bps',
+        'last_speed_at',
+        'success_count',
         'last_checked_at',
         'last_error',
         'failure_count',
@@ -44,6 +47,9 @@ class RelayWorker extends Model
         'enabled' => 'boolean',
         'priority' => 'integer',
         'last_latency_ms' => 'integer',
+        'last_speed_bps' => 'integer',
+        'last_speed_at' => 'datetime',
+        'success_count' => 'integer',
         'last_checked_at' => 'datetime',
         'failure_count' => 'integer',
         'cooldown_until' => 'datetime',
@@ -63,5 +69,14 @@ class RelayWorker extends Model
                 $inner->whereNull('cooldown_until')
                     ->orWhere('cooldown_until', '<=', now());
             });
+    }
+
+    /**
+     * Measured throughput from real ranged transfers. The panel test button
+     * only measures a small health probe, so it is not used here.
+     */
+    public function getHumanSpeedAttribute(): string
+    {
+        return \App\Services\Relay\UploadMetrics::formatSpeed($this->last_speed_bps ? (int) $this->last_speed_bps : null);
     }
 }

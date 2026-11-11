@@ -206,6 +206,9 @@ class TelegramDriveClient
      */
     public function uploadFromPath(string $path, string $name, string $mime = null, string $storageChat = null, string $folder = null): array
     {
+        $startedAt = now();
+        $startedClock = microtime(true);
+        $uploadBytes = is_file($path) ? (int) filesize($path) : 0;
         $attempt = 0;
 
         while (true) {
@@ -269,6 +272,13 @@ class TelegramDriveClient
             $result['sha256'] = $ready['sha256'] ?? null;
             $result['parts'] = $ready['parts'] ?? null;
         }
+
+        $result['_metrics'] = [
+            'bytes' => $uploadBytes,
+            'duration_ms' => max(1, (int) round((microtime(true) - $startedClock) * 1000)),
+            'started_at' => $startedAt,
+            'finished_at' => now(),
+        ];
 
         return $result;
     }

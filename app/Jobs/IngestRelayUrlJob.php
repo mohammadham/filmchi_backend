@@ -7,6 +7,7 @@ use App\RelayEvent;
 use App\RelayFile;
 use App\RelayLink;
 use App\Services\Relay\RelayManager;
+use App\Services\Relay\UploadMetrics;
 use App\Services\Relay\WorkerRegistry;
 use App\Services\Relay\Thumbnail;
 use Illuminate\Bus\Queueable;
@@ -70,6 +71,9 @@ class IngestRelayUrlJob implements ShouldQueue
 
         $part = $dir . '/relay-' . $file->id . '.part';
 
+        $uploadStartedAt = null;
+        $uploadBytes = 0;
+
         try {
             $this->setStatus($file, 'downloading', 0);
             $this->download($file, $part);
@@ -84,7 +88,10 @@ class IngestRelayUrlJob implements ShouldQueue
                 ));
             }
 
-            $this->setStatus($file, 'uploading', 100);
+            $this->setStatus($file, 'uploading', 0);
+            UploadMetrics::markStarted($file);
+            $uploadStartedAt = now();
+            $uploadBytes = (int) @filesize($part);
 
             $mime = $this->guessMime($file->name);
             $file->folder = trim((string) $this->folder, " /\\") ?: null;
@@ -97,6 +104,7 @@ class IngestRelayUrlJob implements ShouldQueue
                 $file->folder
             );
 
+            UploadMetrics::apply($file, UploadMetrics::fromResult($result, $uploadBytes, $uploadStartedAt));
             $fileId = $result['file_id'] ?? ($result['id'] ?? null);
 
             if (empty($fileId)) {
@@ -141,6 +149,10 @@ class IngestRelayUrlJob implements ShouldQueue
                 'url' => $this->url,
                 'message' => $e->getMessage(),
             ]);
+
+            if ($uploadStartedAt !== null) {
+                UploadMetrics::markFailed($file, $uploadBytes, $uploadStartedAt);
+            }
 
             $file->ingest_status = 'failed';
             $file->ingest_error = Str::limit($e->getMessage(), 500);

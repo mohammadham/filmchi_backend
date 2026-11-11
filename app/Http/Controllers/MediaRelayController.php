@@ -13,6 +13,7 @@ use App\Services\Relay\CachePromoter;
 use App\Services\Relay\DemandTracker;
 use App\Services\Relay\RelayManager;
 use App\Services\Relay\Thumbnail;
+use App\Services\Relay\UploadMetrics;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
@@ -53,6 +54,7 @@ class MediaRelayController extends Controller
             'queue' => (string) (config('media_relay.queue.connection') ?: config('queue.default')),
             'cached' => RelayFile::where('cache_state', RelayFile::WARM)->count(),
             'cold' => RelayFile::whereIn('cache_state', [RelayFile::COLD, RelayFile::QUEUED, RelayFile::FAILED])->count(),
+            'uploadStats' => UploadMetrics::summary(RelayFile::class),
             'ninedriveConfigured' => $this->relay->ninedrive()->isConfigured(),
             'telegramConfigured' => $this->relay->telegram()->isConfigured(),
         ]);
@@ -135,6 +137,8 @@ class MediaRelayController extends Controller
                 $thumb,
                 $name,
                 $item->human_size,
+                UploadMetrics::speedLabel($item),
+                UploadMetrics::durationLabel($item),
                 $tier,
                 (int) $this->demand->count($item),
                 (int) $item->hits,
@@ -231,6 +235,7 @@ class MediaRelayController extends Controller
         $file->tg_storage_chat = (string) config('media_relay.telegram.storage_chat', '');
         $file->cache_state = RelayFile::COLD;
         $file->owner = (string) $request->session()->get('admin_name', 'panel');
+        UploadMetrics::apply($file, UploadMetrics::fromResult($result, (int) $upload->getSize()));
         $file->save();
 
         // The temp upload still exists at this point; this is the only
@@ -614,6 +619,7 @@ class MediaRelayController extends Controller
         $file->tg_storage_chat = (string) config('media_relay.telegram.storage_chat', '');
         $file->cache_state = RelayFile::COLD;
         $file->owner = (string) $request->session()->get('admin_name', 'panel');
+        UploadMetrics::apply($file, UploadMetrics::fromResult($result, (int) filesize($part)));
         $file->save();
 
         Thumbnail::make($part, (string) ($file->mime ?? $mime), $file);
@@ -839,6 +845,7 @@ class MediaRelayController extends Controller
             'ninedrive' => $this->relay->ninedrive()->health(),
             'threshold' => $this->demand->threshold(),
             'state_store' => $this->demand->storeName(),
+            'upload' => UploadMetrics::summary(RelayFile::class),
         ]);
     }
 }

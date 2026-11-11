@@ -48,8 +48,8 @@ return [
     | The panel can manage several Worker endpoints. Only links on the hosts
     | below are routed through them; everything else keeps using the direct
     | source so an unrelated URL cannot be sent to a Worker with a different
-    | allow-list. The first healthy worker (lowest priority, least recently
-    | used) is selected for each request.
+    | allow-list. Requests use the healthy pool ordered by measured throughput,
+    | latency and priority; a failed endpoint is cooled down and retried.
     */
     'workers' => [
         'enabled' => (bool) env('RELAY_WORKERS_ENABLED', true),
@@ -62,6 +62,10 @@ return [
         // 200 response. Read a little, wait, and ask again once.
         'cold_retry_delay_ms' => (int) env('RELAY_WORKER_COLD_RETRY_DELAY_MS', 2000),
         'warmup_bytes' => (int) env('RELAY_WORKER_WARMUP_BYTES', 1048576),
+        // Optional admission thresholds. 0 keeps a freshly added Worker
+        // eligible until it has real throughput samples.
+        'min_speed_bps' => (int) env('RELAY_WORKER_MIN_SPEED_BPS', 0),
+        'max_latency_ms' => (int) env('RELAY_WORKER_MAX_LATENCY_MS', 0),
     ],
 
     /*

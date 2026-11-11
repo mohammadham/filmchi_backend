@@ -9,6 +9,7 @@ use App\EpisodeSource;
 use App\Season;
 use App\RelayLink;
 use App\Services\Relay\RelayStorage;
+use App\Services\Relay\UploadMetrics;
 use App\Services\Relay\WorkerRegistry;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -77,6 +78,9 @@ class IngestUrlJob implements ShouldQueue
 
         $part = $dir . '/ingest-' . $this->sourceId . '.part';
 
+        $uploadStartedAt = null;
+        $uploadBytes = 0;
+
         try {
             $this->setStatus($source, 'downloading', 0);
             $this->download($source, $part);
@@ -90,7 +94,11 @@ class IngestUrlJob implements ShouldQueue
                 ));
             }
 
-            $this->setStatus($source, 'uploading', 100);
+            $this->setStatus($source, 'uploading', 0);
+            UploadMetrics::markStarted($source);
+            $uploadStartedAt = now();
+            $uploadBytes = (int) @filesize($part);
+            $metrics = [];
 
             $relayUrl = $storage->storePath(
                 $part,
@@ -98,9 +106,11 @@ class IngestUrlJob implements ShouldQueue
                 $this->guessMime($source->source),
                 null,
                 0,
-                $this->folderFor($source)
+                $this->folderFor($source),
+                $metrics
             );
 
+            UploadMetrics::apply($source, $metrics);
             $source->source = $relayUrl;
             $source->ingest_status = 'completed';
             $source->ingest_progress = 100;
@@ -111,6 +121,10 @@ class IngestUrlJob implements ShouldQueue
                 'source_id' => $this->sourceId,
                 'message' => $e->getMessage(),
             ]);
+
+            if ($uploadStartedAt !== null) {
+                UploadMetrics::markFailed($source, $uploadBytes, $uploadStartedAt);
+            }
 
             $source->ingest_status = 'failed';
             $source->ingest_error = Str::limit($e->getMessage(), 500);
@@ -374,7 +388,17 @@ class IngestUrlJob implements ShouldQueue
     protected function downloadSegmented($source, string $part, int $total): void
     {
         $minimumChunk = 2 * 1048576;
-        $connections = max(1, min($this->connectionCount(), (int) ceil($total / $minimumChunk)));
+        $registry = app(WorkerRegistry::class);
+        $pool = $registry->selectPool($this->url);
+        $connections = $this->connectionCount();
+
+        // One chunk per usable Worker uses the whole healthy pool. Without
+        // Workers the existing direct connection count still applies.
+        if ($pool->isNotEmpty()) {
+            $connections = min($connections, $pool->count());
+        }
+
+        $connections = max(1, min($connections, (int) ceil($total / $minimumChunk)));
         $chunk = (int) ceil($total / $connections);
 
         $out = @fopen($part, 'c+b');
@@ -391,8 +415,10 @@ class IngestUrlJob implements ShouldQueue
 
         $multi = curl_multi_init();
         $handles = [];
+        $routes = [];
         $written = [];
         $expectedBytes = [];
+        $failed = [];
         $received = 0;
 
         try {
@@ -429,7 +455,11 @@ class IngestUrlJob implements ShouldQueue
                 };
 
                 $range = $start . '-' . ($start + $length - 1);
-                $route = app(WorkerRegistry::class)->route($this->url, $range);
+                $worker = $pool->isNotEmpty() ? $pool->get($i % $pool->count()) : null;
+                $route = $worker
+                    ? $registry->routeFor($worker, $this->url, $range)
+                    : $registry->route($this->url, $range);
+                $routes[$i] = $route;
                 $options = [
                     CURLOPT_FOLLOWLOCATION => true,
                     CURLOPT_MAXREDIRS => 3,
@@ -475,13 +505,16 @@ class IngestUrlJob implements ShouldQueue
             foreach ($handles as $i => $handle) {
                 $errno = curl_errno($handle);
                 $code = (int) curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
+                $durationMs = max(1, (int) round(((float) curl_getinfo($handle, CURLINFO_TOTAL_TIME)) * 1000));
+                $route = $routes[$i] ?? [];
+                $message = null;
 
                 if ($errno !== 0) {
-                    $problem = $problem ?: curl_error($handle);
+                    $message = curl_error($handle);
                 } elseif ($code !== 206) {
-                    $problem = $problem ?: 'the source answered ' . $code . ' to a ranged request';
+                    $message = 'the source answered ' . $code . ' to a ranged request';
                 } elseif ($written[$i] !== $expectedBytes[$i]) {
-                    $problem = $problem ?: sprintf(
+                    $message = sprintf(
                         'chunk %d stopped at %d of %d bytes',
                         $i,
                         $written[$i],
@@ -489,8 +522,66 @@ class IngestUrlJob implements ShouldQueue
                     );
                 }
 
+                if ($message === null) {
+                    $registry->reportSuccess($route['worker_id'] ?? null, $written[$i], $durationMs);
+                } else {
+                    $registry->reportFailure($route['worker_id'] ?? null, $message);
+                    $failed[$i] = $message;
+                    $problem = $problem ?: $message;
+                }
+
                 curl_multi_remove_handle($multi, $handle);
                 curl_close($handle);
+            }
+
+            // A failed chunk is retried on another Worker, not by restarting
+            // the whole file. This is what keeps one bad endpoint from
+            // degrading a multi-Worker download to a single stream.
+            $failedWorkerIds = [];
+
+            foreach (array_keys($failed) as $failedIndex) {
+                $failedRoute = $routes[$failedIndex] ?? [];
+
+                if (!empty($failedRoute['worker_id'])) {
+                    $failedWorkerIds[] = (int) $failedRoute['worker_id'];
+                }
+            }
+
+            $failedWorkerIds = array_values(array_unique($failedWorkerIds));
+            $retryRound = 0;
+
+            while (!empty($failed) && $retryRound < 2) {
+                $retryRound++;
+                $next = [];
+
+                foreach ($failed as $i => $firstError) {
+                    $start = $i * $chunk;
+                    $length = min($chunk, $total - $start);
+                    $range = $start . '-' . ($start + $length - 1);
+                    $route = $registry->route($this->url, $range, $failedWorkerIds);
+
+                    if (!empty($route['worker_id'])) {
+                        $failedWorkerIds[] = (int) $route['worker_id'];
+                        $failedWorkerIds = array_values(array_unique($failedWorkerIds));
+                    }
+
+                    $written[$i] = 0;
+                    $result = $this->downloadChunk($route, $out, $start, $length, $range);
+                    $written[$i] = (int) $result['bytes'];
+
+                    if (!empty($result['ok'])) {
+                        $registry->reportSuccess($route['worker_id'] ?? null, $result['bytes'], $result['duration_ms']);
+                    } else {
+                        $registry->reportFailure($route['worker_id'] ?? null, (string) $result['error']);
+                        $next[$i] = (string) $result['error'] ?: $firstError;
+                    }
+                }
+
+                $failed = $next;
+            }
+
+            if (!empty($failed)) {
+                throw new \RuntimeException((string) reset($failed));
             }
         } finally {
             curl_multi_close($multi);
@@ -511,6 +602,75 @@ class IngestUrlJob implements ShouldQueue
                 $total
             ));
         }
+    }
+
+    /**
+     * Download one range with a single Worker. Used for retrying just the
+     * failed chunks after the concurrent first pass.
+     */
+    protected function downloadChunk(array $route, $out, int $start, int $length, string $range): array
+    {
+        $written = 0;
+        $options = [
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_MAXREDIRS => 3,
+            CURLOPT_CONNECTTIMEOUT => 30,
+            CURLOPT_LOW_SPEED_LIMIT => 1,
+            CURLOPT_LOW_SPEED_TIME => (int) config('media_relay.ingest.stall_timeout', 300),
+            CURLOPT_USERAGENT => (string) config('media_relay.relay.user_agent', 'flixy-media-relay/1.0'),
+            CURLOPT_WRITEFUNCTION => function ($ch, string $data) use ($out, $start, $length, &$written) {
+                $remaining = $length - $written;
+
+                if ($remaining <= 0) {
+                    return 0;
+                }
+
+                if (strlen($data) > $remaining) {
+                    $data = substr($data, 0, $remaining);
+                }
+
+                fseek($out, $start + $written);
+                $bytes = (int) fwrite($out, $data);
+                $written += $bytes;
+
+                return strlen($data);
+            },
+        ];
+
+        if ($route['proxied']) {
+            if (!empty($route['headers'])) {
+                $options[CURLOPT_HTTPHEADER] = $this->curlHeaders($route['headers']);
+            }
+        } else {
+            $options[CURLOPT_RANGE] = $range;
+        }
+
+        $handle = curl_init($route['url']);
+
+        if ($handle === false) {
+            return ['ok' => false, 'bytes' => 0, 'duration_ms' => 0, 'error' => 'could not initialise curl'];
+        }
+
+        curl_setopt_array($handle, $options);
+        curl_exec($handle);
+
+        $errno = curl_errno($handle);
+        $code = (int) curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
+        $durationMs = max(1, (int) round(((float) curl_getinfo($handle, CURLINFO_TOTAL_TIME)) * 1000));
+        $error = $errno !== 0
+            ? curl_error($handle)
+            : ($code !== 206
+                ? 'the source answered ' . $code . ' to a ranged request'
+                : ($written !== $length ? 'the retry stopped early' : ''));
+
+        curl_close($handle);
+
+        return [
+            'ok' => $error === '' && $written === $length,
+            'bytes' => $written,
+            'duration_ms' => $durationMs,
+            'error' => $error ?: 'chunk retry failed',
+        ];
     }
 
     /**

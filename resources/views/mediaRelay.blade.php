@@ -98,6 +98,35 @@
                 </div>
             </div>
 
+            <div class="row mb-4">
+                <div class="col-md-4 col-sm-6 mb-3">
+                    <div class="card mb-0">
+                        <div class="card-body">
+                            <div class="text-muted small">{{ __('relayUploadAvgSpeed') }}</div>
+                            <h5 class="mb-0 fw-semibold">{{ \App\Services\Relay\UploadMetrics::formatSpeed($uploadStats['avg_speed_bps']) }}</h5>
+                            <div class="text-muted small mt-1">{{ __('relayUploadSamples') }}: {{ $uploadStats['count'] }}</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4 col-sm-6 mb-3">
+                    <div class="card mb-0">
+                        <div class="card-body">
+                            <div class="text-muted small">{{ __('relayUploadAvgTime') }}</div>
+                            <h5 class="mb-0 fw-semibold">{{ \App\Services\Relay\UploadMetrics::formatDuration($uploadStats['avg_duration_ms']) }}</h5>
+                            <div class="text-muted small mt-1">{{ __('relayUploadSampleHint') }}</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4 col-sm-6 mb-3">
+                    <div class="card mb-0">
+                        <div class="card-body">
+                            <div class="text-muted small">{{ __('relayUploadPhase') }}</div>
+                            <div class="small mt-2">{{ __('relayUploadPhaseHint') }}</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <div class="d-flex flex-wrap align-items-center justify-content-between mb-2">
                 <div class="d-flex align-items-center gap-2">
                     <select id="relayStateFilter" class="form-control form-control-sm" style="width:auto">
@@ -123,6 +152,8 @@
                             <th width="90px">{{ __('thumb') }}</th>
                             <th>{{ __('title') }}</th>
                         <th width="110px">{{ __('relaySize') }}</th>
+                        <th width="125px">{{ __('relayUploadSpeed') }}</th>
+                        <th width="125px">{{ __('relayUploadTime') }}</th>
                         <th width="110px">{{ __('relayTier') }}</th>
                         <th width="90px">{{ __('relayDemand') }}</th>
                         <th width="90px">{{ __('relayHits') }}</th>

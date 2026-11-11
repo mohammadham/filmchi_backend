@@ -99,22 +99,93 @@ class WorkerRegistry
     }
 
     /**
+     * Pick the best currently usable Workers for one source.
+     *
+     * "Usable" means enabled, outside cooldown, not marked failed by the last
+     * real transfer, and (when configured) above the minimum measured speed
+     * and below the maximum latency. Unknown speed/latency is allowed so a
+     * freshly added Worker can prove itself with its first chunk.
+     *
+     * @param array<int,int> $excludeIds Workers that already failed this job
+     * @return Collection<int, RelayWorker>
+     */
+    public function selectPool(string $sourceUrl, ?int $limit = null, array $excludeIds = []): Collection
+    {
+        if (!$this->isEligible($sourceUrl)) {
+            return collect();
+        }
+
+        try {
+            $workers = RelayWorker::query()
+                ->available()
+                ->where('last_status', '!=', RelayWorker::STATUS_FAILED)
+                ->when(!empty($excludeIds), function ($query) use ($excludeIds) {
+                    $query->whereNotIn('id', array_map('intval', $excludeIds));
+                })
+                // Highest measured throughput first. Unknown throughput is
+                // placed after measured ones, then latency and priority break
+                // ties. last_used_at keeps equal Workers round-robin.
+                ->orderByRaw('CASE WHEN last_speed_bps IS NULL THEN 1 ELSE 0 END')
+                ->orderByDesc('last_speed_bps')
+                ->orderByRaw('CASE WHEN last_latency_ms IS NULL THEN 1 ELSE 0 END')
+                ->orderBy('last_latency_ms')
+                ->orderBy('priority')
+                ->orderByRaw('last_used_at IS NOT NULL ASC')
+                ->orderBy('last_used_at')
+                ->orderBy('id')
+                ->get();
+
+            $minSpeed = (int) config('media_relay.workers.min_speed_bps', 0);
+            $maxLatency = (int) config('media_relay.workers.max_latency_ms', 0);
+
+            $workers = $workers->filter(function (RelayWorker $worker) use ($minSpeed, $maxLatency) {
+                if ($minSpeed > 0 && $worker->last_speed_bps !== null && (int) $worker->last_speed_bps < $minSpeed) {
+                    return false;
+                }
+
+                if ($maxLatency > 0 && $worker->last_latency_ms !== null && (int) $worker->last_latency_ms > $maxLatency) {
+                    return false;
+                }
+
+                return true;
+            })->values();
+
+            return $limit !== null ? $workers->take(max(0, $limit))->values() : $workers;
+        } catch (Throwable $e) {
+            // The table may not exist during a partial deploy; direct ingest
+            // must keep working instead of turning the whole queue red.
+            return collect();
+        }
+    }
+
+    /**
      * Return the URL/headers the ingest job should use for one request.
      *
+     * @param array<int,int> $excludeIds
      * @return array{url:string,headers:array<string,string>,proxied:bool,worker_id:int|null,worker_name:string|null,range:string|null}
      */
-    public function route(string $sourceUrl, ?string $range = null): array
+    public function route(string $sourceUrl, ?string $range = null, array $excludeIds = []): array
     {
         if (!$this->isEligible($sourceUrl)) {
             return $this->directRoute($sourceUrl, $range);
         }
 
-        $worker = $this->activeWorkers()->first();
+        $worker = $this->selectPool($sourceUrl, 1, $excludeIds)->first();
 
         if (!$worker) {
             return $this->directRoute($sourceUrl, $range);
         }
 
+        return $this->routeFor($worker, $sourceUrl, $range);
+    }
+
+    /**
+     * Build a route for a Worker already chosen by the pool selector.
+     *
+     * @return array{url:string,headers:array<string,string>,proxied:bool,worker_id:int|null,worker_name:string|null,range:string|null}
+     */
+    public function routeFor(RelayWorker $worker, string $sourceUrl, ?string $range = null): array
+    {
         $this->touch($worker);
 
         return [
@@ -251,6 +322,64 @@ class WorkerRegistry
         $worker->failure_count = (int) $worker->failure_count + 1;
         $worker->cooldown_until = now()->addSeconds(max(10, (int) config('media_relay.workers.cooldown_seconds', 120)));
         $worker->save();
+    }
+
+    /**
+     * Record a real transfer success and update the throughput EWMA. A tiny
+     * sitemap probe is not a throughput signal, so this is the value the
+     * selector uses when choosing the fastest pool.
+     */
+    public function reportSuccess(?int $workerId, int $bytes, int $durationMs): void
+    {
+        if (empty($workerId) || $bytes <= 0 || $durationMs <= 0) {
+            return;
+        }
+
+        try {
+            $worker = RelayWorker::find($workerId);
+
+            if (!$worker) {
+                return;
+            }
+
+            $sample = (int) round($bytes / ($durationMs / 1000));
+            $previous = (int) ($worker->last_speed_bps ?? 0);
+
+            $worker->last_speed_bps = $previous > 0
+                ? (int) round(($previous * 0.7) + ($sample * 0.3))
+                : $sample;
+            $worker->last_speed_at = now();
+            $worker->success_count = (int) $worker->success_count + 1;
+            $worker->last_status = RelayWorker::STATUS_OK;
+            $worker->last_checked_at = now();
+            $worker->last_error = null;
+            $worker->failure_count = 0;
+            $worker->cooldown_until = null;
+            $worker->save();
+        } catch (Throwable $e) {
+            // Telemetry must never fail an ingest.
+        }
+    }
+
+    /**
+     * A real chunk failed. Unlike the health probe, this immediately removes
+     * the Worker from the next retry and starts its cooldown.
+     */
+    public function reportFailure(?int $workerId, string $message): void
+    {
+        if (empty($workerId)) {
+            return;
+        }
+
+        try {
+            $worker = RelayWorker::find($workerId);
+
+            if ($worker) {
+                $this->markFailure($worker, $message);
+            }
+        } catch (Throwable $e) {
+            // Telemetry must never fail an ingest.
+        }
     }
 
     /**

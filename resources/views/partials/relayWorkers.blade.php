@@ -97,6 +97,7 @@
                                 <th>{{ __('relayWorkerBaseUrl') }}</th>
                                 <th>{{ __('relayWorkerStatus') }}</th>
                                 <th>{{ __('relayWorkerLatency') }}</th>
+                                <th>{{ __('relayWorkerSpeed') }}</th>
                                 <th>{{ __('relayWorkerLastChecked') }}</th>
                                 <th>{{ __('relayWorkerActions') }}</th>
                             </tr>
@@ -124,6 +125,7 @@
                                         @endif
                                     </td>
                                     <td class="worker-latency">{{ $worker->last_latency_ms !== null ? $worker->last_latency_ms . ' ms' : '-' }}</td>
+                                    <td class="worker-speed">{{ $worker->human_speed }}</td>
                                     <td class="worker-checked">{{ $worker->last_checked_at ? $worker->last_checked_at->diffForHumans() : __('never') }}</td>
                                     <td>
                                         <div class="d-flex align-items-center gap-2 flex-wrap">
@@ -137,7 +139,7 @@
                                 </tr>
                             @empty
                                 <tr>
-                                    <td colspan="6" class="text-center text-muted py-4">{{ __('relayWorkerNoWorkers') }}</td>
+                                    <td colspan="7" class="text-center text-muted py-4">{{ __('relayWorkerNoWorkers') }}</td>
                                 </tr>
                             @endforelse
                         </tbody>
