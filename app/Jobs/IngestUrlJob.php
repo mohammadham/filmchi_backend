@@ -9,6 +9,7 @@ use App\EpisodeSource;
 use App\Season;
 use App\RelayLink;
 use App\Services\Relay\RelayStorage;
+use App\Services\Relay\WorkerRegistry;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -205,6 +206,32 @@ class IngestUrlJob implements ShouldQueue
                 ]);
 
                 @unlink($part);
+
+                $registry = app(WorkerRegistry::class);
+
+                // A cold Worker/origin can answer one chunk with 200 even after
+                // the probe was told ranges exist. Give the origin one short
+                // warm-up pass before dropping to the slow single stream.
+                if ($registry->isEligible($this->url) && $registry->hasActiveWorkers()) {
+                    usleep((int) config('media_relay.workers.cold_retry_delay_ms', 2000) * 1000);
+
+                    try {
+                        $retryProbe = $this->probeSource();
+
+                        if ($retryProbe['ranges'] && $retryProbe['size'] > 0 && $this->connectionCount() > 1) {
+                            $this->downloadSegmented($source, $part, $retryProbe['size']);
+
+                            return;
+                        }
+                    } catch (Throwable $retryError) {
+                        Log::info('Worker cold-retry failed; retrying as one stream', [
+                            'source_id' => $this->sourceId,
+                            'message' => $retryError->getMessage(),
+                        ]);
+
+                        @unlink($part);
+                    }
+                }
             }
         }
 
@@ -224,42 +251,119 @@ class IngestUrlJob implements ShouldQueue
      */
     protected function probeSource(): array
     {
+        $registry = app(WorkerRegistry::class);
+        $attempts = 2;
+
+        for ($attempt = 0; $attempt < $attempts; $attempt++) {
+            $route = $registry->route($this->url, '0-1');
+            $warm = $attempt === 0 && $route['proxied'];
+
+            $probe = $this->readProbe(
+                $route,
+                $warm ? max(2, (int) config('media_relay.workers.warmup_bytes', 1048576)) : 2
+            );
+
+            $probe['proxied'] = (bool) $route['proxied'];
+            $probe['worker_id'] = $route['worker_id'];
+
+            if (!$route['proxied'] || $probe['ranges'] || $probe['status'] !== 200) {
+                return $probe;
+            }
+
+            if ($attempt + 1 < $attempts) {
+                usleep((int) config('media_relay.workers.cold_retry_delay_ms', 2000) * 1000);
+            }
+        }
+
+        return $probe;
+    }
+
+    /**
+     * Read only headers and a bounded prefix of a probe response.
+     *
+     * A Worker may answer a cold ranged request with 200 and the full file.
+     * Reading a small prefix lets the origin/CDN warm up without buffering the
+     * media; probeSource then asks once more for a real 206.
+     */
+    protected function readProbe(array $route, int $maxBytes): array
+    {
+        $requestHeaders = [];
+
+        foreach (($route['headers'] ?? []) as $name => $value) {
+            $requestHeaders[] = $name . ': ' . $value;
+        }
+
+        if (!$route['proxied']) {
+            $requestHeaders[] = 'Range: bytes=0-1';
+        }
+
         $context = stream_context_create(['http' => [
             'method' => 'GET',
-            'header' => "Range: bytes=0-1\r\n",
+            'header' => implode("\r\n", $requestHeaders),
             'timeout' => 30,
             'user_agent' => (string) config('media_relay.relay.user_agent', 'flixy-media-relay/1.0'),
             'follow_location' => 1,
+            'ignore_errors' => true,
         ]]);
 
-        $remote = @fopen($this->url, 'rb', false, $context);
+        $remote = @fopen($route['url'], 'rb', false, $context);
 
         if ($remote === false) {
             throw new \RuntimeException('could not open the source URL');
         }
 
         $headers = $http_response_header ?? [];
-
-        @fread($remote, 2);
-        fclose($remote);
-
+        $status = 0;
         $size = 0;
         $ranges = false;
 
         foreach ($headers as $header) {
             $header = (string) $header;
 
-            if (stripos($header, 'content-range:') === 0 && preg_match('#/(\d+)\s*$#', $header, $m)) {
-                $size = (int) $m[1];
+            if (preg_match('#^HTTP/\S+\s+(\d{3})#i', $header, $m)) {
+                $status = (int) $m[1];
+            } elseif (stripos($header, 'content-range:') === 0) {
+                if (preg_match('#/(\d+)\s*$#', $header, $m)) {
+                    $size = (int) $m[1];
+                }
                 $ranges = true;
             } elseif (stripos($header, 'content-length:') === 0 && $size === 0) {
                 $size = (int) trim(substr($header, 15));
-            } elseif (stripos($header, 'accept-ranges:') === 0 && stripos($header, 'bytes') !== false) {
+            } elseif (
+                !$route['proxied']
+                && stripos($header, 'accept-ranges:') === 0
+                && stripos($header, 'bytes') !== false
+            ) {
                 $ranges = true;
             }
         }
 
-        return ['size' => $size, 'ranges' => $ranges];
+        $read = 0;
+
+        while (!feof($remote) && $read < $maxBytes) {
+            $buffer = fread($remote, min(65536, max(1, $maxBytes - $read)));
+
+            if ($buffer === false || $buffer === '') {
+                break;
+            }
+
+            $read += strlen($buffer);
+        }
+
+        fclose($remote);
+
+        return ['size' => $size, 'ranges' => $ranges, 'status' => $status];
+    }
+
+    protected function curlHeaders(array $headers): array
+    {
+        $out = [];
+
+        foreach ($headers as $name => $value) {
+            $out[] = $name . ': ' . $value;
+        }
+
+        return $out;
     }
 
     /**
@@ -324,10 +428,9 @@ class IngestUrlJob implements ShouldQueue
                     return strlen($data);
                 };
 
-                $handle = curl_init($this->url);
-
-                curl_setopt_array($handle, [
-                    CURLOPT_RANGE => $start . '-' . ($start + $length - 1),
+                $range = $start . '-' . ($start + $length - 1);
+                $route = app(WorkerRegistry::class)->route($this->url, $range);
+                $options = [
                     CURLOPT_FOLLOWLOCATION => true,
                     CURLOPT_MAXREDIRS => 3,
                     CURLOPT_CONNECTTIMEOUT => 30,
@@ -335,7 +438,18 @@ class IngestUrlJob implements ShouldQueue
                     CURLOPT_LOW_SPEED_TIME => (int) config('media_relay.ingest.stall_timeout', 300),
                     CURLOPT_USERAGENT => (string) config('media_relay.relay.user_agent', 'flixy-media-relay/1.0'),
                     CURLOPT_WRITEFUNCTION => $writer,
-                ]);
+                ];
+
+                if ($route['proxied']) {
+                    if (!empty($route['headers'])) {
+                        $options[CURLOPT_HTTPHEADER] = $this->curlHeaders($route['headers']);
+                    }
+                } else {
+                    $options[CURLOPT_RANGE] = $range;
+                }
+
+                $handle = curl_init($route['url']);
+                curl_setopt_array($handle, $options);
 
                 curl_multi_add_handle($multi, $handle);
                 $handles[$i] = $handle;
@@ -404,8 +518,16 @@ class IngestUrlJob implements ShouldQueue
      */
     protected function downloadStream($source, string $part, int $expected): void
     {
+        $route = app(WorkerRegistry::class)->route($this->url);
+        $requestHeaders = [];
+
+        foreach (($route['headers'] ?? []) as $name => $value) {
+            $requestHeaders[] = $name . ': ' . $value;
+        }
+
         $context = stream_context_create(['http' => [
             'method' => 'GET',
+            'header' => implode("\r\n", $requestHeaders),
             // Per-read timeout: this is a stall guard, not a cap on the whole
             // transfer, so a slow-but-alive source keeps working while a dead
             // one frees the single worker within minutes.
@@ -414,7 +536,7 @@ class IngestUrlJob implements ShouldQueue
             'follow_location' => 1,
         ]]);
 
-        $remote = @fopen($this->url, 'rb', false, $context);
+        $remote = @fopen($route['url'], 'rb', false, $context);
 
         if ($remote === false) {
             throw new \RuntimeException("could not open the source URL");

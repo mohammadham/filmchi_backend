@@ -10,6 +10,7 @@ use App\CustomAd;
 use App\Genre;
 use App\GlobalSettings;
 use App\Language;
+use App\RelayWorker;
 use App\Notification;
 use App\Pages;
 use App\Services\Relay\NineDriveClient;
@@ -67,7 +68,14 @@ class SettingController extends Controller
         ];
         $relay = RelaySettings::effective();
 
-        return view('setting', compact('setting', 'awsConfig', 'doConfig', 'relay'));
+        try {
+            $workers = RelayWorker::query()->orderBy('priority')->orderBy('id')->get();
+        } catch (\Throwable $e) {
+            // Keep the settings page usable while a deploy is migrating.
+            $workers = collect();
+        }
+
+        return view('setting', compact('setting', 'awsConfig', 'doConfig', 'relay', 'workers'));
     }
     
     function fetchSettings()

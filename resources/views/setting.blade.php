@@ -1,6 +1,20 @@
 @extends('include.app')
 @section('script')
 <script src="{{ asset('assets/script/setting.js') }}?v={{ @filemtime(public_path('assets/script/setting.js')) }}"></script>
+<script>
+    window.workerSettingsLabels = @json([
+        'systemSaved' => __('relayWorkerSystemSaved'),
+        'saved' => __('relayWorkerSaved'),
+        'removed' => __('relayWorkerRemoved'),
+        'deleteConfirm' => __('relayWorkerDeleteConfirm'),
+        'testOk' => __('relayWorkerTestOk'),
+        'testFailed' => __('relayWorkerTestFailed'),
+        'online' => __('relayWorkerOnline'),
+        'offline' => __('relayWorkerOffline'),
+        'justNow' => __('justNow'),
+    ]);
+</script>
+<script src="{{ asset('assets/script/worker-settings.js') }}?v={{ @filemtime(public_path('assets/script/worker-settings.js')) }}"></script>
 
 <script>
     document.addEventListener('DOMContentLoaded', function() {
@@ -454,5 +468,10 @@
         </div>
     </div>
 </div>
+
+@include('partials.relayWorkers', [
+    'workers' => $workers,
+    'workerSystemEnabled' => $relay['relay_worker_enabled'],
+])
 
 @endsection

@@ -7,6 +7,7 @@ use App\RelayEvent;
 use App\RelayFile;
 use App\RelayLink;
 use App\Services\Relay\RelayManager;
+use App\Services\Relay\WorkerRegistry;
 use App\Services\Relay\Thumbnail;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -165,14 +166,22 @@ class IngestRelayUrlJob implements ShouldQueue
      */
     protected function download(RelayFile $file, string $part): void
     {
+        $route = app(WorkerRegistry::class)->route($this->url);
+        $requestHeaders = [];
+
+        foreach (($route['headers'] ?? []) as $name => $value) {
+            $requestHeaders[] = $name . ': ' . $value;
+        }
+
         $context = stream_context_create(['http' => [
             'method' => 'GET',
+            'header' => implode("\r\n", $requestHeaders),
             'timeout' => (int) config('media_relay.ingest.timeout', 3600),
             'user_agent' => (string) config('media_relay.relay.user_agent', 'flixy-media-relay/1.0'),
             'follow_location' => 1,
         ]]);
 
-        $remote = @fopen($this->url, 'rb', false, $context);
+        $remote = @fopen($route['url'], 'rb', false, $context);
 
         if ($remote === false) {
             throw new \RuntimeException('could not open the source URL');

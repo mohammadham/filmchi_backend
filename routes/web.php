@@ -15,6 +15,7 @@ use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\RelayController;
 use App\Http\Controllers\TVController;  
 use App\Http\Controllers\UserController;
+use App\Http\Controllers\WorkerController;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Route;
 
@@ -184,6 +185,12 @@ Route::get('setting', [SettingController::class, 'setting'])->middleware(['check
 Route::post('saveSettings', [SettingController::class, 'saveSettings'])->middleware(['checkLogin'])->name('saveSettings');
 Route::post('saveRelaySettings', [SettingController::class, 'saveRelaySettings'])->middleware(['checkLogin'])->name('saveRelaySettings');
 Route::post('testRelayConnection', [SettingController::class, 'testRelayConnection'])->middleware(['checkLogin'])->name('testRelayConnection');
+Route::post('saveWorkerSystem', [WorkerController::class, 'saveSystem'])->middleware(['checkLogin'])->name('saveWorkerSystem');
+Route::post('relayWorkers/test-all', [WorkerController::class, 'testAll'])->middleware(['checkLogin'])->name('relayWorkers.testAll');
+Route::post('relayWorkers/{worker}/test', [WorkerController::class, 'test'])->middleware(['checkLogin'])->name('relayWorkers.test');
+Route::post('relayWorkers/{worker}/toggle', [WorkerController::class, 'toggle'])->middleware(['checkLogin'])->name('relayWorkers.toggle');
+Route::delete('relayWorkers/{worker}', [WorkerController::class, 'destroy'])->middleware(['checkLogin'])->name('relayWorkers.destroy');
+Route::post('relayWorkers', [WorkerController::class, 'store'])->middleware(['checkLogin'])->name('relayWorkers.store');
 Route::post('changePassword', [SettingController::class, 'changePassword'])->middleware(['checkLogin'])->name('changePassword');
 
 Route::get('viewPrivacy', [SettingController::class, 'viewPrivacy'])->middleware(['checkLogin'])->name('viewPrivacy');

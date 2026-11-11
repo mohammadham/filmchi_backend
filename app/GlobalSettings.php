@@ -14,6 +14,7 @@ class GlobalSettings extends Model
     protected $casts = [
         'storage_type' => 'integer',
         'relay_enabled' => 'boolean',
+        'relay_worker_enabled' => 'boolean',
         'relay_promote_threshold' => 'integer',
         'relay_demand_window' => 'integer',
         'relay_tg_password' => EncryptedString::class,

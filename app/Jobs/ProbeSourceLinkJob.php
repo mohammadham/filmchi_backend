@@ -9,6 +9,7 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use App\Services\Relay\WorkerRegistry;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 
@@ -84,9 +85,13 @@ class ProbeSourceLinkJob implements ShouldQueue
 
     protected function probe(string $url): string
     {
+        $registry = app(WorkerRegistry::class);
+
         try {
+            $route = $registry->route($url);
             $response = Http::timeout((int) config('media_relay.linkcheck.timeout', 15))
-                ->head($url);
+                ->withHeaders($route['headers'])
+                ->head($route['url']);
 
             if ($response->status() < 400) {
                 return 'alive';
@@ -102,9 +107,16 @@ class ProbeSourceLinkJob implements ShouldQueue
         // HEAD was refused (403/405/501): retry as a ranged GET, which most
         // media servers accept, and drop the body immediately.
         try {
+            $rangeRoute = $registry->route($url, '0-0');
+            $headers = $rangeRoute['headers'];
+
+            if (!$rangeRoute['proxied']) {
+                $headers['Range'] = 'bytes=0-0';
+            }
+
             $response = Http::timeout((int) config('media_relay.linkcheck.timeout', 15))
-                ->withHeaders(['Range' => 'bytes=0-0'])
-                ->get($url);
+                ->withHeaders($headers)
+                ->get($rangeRoute['url']);
 
             return $response->status() < 400 ? 'alive' : 'dead';
         } catch (\Throwable $e) {

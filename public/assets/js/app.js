@@ -117,10 +117,10 @@ $(document).on("click", "[data-media-preview]", function (e) {
     $("#videoPreviewModal").modal("show");
 });
 
-function showSuccessToast() {
+function showSuccessToast(message) {
     iziToast.show({
         title: "Success",
-        message: "Action was successfully completed.",
+        message: message || "Action was successfully completed.",
         color: "green",
         position: "topRight",
         transitionIn: "fadeInDown",

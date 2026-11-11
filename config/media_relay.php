@@ -43,6 +43,29 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Cloudflare Worker proxy for source downloads
+    |--------------------------------------------------------------------------
+    | The panel can manage several Worker endpoints. Only links on the hosts
+    | below are routed through them; everything else keeps using the direct
+    | source so an unrelated URL cannot be sent to a Worker with a different
+    | allow-list. The first healthy worker (lowest priority, least recently
+    | used) is selected for each request.
+    */
+    'workers' => [
+        'enabled' => (bool) env('RELAY_WORKERS_ENABLED', true),
+        'hosts' => env('RELAY_WORKER_HOSTS', 'farsanime.ir,di.farsanime.ir'),
+        'test_url' => env('RELAY_WORKER_TEST_URL', 'https://farsanime.ir/sitemap.xml'),
+        'timeout' => (int) env('RELAY_WORKER_TIMEOUT', 20),
+        // A failed worker is skipped for this long before it is tried again.
+        'cooldown_seconds' => (int) env('RELAY_WORKER_COOLDOWN', 120),
+        // A cold Worker/origin answers the first ranged request with a full
+        // 200 response. Read a little, wait, and ask again once.
+        'cold_retry_delay_ms' => (int) env('RELAY_WORKER_COLD_RETRY_DELAY_MS', 2000),
+        'warmup_bytes' => (int) env('RELAY_WORKER_WARMUP_BYTES', 1048576),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Automation API (n8n orchestrator)
     |--------------------------------------------------------------------------
     | These endpoints let an external scheduler (n8n) read the ingest backlog

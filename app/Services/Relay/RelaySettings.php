@@ -20,6 +20,7 @@ class RelaySettings
      */
     protected static $map = [
         'relay_enabled' => ['media_relay.enabled', 'bool'],
+        'relay_worker_enabled' => ['media_relay.workers.enabled', 'bool'],
         'relay_tg_base_url' => ['media_relay.telegram.base_url', 'string'],
         'relay_tg_username' => ['media_relay.telegram.username', 'string'],
         'relay_tg_password' => ['media_relay.telegram.password', 'string'],
@@ -59,6 +60,7 @@ class RelaySettings
     {
         return [
             'relay_enabled' => (bool) config('media_relay.enabled'),
+            'relay_worker_enabled' => (bool) config('media_relay.workers.enabled'),
             'relay_tg_base_url' => (string) config('media_relay.telegram.base_url'),
             'relay_tg_username' => (string) config('media_relay.telegram.username'),
             'relay_tg_password' => '',
