@@ -267,9 +267,16 @@ class IngestUrlJob implements ShouldQueue
     {
         $registry = app(WorkerRegistry::class);
         $attempts = 2;
+        $route = null;
 
         for ($attempt = 0; $attempt < $attempts; $attempt++) {
-            $route = $registry->route($this->url, '0-1');
+            // Keep the same Worker for the cold-cache retry. Re-routing here
+            // can land on a different cold Worker, which answers 200 again and
+            // makes the job fall back to the single-connection downloader.
+            if ($route === null) {
+                $route = $registry->route($this->url, '0-1');
+            }
+
             $warm = $attempt === 0 && $route['proxied'];
 
             $probe = $this->readProbe(
