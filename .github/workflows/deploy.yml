@@ -54,6 +54,11 @@ jobs:
     needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
+    env:
+      # The server moved from 144.217.133.97 to 135.125.208.195. Keep the host
+      # configurable so a future move only needs the repository variable set.
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST || '135.125.208.195' }}
+      PUBLIC_URL: ${{ vars.FLIXY_PUBLIC_URL || 'https://filmchi.sanduqche.top/' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -64,16 +69,16 @@ jobs:
           # a CRLF-mangled OpenSSH key fails with "error in libcrypto".
           printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" | tr -d '\r' > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H 144.217.133.97 >> ~/.ssh/known_hosts 2>/dev/null
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
       - name: Upload source archive
         run: |
           git archive -o /tmp/flixy-src.tgz HEAD
-          scp -i ~/.ssh/deploy_key /tmp/flixy-src.tgz root@144.217.133.97:/tmp/flixy-src.tgz
+          scp -i ~/.ssh/deploy_key /tmp/flixy-src.tgz root@"$DEPLOY_HOST":/tmp/flixy-src.tgz
 
       - name: Deploy on server
         run: |
-          ssh -i ~/.ssh/deploy_key root@144.217.133.97 "bash -s" <<'REMOTE'
+          ssh -i ~/.ssh/deploy_key root@"$DEPLOY_HOST" "bash -s" <<'REMOTE'
             set -e
             rm -rf /tmp/flixy-stage && mkdir -p /tmp/flixy-stage
             tar xzf /tmp/flixy-src.tgz -C /tmp/flixy-stage
@@ -95,6 +100,8 @@ jobs:
             docker exec flixy sh -c "chown -R application:application /app/storage /app/bootstrap/cache; ln -sf /app/storage/app/public /app/public/storage; mkdir -p /app/storage/framework/cache /app/storage/framework/sessions /app/storage/framework/views /app/storage/logs"
             docker exec flixy php artisan migrate --force
             docker exec flixy php artisan optimize:clear
+            # Long-running queue workers keep the old image's code until restarted.
+            docker exec flixy php artisan queue:restart
             CODE=$(curl -s -o /dev/null -w %{http_code} http://127.0.0.1:8082/)
             echo "Local health: $CODE"
             if [ "$CODE" != "200" ]; then docker logs flixy --tail 30; exit 1; fi
@@ -103,6 +110,6 @@ jobs:
       - name: Public smoke check
         run: |
           sleep 2
-          CODE=$(curl -s -o /dev/null -w %{http_code} --max-time 30 https://filmchi.sanduqche.top/)
+          CODE=$(curl -s -o /dev/null -w %{http_code} --max-time 30 "$PUBLIC_URL")
           echo "Public health: $CODE"
           test "$CODE" = "200"
