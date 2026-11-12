@@ -57,34 +57,6 @@ services:
       - 1panel-network
       - tdrive_default
 
-  worker-2:
-    image: flixy:local
-    container_name: flixy-worker-2
-    restart: unless-stopped
-    logging:
-      driver: json-file
-      options:
-        max-size: "20m"
-        max-file: "3"
-    command:
-      - php
-      - /app/artisan
-      - queue:work
-      - redis
-      - --queue=default
-      - --sleep=1
-      - --tries=3
-      - --timeout=7000
-      - --max-time=21600
-    volumes:
-      - ./storage/app:/app/storage/app
-      - ./storage/logs:/app/storage/logs
-    depends_on:
-      - flixy
-    networks:
-      - default
-      - 1panel-network
-      - tdrive_default
 
 networks:
   1panel-network:
