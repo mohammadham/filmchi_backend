@@ -71,6 +71,15 @@ class IngestUrlJob implements ShouldQueue
             return;
         }
 
+        // A retried queue job can outlive its DB row (worker crash, timeout,
+        // deploy). Never download a source that already finished; upload
+        // retries belong to the storage layer, not to a second ingest.
+        if ((string) $source->ingest_status === 'completed') {
+            Log::info('ingest skipped: source already completed', ['source_id' => $this->sourceId]);
+
+            return;
+        }
+
         $dir = storage_path('app/ingest');
         if (!is_dir($dir)) {
             @mkdir($dir, 0775, true);
