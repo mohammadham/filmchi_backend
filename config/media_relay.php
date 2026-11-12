@@ -92,6 +92,8 @@ return [
         'token' => env('RELAY_AUTOMATION_TOKEN', ''),
         'min_free_gb' => (int) env('RELAY_AUTOMATION_MIN_FREE_GB', 8),
         'max_batch' => (int) env('RELAY_AUTOMATION_MAX_BATCH', 3),
+        //: How many active+queued sources the orchestrator should keep in flight.
+        'target_depth' => (int) env('RELAY_AUTOMATION_TARGET_DEPTH', 2),
 
         /*
          * How often the orchestrator may start a catalogue pass (new series,

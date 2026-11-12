@@ -127,6 +127,67 @@
                 </div>
             </div>
 
+            <div class="card mb-4">
+                <div class="card-header d-flex align-items-center justify-content-between">
+                    <h5 class="mb-0 fw-semibold">آپلودنشده‌ها / ناموفق‌ها</h5>
+                    <span class="badge bg-danger">{{ $failedSourcesCount }}</span>
+                </div>
+                <div class="card-body">
+                    @if(session('success'))
+                        <div class="alert alert-success py-2">{{ session('success') }}</div>
+                    @endif
+                    @if(session('error'))
+                        <div class="alert alert-danger py-2">{{ session('error') }}</div>
+                    @endif
+
+                    @if($failedSources->count())
+                        <div class="table-responsive">
+                            <table class="table table-sm table-striped align-middle mb-0">
+                                <thead>
+                                    <tr>
+                                        <th width="60px">ID</th>
+                                        <th width="80px">کیفیت</th>
+                                        <th>منبع</th>
+                                        <th width="110px">وضعیت آپلود</th>
+                                        <th width="70px">تلاش</th>
+                                        <th>خطا</th>
+                                        <th width="130px">آخرین تغییر</th>
+                                        <th width="130px"></th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach($failedSources as $source)
+                                        <tr>
+                                            <td>{{ $source->id }}</td>
+                                            <td>{{ $source->quality ?: '—' }}</td>
+                                            <td dir="ltr" style="max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                                                <span title="{{ $source->source }}">{{ \Illuminate\Support\Str::limit($source->source, 90) }}</span>
+                                            </td>
+                                            <td>{{ $source->upload_status ?: 'قبل از آپلود' }}</td>
+                                            <td>{{ (int) $source->upload_attempts }}</td>
+                                            <td class="text-danger" style="max-width:300px">{{ \Illuminate\Support\Str::limit((string) $source->ingest_error, 140) }}</td>
+                                            <td>{{ optional($source->updated_at)->diffForHumans() }}</td>
+                                            <td>
+                                                <form method="POST" action="{{ route('requeueRelaySource') }}" onsubmit="return confirm('این منبع دوباره به صف اضافه شود؟');">
+                                                    @csrf
+                                                    <input type="hidden" name="source_id" value="{{ $source->id }}">
+                                                    <button type="submit" class="btn btn-sm btn-primary text-light">افزودن به صف</button>
+                                                </form>
+                                            </td>
+                                        </tr>
+                                    @endforeach
+                                </tbody>
+                            </table>
+                        </div>
+                        @if($failedSourcesCount > $failedSources->count())
+                            <p class="text-muted small mt-2 mb-0">نمایش {{ $failedSources->count() }} مورد از {{ $failedSourcesCount }} مورد؛ قدیمی‌ترها در دیتابیس باقی هستند.</p>
+                        @endif
+                    @else
+                        <p class="text-muted mb-0">فایل ناموفقی که به آپلود نرسیده باشد وجود ندارد.</p>
+                    @endif
+                </div>
+            </div>
+
             <div class="d-flex flex-wrap align-items-center justify-content-between mb-2">
                 <div class="d-flex align-items-center gap-2">
                     <select id="relayStateFilter" class="form-control form-control-sm" style="width:auto">

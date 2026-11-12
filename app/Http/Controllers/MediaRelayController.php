@@ -17,6 +17,7 @@ use App\Services\Relay\UploadMetrics;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Throwable;
 
@@ -44,7 +45,13 @@ class MediaRelayController extends Controller
 
     public function mediaRelay()
     {
+        $failedQuery = $this->failedSourcesQuery();
+        $failedSourcesCount = (clone $failedQuery)->count();
+        $failedSources = $failedQuery->limit(25)->get();
+
         return view('mediaRelay', [
+            'failedSources' => $failedSources,
+            'failedSourcesCount' => $failedSourcesCount,
             'telegram' => $this->relay->telegram()->health(),
             'ninedrive' => $this->relay->ninedrive()->health(),
             'threshold' => $this->demand->threshold(),
@@ -58,6 +65,28 @@ class MediaRelayController extends Controller
             'ninedriveConfigured' => $this->relay->ninedrive()->isConfigured(),
             'telegramConfigured' => $this->relay->telegram()->isConfigured(),
         ]);
+    }
+
+    /**
+     * Sources that failed before they ever reached an upload job.
+     *
+     * Upload failures belong to Tdrive: retrying them here would download the
+     * whole file again and create a duplicate Telegram upload.
+     */
+    protected function failedSourcesQuery()
+    {
+        $query = EpisodeSource::query()
+            ->where('ingest_status', 'failed')
+            ->where('source', 'like', 'http%')
+            ->where(function ($q) {
+                $q->whereNull('upload_status')->orWhere('upload_status', '');
+            });
+
+        if (Schema::hasColumn('episode_sources', 'is_blocked')) {
+            $query->where('is_blocked', false);
+        }
+
+        return $query->orderByDesc('updated_at');
     }
 
     public function relayFileList(Request $request)

@@ -78,17 +78,34 @@ class AutomationController extends Controller
             })
             ->all();
 
+        $pending = $this->pendingQuery()->count();
+        $queued = (int) ($counts['queued'] ?? 0);
+        $activeCount = $this->freshActive()->count();
+        $freeGb = $this->diskFreeGb();
+        $minGb = (int) config('media_relay.automation.min_free_gb', 25);
+        $maxBatch = max(1, (int) config('media_relay.automation.max_batch', 3));
+        $targetDepth = max(1, min($maxBatch, (int) config('media_relay.automation.target_depth', 2)));
+        $diskOk = $freeGb === null || $freeGb >= $minGb;
+        $capacity = max(0, $targetDepth - $activeCount - $queued);
+        $recommended = $diskOk ? min($maxBatch, $capacity) : 0;
+
         return response()->json([
             'ok' => true,
-            'pending' => $this->pendingQuery()->count(),
-            'queued' => (int) ($counts['queued'] ?? 0),
-            'active' => $this->freshActive()->count(),
+            'pending' => $pending,
+            'queued' => $queued,
+            'active' => $activeCount,
             'stale' => $this->staleActive()->count(),
             'completed' => (int) ($counts['completed'] ?? 0),
             'failed' => (int) ($counts['failed'] ?? 0),
+            'failed_retryable' => $this->failedQuery()->count(),
             'current' => $active,
-            'disk_free_gb' => $this->diskFreeGb(),
-            'min_free_gb' => (int) config('media_relay.automation.min_free_gb', 25),
+            'disk_free_gb' => $freeGb,
+            'min_free_gb' => $minGb,
+            'target_depth' => $targetDepth,
+            'capacity' => $diskOk ? $capacity : 0,
+            'recommended_batch' => $recommended,
+            'accepting' => $recommended > 0,
+            'retry_after_s' => $recommended > 0 ? 0 : 60,
             'queue_depth' => $this->queueDepth(),
             'upload' => UploadMetrics::summary(EpisodeSource::class),
             'catalogue' => $this->catalogueState(),
@@ -178,8 +195,9 @@ class AutomationController extends Controller
     public function queue(Request $request)
     {
         $maxBatch = max(1, (int) config('media_relay.automation.max_batch', 3));
+        $targetDepth = max(1, min($maxBatch, (int) config('media_relay.automation.target_depth', 2)));
         $limit = (int) $request->input('limit', 1);
-        $limit = max(1, min($maxBatch, $limit));
+        $limit = max(1, min($targetDepth, $limit));
 
         $freeGb = $this->diskFreeGb();
         $minGb = (int) config('media_relay.automation.min_free_gb', 25);
@@ -191,6 +209,9 @@ class AutomationController extends Controller
                 'message' => sprintf('Only %.1f GB free; the automation floor is %d GB.', $freeGb, $minGb),
                 'disk_free_gb' => $freeGb,
                 'min_free_gb' => $minGb,
+                'target_depth' => $targetDepth,
+                'capacity' => 0,
+                'recommended_batch' => 0,
             ], 409);
         }
 
@@ -209,15 +230,22 @@ class AutomationController extends Controller
         // the queue beyond a small buffer so a stuck file cannot pile up work.
         $queued = EpisodeSource::where('ingest_status', 'queued')->count();
         $active = $this->freshActive()->count();
+        $capacity = max(0, $targetDepth - $queued - $active);
 
-        if ($queued + $active >= $maxBatch) {
+        if ($capacity <= 0) {
             return response()->json([
                 'ok' => true,
                 'queued' => [],
                 'skipped' => 'queue_busy',
                 'pending' => $this->pendingQuery()->count(),
+                'target_depth' => $targetDepth,
+                'capacity' => 0,
+                'recommended_batch' => 0,
+                'retry_after_s' => 60,
             ], 202);
         }
+
+        $limit = min($limit, $capacity);
 
         $sources = $this->pendingQuery()
             ->limit($limit)
@@ -260,6 +288,13 @@ class AutomationController extends Controller
             ];
         }
 
+        $remainingCapacity = max(
+            0,
+            $targetDepth
+                - EpisodeSource::where('ingest_status', 'queued')->count()
+                - $this->freshActive()->count()
+        );
+
         return response()->json([
             'ok' => true,
             'queued' => $dispatched,
@@ -267,7 +302,68 @@ class AutomationController extends Controller
             'pending' => $this->pendingQuery()->count(),
             'released_stale' => $released,
             'disk_free_gb' => $freeGb,
+            'target_depth' => $targetDepth,
+            'capacity' => $remainingCapacity,
+            'recommended_batch' => $remainingCapacity,
         ]);
+    }
+
+    /**
+     * Manually put one failed pre-upload source back on the queue.
+     *
+     * Tdrive failures are retried in the Tdrive panel; this endpoint only
+     * handles rows that failed before they ever reached an upload job.
+     */
+    public function requeueSource(Request $request)
+    {
+        $validated = $request->validate([
+            'source_id' => 'required|integer',
+        ]);
+
+        $source = EpisodeSource::find((int) $validated['source_id']);
+
+        if (!$source) {
+            return back()->with('error', 'منبع پیدا نشد.');
+        }
+
+        if (!in_array((string) $source->ingest_status, ['failed', ''], true)) {
+            return back()->with('error', 'این منبع در وضعیت فعال است و دوباره صف نمی‌شود.');
+        }
+
+        if ($source->upload_status === UploadMetrics::STATUS_FAILED) {
+            return back()->with('error', 'این فایل در مرحله آپلود شکست خورده؛ آن را از پنل Tdrive دوباره تلاش کنید.');
+        }
+
+        if (Schema::hasColumn('episode_sources', 'is_blocked') && (bool) $source->is_blocked) {
+            return back()->with('error', 'این منبع بلاک شده و دوباره صف نمی‌شود.');
+        }
+
+        if (!str_starts_with((string) $source->source, 'http')) {
+            return back()->with('error', 'این منبع دیگر یک لینک HTTP معتبر نیست.');
+        }
+
+        $episode = Episode::find($source->episode_id);
+        $content = $episode ? $this->contentOf($episode) : null;
+
+        if (!$episode || !$content) {
+            return back()->with('error', 'قسمت یا عنوان مربوط به این منبع پیدا نشد.');
+        }
+
+        $source->ingest_status = 'queued';
+        $source->ingest_progress = 0;
+        $source->ingest_error = null;
+        $source->upload_status = null;
+        $source->upload_attempts = 0;
+        $source->save();
+
+        IngestUrlJob::dispatch(
+            'episode',
+            (int) $source->id,
+            (string) $source->source,
+            $this->nameFor($content, $episode, (string) $source->source)
+        );
+
+        return back()->with('success', 'منبع دوباره به صف اضافه شد.');
     }
 
     /**
@@ -390,6 +486,23 @@ class AutomationController extends Controller
      * one season finishes before the next quality starts, exactly like the
      * catalogue is meant to grow.
      */
+    protected function failedQuery()
+    {
+        $query = EpisodeSource::query()
+            ->where('episode_sources.ingest_status', 'failed')
+            ->where('episode_sources.source', 'like', 'http%')
+            ->where(function ($q) {
+                $q->whereNull('episode_sources.upload_status')
+                    ->orWhere('episode_sources.upload_status', '');
+            });
+
+        if (Schema::hasColumn('episode_sources', 'is_blocked')) {
+            $query->where('episode_sources.is_blocked', false);
+        }
+
+        return $query;
+    }
+
     protected function pendingQuery()
     {
         $qualityRank = 'CASE episode_sources.quality '
