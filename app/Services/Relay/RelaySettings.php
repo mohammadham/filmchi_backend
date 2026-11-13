@@ -21,6 +21,11 @@ class RelaySettings
     protected static $map = [
         'relay_enabled' => ['media_relay.enabled', 'bool'],
         'relay_worker_enabled' => ['media_relay.workers.enabled', 'bool'],
+        'relay_worker_selection_strategy' => ['media_relay.workers.selection_strategy', 'strategy'],
+        'relay_ingest_max_workers' => ['media_relay.ingest.max_workers', 'int'],
+        'relay_ingest_max_pending_chunks' => ['media_relay.ingest.max_pending_chunks', 'int'],
+        'relay_ingest_chunk_mb' => ['media_relay.ingest.chunk_mb', 'int'],
+        'relay_ingest_streams' => ['media_relay.ingest.streams_per_worker', 'int'],
         'relay_tg_base_url' => ['media_relay.telegram.base_url', 'string'],
         'relay_tg_username' => ['media_relay.telegram.username', 'string'],
         'relay_tg_password' => ['media_relay.telegram.password', 'string'],
@@ -61,6 +66,11 @@ class RelaySettings
         return [
             'relay_enabled' => (bool) config('media_relay.enabled'),
             'relay_worker_enabled' => (bool) config('media_relay.workers.enabled'),
+            'relay_worker_selection_strategy' => (string) config('media_relay.workers.selection_strategy'),
+            'relay_ingest_max_workers' => (int) config('media_relay.ingest.max_workers'),
+            'relay_ingest_max_pending_chunks' => (int) config('media_relay.ingest.max_pending_chunks'),
+            'relay_ingest_chunk_mb' => (int) config('media_relay.ingest.chunk_mb'),
+            'relay_ingest_streams' => (int) config('media_relay.ingest.streams_per_worker'),
             'relay_tg_base_url' => (string) config('media_relay.telegram.base_url'),
             'relay_tg_username' => (string) config('media_relay.telegram.username'),
             'relay_tg_password' => '',
@@ -178,6 +188,12 @@ class RelaySettings
                 $mode = strtolower((string) $value);
 
                 return in_array($mode, ['auto', 'share', 'drive'], true) ? $mode : 'auto';
+            case 'strategy':
+                $strategy = strtolower((string) $value);
+
+                return in_array($strategy, ['round_robin', 'fastest', 'least_used'], true)
+                    ? $strategy
+                    : 'round_robin';
             default:
                 return (string) $value;
         }

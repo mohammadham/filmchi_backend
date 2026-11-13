@@ -48,6 +48,15 @@ return [
         // Target number of concurrent streams per Worker. The total is still
         // capped by RELAY_INGEST_CONNECTIONS.
         'streams_per_worker' => (int) env('RELAY_WORKER_STREAMS', 2),
+        // Maximum Workers one file may use. 0 = the whole healthy pool.
+        'max_workers' => (int) env('RELAY_INGEST_MAX_WORKERS', 0),
+        // Maximum number of chunks to pre-allocate in the pending queue.
+        // 0 = unlimited (limited by memory). Useful for very large files.
+        'max_pending_chunks' => (int) env('RELAY_INGEST_MAX_PENDING_CHUNKS', 0),
+        // Minimum chunk size in MB (for very small files).
+        'min_chunk_mb' => (int) env('RELAY_INGEST_MIN_CHUNK_MB', 1),
+        // Maximum chunk size in MB (for very large files).
+        'max_chunk_mb' => (int) env('RELAY_INGEST_MAX_CHUNK_MB', 16),
     ],
 
     /*
@@ -75,6 +84,8 @@ return [
         // eligible until it has real throughput samples.
         'min_speed_bps' => (int) env('RELAY_WORKER_MIN_SPEED_BPS', 0),
         'max_latency_ms' => (int) env('RELAY_WORKER_MAX_LATENCY_MS', 0),
+        // Worker selection strategy: 'round_robin', 'fastest', 'least_used'
+        'selection_strategy' => env('RELAY_WORKER_SELECTION_STRATEGY', 'round_robin'),
     ],
 
     /*

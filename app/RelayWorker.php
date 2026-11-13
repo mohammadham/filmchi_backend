@@ -31,6 +31,8 @@ class RelayWorker extends Model
         'last_error',
         'failure_count',
         'cooldown_until',
+        'min_speed_bps',
+        'max_latency_ms',
         'last_used_at',
     ];
 
@@ -53,6 +55,8 @@ class RelayWorker extends Model
         'last_checked_at' => 'datetime',
         'failure_count' => 'integer',
         'cooldown_until' => 'datetime',
+        'min_speed_bps' => 'integer',
+        'max_latency_ms' => 'integer',
         'last_used_at' => 'datetime',
     ];
 

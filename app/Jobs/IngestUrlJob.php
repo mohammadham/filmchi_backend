@@ -408,9 +408,19 @@ class IngestUrlJob implements ShouldQueue
      */
     protected function downloadSegmented($source, string $part, int $total): void
     {
-        $chunkSize = max(1, (int) config('media_relay.ingest.chunk_mb', 8)) * 1048576;
+        $chunkMb = max(1, (int) config('media_relay.ingest.chunk_mb', 8));
+        $minChunkMb = max(1, (int) config('media_relay.ingest.min_chunk_mb', 1));
+        $maxChunkMb = max($minChunkMb, (int) config('media_relay.ingest.max_chunk_mb', 16));
+        $chunkSize = max($minChunkMb, min($maxChunkMb, $chunkMb)) * 1048576;
         $registry = app(WorkerRegistry::class);
         $pool = $registry->selectPool($this->url);
+
+        // Cap how many Workers one file may use. 0 keeps the whole pool.
+        $maxWorkers = max(0, (int) config('media_relay.ingest.max_workers', 0));
+
+        if ($maxWorkers > 0) {
+            $pool = $pool->take($maxWorkers)->values();
+        }
 
         // Each concurrent slot is one connection. With Workers the pool size
         // times streams-per-worker sets the width and RELAY_INGEST_CONNECTIONS
@@ -434,13 +444,23 @@ class IngestUrlJob implements ShouldQueue
         }
 
         // Pending queue: chunk index => ['start' => int, 'length' => int].
+        // Materialise chunks lazily so max_pending_chunks bounds memory while
+        // still letting the remaining chunks be fetched as slots free up.
         $pending = [];
         $chunkCount = (int) ceil($total / $chunkSize);
+        $configuredPending = max(0, (int) config('media_relay.ingest.max_pending_chunks', 0));
+        $pendingLimit = $configuredPending > 0 ? $configuredPending : $chunkCount;
+        $nextChunk = 0;
 
-        for ($i = 0; $i < $chunkCount; $i++) {
-            $start = $i * $chunkSize;
-            $pending[$i] = ['start' => $start, 'length' => min($chunkSize, $total - $start)];
-        }
+        $fillPending = function () use (&$pending, &$nextChunk, $chunkCount, $chunkSize, $total, $pendingLimit) {
+            while ($nextChunk < $chunkCount && count($pending) < $pendingLimit) {
+                $start = $nextChunk * $chunkSize;
+                $pending[$nextChunk] = ['start' => $start, 'length' => min($chunkSize, $total - $start)];
+                $nextChunk++;
+            }
+        };
+
+        $fillPending();
 
         $multi = curl_multi_init();
         $handles = [];   // chunk index => curl handle
@@ -498,7 +518,13 @@ class IngestUrlJob implements ShouldQueue
                 return $bytes;
             };
 
-            $startChunk = function (int $index) use ($registry, $multi, &$pending, &$handles, &$routes, &$written, &$lengths, &$inFlight, $writer, $chunkSize, $bindHandle) {
+            // Worker selection strategy
+            $selectionStrategy = config('media_relay.workers.selection_strategy', 'round_robin');
+            $workerIndices = array_keys($pool->toArray());
+            $workerCount = count($workerIndices);
+            $currentWorker = 0;
+
+            $startChunk = function (int $index) use ($registry, $multi, &$pending, &$handles, &$routes, &$written, &$lengths, &$inFlight, $writer, $chunkSize, $bindHandle, $selectionStrategy, &$workerIndices, &$workerCount, &$currentWorker, $pool) {
                 $meta = $pending[$index];
                 unset($pending[$index]);
 
@@ -509,7 +535,17 @@ class IngestUrlJob implements ShouldQueue
                 $inFlight[$index] = true;
 
                 $range = $start . '-' . ($start + $length - 1);
-                $route = $registry->route($this->url, $range);
+
+                if ($selectionStrategy === 'round_robin' && $workerCount > 0) {
+                    // Round-robin worker selection
+                    $worker = $pool->get($workerIndices[$currentWorker]);
+                    $currentWorker = ($currentWorker + 1) % $workerCount;
+                    $route = $registry->routeFor($worker, $this->url, $range);
+                } else {
+                    // Default: fastest worker
+                    $route = $registry->route($this->url, $range);
+                }
+
                 $routes[$index] = $route;
                 $options = [
                     CURLOPT_FOLLOWLOCATION => true,
@@ -539,22 +575,28 @@ class IngestUrlJob implements ShouldQueue
             };
 
             // Fill every slot with the first chunks of the queue.
-            for ($i = 0; $i < $slots; $i++) {
-                $index = array_key_first($pending);
+            $fillSlots = function () use (&$handles, &$pending, $slots, $startChunk, $fillPending) {
+                $fillPending();
 
-                if ($index === null) {
-                    break;
+                while (count($handles) < $slots) {
+                    $index = array_key_first($pending);
+
+                    if ($index === null) {
+                        break;
+                    }
+
+                    $startChunk($index);
                 }
+            };
 
-                $startChunk($index);
-            }
+            $fillSlots();
 
             $lastUpdate = microtime(true);
 
             // curl_multi_info_read is the only reliable "this handle finished"
             // signal, so the loop polls it and refills freed slots from the
             // pending queue as soon as a chunk completes.
-            $harvest = function () use ($multi, $registry, &$handles, &$routes, &$written, &$lengths, &$inFlight, &$failed, &$received, &$pending, &$handleChunkMap, $startChunk) {
+            $harvest = function () use ($multi, $registry, &$handles, &$routes, &$written, &$lengths, &$inFlight, &$failed, &$received, &$pending, &$handleChunkMap, $startChunk, $fillSlots) {
                 while (true) {
                     $info = curl_multi_info_read($multi);
 
@@ -608,12 +650,9 @@ class IngestUrlJob implements ShouldQueue
                     curl_close($handle);
                     unset($handles[$index], $inFlight[$index], $handleChunkMap[spl_object_id($handle)]);
 
-                    // Free slot: immediately pick up the next pending chunk.
-                    $next = array_key_first($pending);
-
-                    if ($next !== null) {
-                        $startChunk($next);
-                    }
+                    // Free slot: materialise more work and immediately pick up
+                    // the next pending chunk.
+                    $fillSlots();
                 }
             };
 
@@ -630,7 +669,7 @@ class IngestUrlJob implements ShouldQueue
                     $this->setStatus($source, 'downloading', (int) min(100, $received / $total * 100));
                     $lastUpdate = microtime(true);
                 }
-            } while ((!empty($handles) || !empty($pending)) && $status === CURLM_OK);
+            } while ((!empty($handles) || !empty($pending) || $nextChunk < $chunkCount) && $status === CURLM_OK);
 
             $harvest();
 

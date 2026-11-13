@@ -99,6 +99,25 @@ class WorkerRegistry
     }
 
     /**
+     * Every registered Worker, including disabled and cooling-down ones.
+     * Used by the explicit --all health test; normal routing stays on
+     * activeWorkers()/selectPool().
+     *
+     * @return Collection<int, RelayWorker>
+     */
+    public function allWorkers(): Collection
+    {
+        try {
+            return RelayWorker::query()
+                ->orderBy('priority')
+                ->orderBy('id')
+                ->get();
+        } catch (Throwable $e) {
+            return collect();
+        }
+    }
+
+    /**
      * Pick the best currently usable Workers for one source.
      *
      * "Usable" means enabled, outside cooldown, not marked failed by the last
@@ -146,16 +165,41 @@ class WorkerRegistry
             $maxLatency = (int) config('media_relay.workers.max_latency_ms', 0);
 
             $workers = $workers->filter(function (RelayWorker $worker) use ($minSpeed, $maxLatency) {
-                if ($minSpeed > 0 && $worker->last_speed_bps !== null && (int) $worker->last_speed_bps < $minSpeed) {
+                // A per-Worker override wins over the global admission
+                // threshold. Null means "use the global value"; 0 disables the
+                // threshold for this Worker.
+                $workerMinSpeed = $worker->min_speed_bps !== null ? (int) $worker->min_speed_bps : $minSpeed;
+                $workerMaxLatency = $worker->max_latency_ms !== null ? (int) $worker->max_latency_ms : $maxLatency;
+
+                if ($workerMinSpeed > 0 && $worker->last_speed_bps !== null && (int) $worker->last_speed_bps < $workerMinSpeed) {
                     return false;
                 }
 
-                if ($maxLatency > 0 && $worker->last_latency_ms !== null && (int) $worker->last_latency_ms > $maxLatency) {
+                if ($workerMaxLatency > 0 && $worker->last_latency_ms !== null && (int) $worker->last_latency_ms > $workerMaxLatency) {
                     return false;
                 }
 
                 return true;
             })->values();
+
+            // Apply selection strategy
+            $strategy = config('media_relay.workers.selection_strategy', 'round_robin');
+            if ($strategy === 'round_robin') {
+                // Return workers in round-robin order (already ordered by priority, etc.)
+                // but we'll rotate through them in the ingest job
+            } elseif ($strategy === 'fastest') {
+                // Sort by speed descending
+                $workers = $workers->sortByDesc(function (RelayWorker $worker) {
+                    return $worker->last_speed_bps ?? 0;
+                });
+            } elseif ($strategy === 'least_used') {
+                // Sort by last_used_at ascending (oldest first)
+                $workers = $workers->sortBy(function (RelayWorker $worker) {
+                    return $worker->last_used_at ?? now()->subYears(1);
+                });
+            }
+
+            $workers = $workers->values();
 
             return $limit !== null ? $workers->take(max(0, $limit))->values() : $workers;
         } catch (Throwable $e) {

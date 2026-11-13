@@ -118,9 +118,10 @@ class WorkerController extends Controller
             ], 422);
         }
 
-        RelaySettings::save($setting, [
-            'relay_worker_enabled' => $request->boolean('relay_worker_enabled'),
-        ]);
+        $input = RelaySettings::filterInput($request->all());
+        $input['relay_worker_enabled'] = $request->boolean('relay_worker_enabled');
+
+        RelaySettings::save($setting, $input);
 
         return response()->json([
             'status' => true,

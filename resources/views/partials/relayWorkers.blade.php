@@ -35,6 +35,47 @@
                             </label>
                         </div>
                     </div>
+                    <hr>
+                    <h6 class="fw-semibold mb-2">{{ __('relayIngestTuning') }}</h6>
+                    <div class="text-muted small mb-3">{{ __('relayIngestTuningHint') }}</div>
+                    <div class="row">
+                        <div class="col-lg-3 col-md-6">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relayWorkerSelectionStrategy') }}</label>
+                                <select class="form-control" name="relay_worker_selection_strategy">
+                                    <option value="round_robin" {{ $relay['relay_worker_selection_strategy'] === 'round_robin' ? 'selected' : '' }}>{{ __('relayWorkerSelectionRoundRobin') }}</option>
+                                    <option value="fastest" {{ $relay['relay_worker_selection_strategy'] === 'fastest' ? 'selected' : '' }}>{{ __('relayWorkerSelectionFastest') }}</option>
+                                    <option value="least_used" {{ $relay['relay_worker_selection_strategy'] === 'least_used' ? 'selected' : '' }}>{{ __('relayWorkerSelectionLeastUsed') }}</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="col-lg-3 col-md-6">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relayIngestMaxWorkers') }}</label>
+                                <input type="number" class="form-control" name="relay_ingest_max_workers" min="0" max="100" value="{{ (int) $relay['relay_ingest_max_workers'] }}">
+                                <div class="text-muted small">{{ __('relayIngestMaxWorkersHint') }}</div>
+                            </div>
+                        </div>
+                        <div class="col-lg-2 col-md-4">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relayIngestChunkMb') }}</label>
+                                <input type="number" class="form-control" name="relay_ingest_chunk_mb" min="1" max="16" value="{{ (int) $relay['relay_ingest_chunk_mb'] }}">
+                            </div>
+                        </div>
+                        <div class="col-lg-2 col-md-4">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relayIngestStreams') }}</label>
+                                <input type="number" class="form-control" name="relay_ingest_streams" min="1" max="8" value="{{ (int) $relay['relay_ingest_streams'] }}">
+                            </div>
+                        </div>
+                        <div class="col-lg-2 col-md-4">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relayIngestMaxPending') }}</label>
+                                <input type="number" class="form-control" name="relay_ingest_max_pending_chunks" min="0" max="10000" value="{{ (int) $relay['relay_ingest_max_pending_chunks'] }}">
+                                <div class="text-muted small">{{ __('relayIngestMaxPendingHint') }}</div>
+                            </div>
+                        </div>
+                    </div>
                     <div class="modal-footer p-0 mb-4">
                         <button type="submit" class="btn theme-btn text-white">{{ __('save') }}</button>
                     </div>

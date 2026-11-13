@@ -475,6 +475,7 @@
 @include('partials.relayWorkers', [
     'workers' => $workers,
     'workerSystemEnabled' => $relay['relay_worker_enabled'],
+    'relay' => $relay,
 ])
 
 @endsection
