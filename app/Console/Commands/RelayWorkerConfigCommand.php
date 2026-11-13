@@ -7,7 +7,7 @@ use Illuminate\Console\Command;
 
 class RelayWorkerConfigCommand extends Command
 {
-    protected $signature = 'relay:worker-config {
+    protected $signature = 'relay:worker-config
         {worker_id? : Worker ID (optional, if omitted lists all)}
         {--min-speed= : Minimum speed in bytes per second (0 = no limit)}
         {--max-latency= : Maximum latency in ms (0 = no limit)}
@@ -15,8 +15,7 @@ class RelayWorkerConfigCommand extends Command
         {--cooldown= : Cooldown seconds after failure}
         {--enabled : Enable worker}
         {--disabled : Disable worker}
-        {--test : Run health test after config}
-    }';
+        {--test : Run health test after config}';
     protected $description = 'Configure Cloudflare Worker settings (min speed, latency, priority, etc.)';
 
     public function handle(): int
