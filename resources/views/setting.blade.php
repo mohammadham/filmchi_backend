@@ -25,9 +25,87 @@
         const activeValue = document.getElementById('relayRuntimeActiveValue');
         const workersValue = document.getElementById('relayRuntimeWorkersValue');
         const queuedValue = document.getElementById('relayRuntimeQueuedValue');
+        const downloadsBody = document.getElementById('relayRuntimeDownloadsBody');
+        const runtimeLabels = @json([
+            'noActive' => __('relayRuntimeNoActive'),
+            'downloading' => __('relayRuntimeDownloading'),
+            'uploading' => __('relayRuntimeUploading'),
+        ]);
 
         if (!activeValue || !workersValue || !queuedValue) {
             return;
+        }
+
+        function renderDownloads(items) {
+            if (!downloadsBody) {
+                return;
+            }
+
+            downloadsBody.textContent = '';
+
+            if (!items || !items.length) {
+                const row = document.createElement('tr');
+                const cell = document.createElement('td');
+                cell.colSpan = 4;
+                cell.className = 'text-center text-muted py-4';
+                cell.textContent = runtimeLabels.noActive;
+                row.appendChild(cell);
+                downloadsBody.appendChild(row);
+
+                return;
+            }
+
+            items.forEach(function(item) {
+                const row = document.createElement('tr');
+
+                const fileCell = document.createElement('td');
+                const name = document.createElement('div');
+                name.className = 'fw-semibold text-break';
+                name.textContent = item.name || '';
+                fileCell.appendChild(name);
+
+                if (item.quality) {
+                    const quality = document.createElement('span');
+                    quality.className = 'badge bg-secondary-subtle text-secondary';
+                    quality.textContent = item.quality;
+                    fileCell.appendChild(quality);
+                }
+
+                const statusCell = document.createElement('td');
+                const status = document.createElement('span');
+                status.className = 'badge ' + (item.status === 'uploading' ? 'bg-warning text-dark' : 'bg-info text-dark');
+                status.textContent = item.status_label || (item.status === 'uploading' ? runtimeLabels.uploading : runtimeLabels.downloading);
+                statusCell.appendChild(status);
+
+                const progressCell = document.createElement('td');
+                const progress = document.createElement('div');
+                progress.className = 'progress';
+                progress.style.height = '8px';
+                const bar = document.createElement('div');
+                bar.className = 'progress-bar';
+                const percent = Math.max(0, Math.min(100, Number(item.progress) || 0));
+                bar.style.width = percent + '%';
+                bar.setAttribute('role', 'progressbar');
+                bar.setAttribute('aria-valuenow', String(percent));
+                bar.setAttribute('aria-valuemin', '0');
+                bar.setAttribute('aria-valuemax', '100');
+                progress.appendChild(bar);
+                const percentLabel = document.createElement('div');
+                percentLabel.className = 'small text-muted mt-1';
+                percentLabel.textContent = percent + '%';
+                progressCell.appendChild(progress);
+                progressCell.appendChild(percentLabel);
+
+                const speedCell = document.createElement('td');
+                speedCell.className = 'text-nowrap';
+                speedCell.textContent = item.speed || '-';
+
+                row.appendChild(fileCell);
+                row.appendChild(statusCell);
+                row.appendChild(progressCell);
+                row.appendChild(speedCell);
+                downloadsBody.appendChild(row);
+            });
         }
 
         async function refreshRelayRuntime() {
@@ -50,6 +128,7 @@
                 activeValue.textContent = data.active;
                 workersValue.textContent = data.workers_live + '/' + data.workers_desired;
                 queuedValue.textContent = data.queued;
+                renderDownloads(data.downloads || []);
             } catch (error) {
                 // A transient panel/network failure keeps the last values.
             }

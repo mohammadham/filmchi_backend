@@ -7,12 +7,14 @@ use App\Admin;
 use App\Admob;
 use App\Content;
 use App\CustomAd;
+use App\Episode;
 use App\Genre;
 use App\EpisodeSource;
 use App\GlobalSettings;
 use App\Language;
 use App\RelayWorker;
 use App\Notification;
+use App\Season;
 use App\Pages;
 use App\Services\Relay\NineDriveClient;
 use App\Services\Relay\RelaySettings;
@@ -125,7 +127,87 @@ class SettingController extends Controller
             'queued' => $queued,
             'workers_live' => $live,
             'workers_desired' => $desired,
+            'downloads' => $this->activeDownloadRows(),
         ];
+    }
+
+    /**
+     * The active rows shown in the settings card. Names are built from the
+     * same title/season/episode convention as the dispatcher, and the speed is
+     * the average rate the ingest job has measured since the transfer began.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    protected function activeDownloadRows(): array
+    {
+        try {
+            $sources = EpisodeSource::whereIn('ingest_status', ['downloading', 'uploading'])
+                ->where('updated_at', '>=', now()->subMinutes(20))
+                ->orderByDesc('updated_at')
+                ->limit(10)
+                ->get();
+        } catch (\Throwable $e) {
+            return [];
+        }
+
+        return $sources->map(function (EpisodeSource $source) {
+            $episode = Episode::find($source->episode_id);
+            $season = $episode ? Season::find($episode->season_id) : null;
+            $content = $season ? Content::find($season->content_id) : null;
+
+            $path = parse_url((string) $source->source, PHP_URL_PATH) ?: '';
+            $extension = strtolower(pathinfo($path, PATHINFO_EXTENSION)) ?: 'mkv';
+            $fallback = basename($path) ?: ('source-' . $source->id);
+            $seasonNumber = (int) preg_replace('/\D+/', '', (string) optional($season)->title)
+                ?: (int) optional($season)->id;
+
+            $name = $content && $episode
+                ? sprintf(
+                    '%s - S%02dE%02d.%s',
+                    (string) $content->title,
+                    $seasonNumber,
+                    (int) $episode->number,
+                    $extension
+                )
+                : $fallback;
+
+            $uploading = (string) $source->ingest_status === 'uploading';
+            $speedBps = $uploading
+                ? (int) $source->upload_speed_bps
+                : (int) $source->ingest_speed_bps;
+
+            return [
+                'id' => (int) $source->id,
+                'name' => $name,
+                'quality' => (string) $source->quality,
+                'status' => (string) $source->ingest_status,
+                'status_label' => $uploading ? __('relayRuntimeUploading') : __('relayRuntimeDownloading'),
+                'progress' => max(0, min(100, (int) $source->ingest_progress)),
+                'speed_bps' => $speedBps,
+                'speed' => $this->humanSpeed($speedBps),
+            ];
+        })->values()->all();
+    }
+
+    protected function humanSpeed(int $bps): string
+    {
+        if ($bps <= 0) {
+            return '-';
+        }
+
+        if ($bps >= 1073741824) {
+            return number_format($bps / 1073741824, 2) . ' GB/s';
+        }
+
+        if ($bps >= 1048576) {
+            return number_format($bps / 1048576, 2) . ' MB/s';
+        }
+
+        if ($bps >= 1024) {
+            return number_format($bps / 1024, 1) . ' KB/s';
+        }
+
+        return $bps . ' B/s';
     }
 
     public function relayRuntime()

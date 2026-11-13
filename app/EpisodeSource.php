@@ -18,6 +18,9 @@ class EpisodeSource extends Model
         'upload_duration_ms' => 'integer',
         'upload_speed_bps' => 'integer',
         'upload_attempts' => 'integer',
+        'ingest_bytes' => 'integer',
+        'ingest_speed_bps' => 'integer',
+        'ingest_started_at' => 'datetime',
     ];
 
     public function media()

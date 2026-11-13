@@ -96,6 +96,9 @@ class IngestUrlJob implements ShouldQueue
         $uploadBytes = 0;
 
         try {
+            $source->ingest_bytes = 0;
+            $source->ingest_speed_bps = 0;
+            $source->ingest_started_at = now();
             $this->setStatus($source, 'downloading', 0);
             $this->download($source, $part);
 
@@ -192,10 +195,19 @@ class IngestUrlJob implements ShouldQueue
         return trim((string) $folder) ?: null;
     }
 
-    protected function setStatus($source, string $status, int $progress): void
+    protected function setStatus($source, string $status, int $progress, ?int $bytes = null, ?int $speedBps = null): void
     {
         $source->ingest_status = $status;
         $source->ingest_progress = max(0, min(100, $progress));
+
+        if ($bytes !== null) {
+            $source->ingest_bytes = max(0, $bytes);
+        }
+
+        if ($speedBps !== null) {
+            $source->ingest_speed_bps = max(0, $speedBps);
+        }
+
         $source->save();
     }
 
@@ -490,6 +502,7 @@ class IngestUrlJob implements ShouldQueue
         $inFlight = [];  // chunk index => true, ordered by dispatch
         $failed = [];    // chunk index => error message
         $received = 0;
+        $downloadStartedAt = microtime(true);
 
         try {
             // Track the curl handle object hash -> chunk index. The write
@@ -686,7 +699,14 @@ class IngestUrlJob implements ShouldQueue
                 $harvest();
 
                 if (microtime(true) - $lastUpdate >= 5) {
-                    $this->setStatus($source, 'downloading', (int) min(100, $received / $total * 100));
+                    $elapsed = max(1, microtime(true) - $downloadStartedAt);
+                    $this->setStatus(
+                        $source,
+                        'downloading',
+                        (int) min(100, $received / $total * 100),
+                        $received,
+                        (int) round($received / $elapsed)
+                    );
                     $lastUpdate = microtime(true);
                 }
             } while ((!empty($handles) || !empty($pending) || $nextChunk < $chunkCount) && $status === CURLM_OK);
@@ -882,6 +902,7 @@ class IngestUrlJob implements ShouldQueue
 
         $received = 0;
         $lastUpdate = microtime(true);
+        $downloadStartedAt = microtime(true);
 
         try {
             while (!feof($remote)) {
@@ -894,8 +915,16 @@ class IngestUrlJob implements ShouldQueue
                 fwrite($out, $buffer);
                 $received += strlen($buffer);
 
-                if ($expected > 0 && microtime(true) - $lastUpdate >= 5) {
-                    $this->setStatus($source, 'downloading', (int) ($received / $expected * 100));
+                if (microtime(true) - $lastUpdate >= 5) {
+                    $elapsed = max(1, microtime(true) - $downloadStartedAt);
+                    $progress = $expected > 0 ? (int) ($received / $expected * 100) : 0;
+                    $this->setStatus(
+                        $source,
+                        'downloading',
+                        $progress,
+                        $received,
+                        (int) round($received / $elapsed)
+                    );
                     $lastUpdate = microtime(true);
                 }
             }

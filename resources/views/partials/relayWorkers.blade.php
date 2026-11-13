@@ -122,6 +122,52 @@
 
                 <hr>
 
+                <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
+                    <h6 class="fw-semibold mb-0">{{ __('relayRuntimeActive') }}</h6>
+                    <span class="text-muted small">{{ count($relayRuntime['downloads']) }} / {{ (int) $relayRuntime['active'] }}</span>
+                </div>
+                <div class="table-responsive mb-4">
+                    <table class="table table-striped align-middle w-100 mb-0">
+                        <thead>
+                            <tr>
+                                <th>{{ __('relayRuntimeFile') }}</th>
+                                <th>{{ __('relayRuntimeStatus') }}</th>
+                                <th style="min-width: 160px;">{{ __('relayRuntimeProgress') }}</th>
+                                <th>{{ __('relayRuntimeSpeed') }}</th>
+                            </tr>
+                        </thead>
+                        <tbody id="relayRuntimeDownloadsBody">
+                            @forelse($relayRuntime['downloads'] as $download)
+                                @php
+                                    $downloadStatusClass = $download['status'] === 'uploading' ? 'bg-warning text-dark' : 'bg-info text-dark';
+                                @endphp
+                                <tr>
+                                    <td>
+                                        <div class="fw-semibold text-break">{{ $download['name'] }}</div>
+                                        @if($download['quality'])
+                                            <span class="badge bg-secondary-subtle text-secondary">{{ $download['quality'] }}</span>
+                                        @endif
+                                    </td>
+                                    <td><span class="badge {{ $downloadStatusClass }}">{{ $download['status_label'] }}</span></td>
+                                    <td>
+                                        <div class="progress" style="height: 8px;">
+                                            <div class="progress-bar" role="progressbar" style="width: {{ (int) $download['progress'] }}%" aria-valuenow="{{ (int) $download['progress'] }}" aria-valuemin="0" aria-valuemax="100"></div>
+                                        </div>
+                                        <div class="small text-muted mt-1">{{ (int) $download['progress'] }}%</div>
+                                    </td>
+                                    <td class="text-nowrap">{{ $download['speed'] }}</td>
+                                </tr>
+                            @empty
+                                <tr>
+                                    <td colspan="4" class="text-center text-muted py-4">{{ __('relayRuntimeNoActive') }}</td>
+                                </tr>
+                            @endforelse
+                        </tbody>
+                    </table>
+                </div>
+
+                <hr>
+
                 <h6 class="fw-semibold mb-3">{{ __('relayWorkerAdd') }}</h6>
                 <div class="text-muted small mb-3">{{ __('relayWorkerAddHint') }}</div>
                 <form id="workerAddForm" method="POST" autocomplete="off">
