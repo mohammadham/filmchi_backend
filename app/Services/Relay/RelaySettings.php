@@ -27,6 +27,7 @@ class RelaySettings
         'relay_ingest_chunk_mb' => ['media_relay.ingest.chunk_mb', 'int'],
         'relay_ingest_streams' => ['media_relay.ingest.streams_per_worker', 'int'],
         'relay_ingest_connections' => ['media_relay.ingest.connections', 'int'],
+        'relay_ingest_concurrency' => ['media_relay.ingest.concurrency', 'concurrency'],
         'relay_worker_min_speed_kbps' => ['media_relay.workers.min_speed_bps', 'kbps'],
         'relay_worker_max_latency_ms' => ['media_relay.workers.max_latency_ms', 'int'],
         'relay_tg_base_url' => ['media_relay.telegram.base_url', 'string'],
@@ -75,6 +76,7 @@ class RelaySettings
             'relay_ingest_chunk_mb' => (int) config('media_relay.ingest.chunk_mb'),
             'relay_ingest_streams' => (int) config('media_relay.ingest.streams_per_worker'),
             'relay_ingest_connections' => (int) config('media_relay.ingest.connections'),
+            'relay_ingest_concurrency' => max(1, min(4, (int) config('media_relay.ingest.concurrency', 1))),
             'relay_worker_min_speed_kbps' => (int) round(((int) config('media_relay.workers.min_speed_bps', 0)) / 1000),
             'relay_worker_max_latency_ms' => (int) config('media_relay.workers.max_latency_ms', 0),
             'relay_tg_base_url' => (string) config('media_relay.telegram.base_url'),
@@ -190,6 +192,8 @@ class RelaySettings
                 return filter_var($value, FILTER_VALIDATE_BOOLEAN);
             case 'int':
                 return max(0, (int) $value);
+            case 'concurrency':
+                return max(1, min(4, (int) $value));
             case 'kbps':
                 // The panel edits KB/s because 50000 B/s is awkward to type;
                 // the registry still consumes bytes per second.

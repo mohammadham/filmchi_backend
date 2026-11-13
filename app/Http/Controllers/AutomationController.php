@@ -21,8 +21,9 @@ use Throwable;
  *
  * The workflow asks for the catalogue state (status) and then asks this API to
  * queue the next slice of episode sources (queue). Nothing is downloaded here:
- * the job goes on the Redis queue and the single worker pulls files one at a
- * time, so the workflow cannot accidentally shred the server's bandwidth.
+ * the job goes on the Redis queue and the worker pool pulls up to the
+ * panel-configured concurrency, so the workflow cannot shred bandwidth by
+ * dispatching an unbounded batch.
  *
  * Files are stored on Telegram Drive only. The 9drive copy is created later by
  * the demand-based promotion policy (RELAY_PROMOTE_THRESHOLD), never here.
@@ -83,8 +84,9 @@ class AutomationController extends Controller
         $activeCount = $this->freshActive()->count();
         $freeGb = $this->diskFreeGb();
         $minGb = (int) config('media_relay.automation.min_free_gb', 25);
-        $maxBatch = max(1, (int) config('media_relay.automation.max_batch', 3));
-        $targetDepth = max(1, min($maxBatch, (int) config('media_relay.automation.target_depth', 2)));
+        $concurrency = max(1, (int) config('media_relay.ingest.concurrency', 1));
+        $maxBatch = max($concurrency, (int) config('media_relay.automation.max_batch', 3));
+        $targetDepth = max($concurrency, min($maxBatch, (int) config('media_relay.automation.target_depth', 2)));
         $diskOk = $freeGb === null || $freeGb >= $minGb;
         $capacity = max(0, $targetDepth - $activeCount - $queued);
         $recommended = $diskOk ? min($maxBatch, $capacity) : 0;
@@ -194,8 +196,9 @@ class AutomationController extends Controller
 
     public function queue(Request $request)
     {
-        $maxBatch = max(1, (int) config('media_relay.automation.max_batch', 3));
-        $targetDepth = max(1, min($maxBatch, (int) config('media_relay.automation.target_depth', 2)));
+        $concurrency = max(1, (int) config('media_relay.ingest.concurrency', 1));
+        $maxBatch = max($concurrency, (int) config('media_relay.automation.max_batch', 3));
+        $targetDepth = max($concurrency, min($maxBatch, (int) config('media_relay.automation.target_depth', 2)));
         $limit = (int) $request->input('limit', 1);
         $limit = max(1, min($targetDepth, $limit));
 

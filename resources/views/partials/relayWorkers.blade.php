@@ -64,6 +64,13 @@
                         </div>
                         <div class="col-lg-2 col-md-4">
                             <div class="form-group">
+                                <label class="form-label">{{ __('relayIngestConcurrency') }}</label>
+                                <input type="number" class="form-control" name="relay_ingest_concurrency" min="1" max="4" value="{{ (int) $relay['relay_ingest_concurrency'] }}">
+                                <div class="text-muted small">{{ __('relayIngestConcurrencyHint') }}</div>
+                            </div>
+                        </div>
+                        <div class="col-lg-2 col-md-4">
+                            <div class="form-group">
                                 <label class="form-label">{{ __('relayIngestChunkMb') }}</label>
                                 <input type="number" class="form-control" name="relay_ingest_chunk_mb" min="1" max="16" value="{{ (int) $relay['relay_ingest_chunk_mb'] }}">
                             </div>

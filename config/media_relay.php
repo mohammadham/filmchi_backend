@@ -25,8 +25,8 @@ return [
     |--------------------------------------------------------------------------
     | Sources added with the "ingest" option are queued: the worker downloads
     | the file, dedup-checks it and uploads to Telegram Drive, then points
-    | the source at the relay link. Ingests run serially (one worker) so the
-    | server's bandwidth is not shredded by parallel pulls.
+    | the source at the relay link. The panel controls how many ingest jobs
+    | may run at once; each job still uses its own connection budget.
     */
     'ingest' => [
         'enabled' => (bool) env('RELAY_INGEST', true),
@@ -39,6 +39,10 @@ return [
         // di.farsanime.ir: 8 conns = 327 KB/s, 24 = 838, 32 = 925, 48 = 1072.
         // Twenty-four keeps most of the gain without a socket pile per file.
         'connections' => (int) env('RELAY_INGEST_CONNECTIONS', 24),
+        // How many files the worker may pull/upload at the same time. Each
+        // concurrent job opens its own connection budget, so the total socket
+        // count is roughly connections × concurrency.
+        'concurrency' => (int) env('RELAY_INGEST_CONCURRENCY', 1),
         // Fixed range size for the dynamic chunk queue. Small chunks let a
         // retry repeat only a few MB instead of a hundred-plus MB slice.
         'chunk_mb' => (int) env('RELAY_INGEST_CHUNK_MB', 8),

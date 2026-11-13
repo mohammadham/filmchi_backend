@@ -27,8 +27,8 @@ use Throwable;
  * swaps the source's URL for the site-domain relay link.
  *
  * Runs on the Redis queue so the panel never blocks on a multi-gigabyte
- * fetch, and the single worker serialises ingests so the server's
- * bandwidth is not shredded by parallel pulls.
+ * fetch. The worker pool size is panel-controlled; each job still owns its
+ * own connection budget and .part file.
  */
 class IngestUrlJob implements ShouldQueue
 {
