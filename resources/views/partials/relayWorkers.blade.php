@@ -58,6 +58,12 @@
                         </div>
                         <div class="col-lg-2 col-md-4">
                             <div class="form-group">
+                                <label class="form-label">{{ __('relayIngestConnections') }}</label>
+                                <input type="number" class="form-control" name="relay_ingest_connections" min="1" max="128" value="{{ (int) $relay['relay_ingest_connections'] }}">
+                            </div>
+                        </div>
+                        <div class="col-lg-2 col-md-4">
+                            <div class="form-group">
                                 <label class="form-label">{{ __('relayIngestChunkMb') }}</label>
                                 <input type="number" class="form-control" name="relay_ingest_chunk_mb" min="1" max="16" value="{{ (int) $relay['relay_ingest_chunk_mb'] }}">
                             </div>
@@ -73,6 +79,22 @@
                                 <label class="form-label">{{ __('relayIngestMaxPending') }}</label>
                                 <input type="number" class="form-control" name="relay_ingest_max_pending_chunks" min="0" max="10000" value="{{ (int) $relay['relay_ingest_max_pending_chunks'] }}">
                                 <div class="text-muted small">{{ __('relayIngestMaxPendingHint') }}</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-lg-3 col-md-6">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relayWorkerMinSpeed') }}</label>
+                                <input type="number" class="form-control" name="relay_worker_min_speed_kbps" min="0" max="100000" value="{{ (int) $relay['relay_worker_min_speed_kbps'] }}">
+                                <div class="text-muted small">{{ __('relayWorkerMinSpeedHint') }}</div>
+                            </div>
+                        </div>
+                        <div class="col-lg-3 col-md-6">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relayWorkerMaxLatency') }}</label>
+                                <input type="number" class="form-control" name="relay_worker_max_latency_ms" min="0" max="60000" value="{{ (int) $relay['relay_worker_max_latency_ms'] }}">
+                                <div class="text-muted small">{{ __('relayWorkerMaxLatencyHint') }}</div>
                             </div>
                         </div>
                     </div>
