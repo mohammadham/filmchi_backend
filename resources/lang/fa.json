@@ -285,6 +285,8 @@
     "relayWorkerSystemHint": "با غیرفعال کردن این گزینه، تمام دانلودها مستقیم و بدون Worker انجام می‌شوند.",
     "relayIngestConnections": "تعداد اتصال هم‌زمان هر فایل",
     "relayIngestConcurrency": "دانلودهای هم‌زمان",
+    "relayIngestTotalConnections": "سقف کل اتصال‌ها",
+    "relayIngestTotalConnectionsHint": "۰ = بدون سقف. مقدار مثبت بین دانلودهای هم‌زمان تقسیم می‌شود؛ ۹۶ با ۲ دانلود یعنی ۴۸ اتصال برای هر فایل.",
     "relayIngestConcurrencyHint": "تعداد فایل‌هایی که هم‌زمان دانلود و آپلود می‌شوند (۱ تا ۴). مجموع اتصال‌ها ≈ تعداد اتصال × این مقدار.",
     "relayWorkerMinSpeed": "حداقل سرعت Worker (کیلوبایت بر ثانیه)",
     "relayWorkerMinSpeedHint": "۰ = بدون محدودیت؛ ۵۰ یعنی ۵۰ کیلوبایت بر ثانیه",

@@ -39,6 +39,10 @@ return [
         // di.farsanime.ir: 8 conns = 327 KB/s, 24 = 838, 32 = 925, 48 = 1072.
         // Twenty-four keeps most of the gain without a socket pile per file.
         'connections' => (int) env('RELAY_INGEST_CONNECTIONS', 24),
+        // Aggregate ceiling shared by all concurrent files. 0 = no ceiling
+        // (connections × concurrency); positive = floor(value / concurrency)
+        // per file, so raising concurrency cannot multiply the socket count.
+        'total_connections' => (int) env('RELAY_INGEST_TOTAL_CONNECTIONS', 0),
         // How many files the worker may pull/upload at the same time. Each
         // concurrent job opens its own connection budget, so the total socket
         // count is roughly connections × concurrency.

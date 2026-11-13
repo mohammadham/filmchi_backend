@@ -285,6 +285,8 @@
     "relayWorkerSystemHint": "When disabled, every download bypasses Workers and uses the direct source.",
     "relayIngestConnections": "Connections per file",
     "relayIngestConcurrency": "Concurrent downloads",
+    "relayIngestTotalConnections": "Total connection cap",
+    "relayIngestTotalConnectionsHint": "0 = no cap. A positive value is split across concurrent downloads; 96 with 2 downloads gives 48 each.",
     "relayIngestConcurrencyHint": "Files downloaded+uploaded at once (1-4). Total connections ≈ connections × this value.",
     "relayWorkerMinSpeed": "Minimum Worker speed (KB/s)",
     "relayWorkerMinSpeedHint": "0 = no limit; 50 means 50 KB/s",

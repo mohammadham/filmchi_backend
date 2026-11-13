@@ -20,6 +20,7 @@ class GlobalSettings extends Model
         'relay_ingest_chunk_mb' => 'integer',
         'relay_ingest_streams' => 'integer',
         'relay_ingest_connections' => 'integer',
+        'relay_ingest_total_connections' => 'integer',
         'relay_ingest_concurrency' => 'integer',
         'relay_worker_min_speed_kbps' => 'integer',
         'relay_worker_max_latency_ms' => 'integer',

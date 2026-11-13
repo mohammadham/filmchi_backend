@@ -266,10 +266,25 @@ class IngestUrlJob implements ShouldQueue
         $this->downloadStream($source, $part, $probe['size']);
     }
 
-    /** Connections used for a single file. */
+    /**
+     * Connections used for a single file.
+     *
+     * A positive aggregate ceiling is divided by the panel concurrency so
+     * four parallel files cannot open four times the socket budget. With no
+     * ceiling the old per-file value applies unchanged.
+     */
     protected function connectionCount(): int
     {
-        return max(1, (int) config('media_relay.ingest.connections', 8));
+        $perFile = max(1, (int) config('media_relay.ingest.connections', 8));
+        $total = max(0, (int) config('media_relay.ingest.total_connections', 0));
+
+        if ($total === 0) {
+            return $perFile;
+        }
+
+        $concurrency = max(1, (int) config('media_relay.ingest.concurrency', 1));
+
+        return max(1, min($perFile, intdiv($total, $concurrency)));
     }
 
     /**

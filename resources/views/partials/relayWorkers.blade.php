@@ -71,6 +71,13 @@
                         </div>
                         <div class="col-lg-2 col-md-4">
                             <div class="form-group">
+                                <label class="form-label">{{ __('relayIngestTotalConnections') }}</label>
+                                <input type="number" class="form-control" name="relay_ingest_total_connections" min="0" max="512" value="{{ (int) $relay['relay_ingest_total_connections'] }}">
+                                <div class="text-muted small">{{ __('relayIngestTotalConnectionsHint') }}</div>
+                            </div>
+                        </div>
+                        <div class="col-lg-2 col-md-4">
+                            <div class="form-group">
                                 <label class="form-label">{{ __('relayIngestChunkMb') }}</label>
                                 <input type="number" class="form-control" name="relay_ingest_chunk_mb" min="1" max="16" value="{{ (int) $relay['relay_ingest_chunk_mb'] }}">
                             </div>
