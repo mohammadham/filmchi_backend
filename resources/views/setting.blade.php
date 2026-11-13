@@ -21,6 +21,46 @@
 
 <script>
     document.addEventListener('DOMContentLoaded', function() {
+        const runtimeUrl = @json(route('relayRuntime'));
+        const activeValue = document.getElementById('relayRuntimeActiveValue');
+        const workersValue = document.getElementById('relayRuntimeWorkersValue');
+        const queuedValue = document.getElementById('relayRuntimeQueuedValue');
+
+        if (!activeValue || !workersValue || !queuedValue) {
+            return;
+        }
+
+        async function refreshRelayRuntime() {
+            try {
+                const response = await fetch(runtimeUrl, {
+                    headers: { 'Accept': 'application/json' },
+                    credentials: 'same-origin'
+                });
+
+                if (!response.ok) {
+                    return;
+                }
+
+                const data = await response.json();
+
+                if (!data.status) {
+                    return;
+                }
+
+                activeValue.textContent = data.active;
+                workersValue.textContent = data.workers_live + '/' + data.workers_desired;
+                queuedValue.textContent = data.queued;
+            } catch (error) {
+                // A transient panel/network failure keeps the last values.
+            }
+        }
+
+        setInterval(refreshRelayRuntime, 10000);
+    });
+</script>
+
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
 
         const awsConfig = @json($awsConfig);
         const doConfig = @json($doConfig);
@@ -476,6 +516,7 @@
     'workers' => $workers,
     'workerSystemEnabled' => $relay['relay_worker_enabled'],
     'relay' => $relay,
+    'relayRuntime' => $relayRuntime,
 ])
 
 @endsection

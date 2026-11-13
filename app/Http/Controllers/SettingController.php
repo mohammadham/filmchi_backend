@@ -8,6 +8,7 @@ use App\Admob;
 use App\Content;
 use App\CustomAd;
 use App\Genre;
+use App\EpisodeSource;
 use App\GlobalSettings;
 use App\Language;
 use App\RelayWorker;
@@ -16,10 +17,13 @@ use App\Pages;
 use App\Services\Relay\NineDriveClient;
 use App\Services\Relay\RelaySettings;
 use App\Services\Relay\TelegramDriveClient;
+use App\Console\Commands\RelayQueueSupervisor;
 use App\TVCategory;
 use App\TVChannel;
 use App\User;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\URL;
 
 class SettingController extends Controller
@@ -67,6 +71,7 @@ class SettingController extends Controller
             'DO_SPACE_BUCKET' => env('DO_SPACE_BUCKET')
         ];
         $relay = RelaySettings::effective();
+        $relayRuntime = $this->relayRuntimeStatus();
 
         try {
             $workers = RelayWorker::query()->orderBy('priority')->orderBy('id')->get();
@@ -75,7 +80,57 @@ class SettingController extends Controller
             $workers = collect();
         }
 
-        return view('setting', compact('setting', 'awsConfig', 'doConfig', 'relay', 'workers'));
+        return view('setting', compact('setting', 'awsConfig', 'doConfig', 'relay', 'workers', 'relayRuntime'));
+    }
+
+    /**
+     * Live ingest indicators for the settings card. Active rows use the same
+     * 20-minute freshness rule as the automation API; the queue-worker count
+     * comes from the supervisor heartbeat, not from a stale database row.
+     */
+    protected function relayRuntimeStatus(): array
+    {
+        $active = 0;
+        $queued = 0;
+
+        try {
+            $active = EpisodeSource::whereIn('ingest_status', ['downloading', 'uploading'])
+                ->where('updated_at', '>=', now()->subMinutes(20))
+                ->count();
+            $queued = EpisodeSource::where('ingest_status', 'queued')->count();
+        } catch (\Throwable $e) {
+            // Keep the settings page usable during a migration.
+        }
+
+        $live = 0;
+        $desired = max(1, (int) config('media_relay.ingest.concurrency', 1));
+
+        try {
+            $heartbeat = Cache::get(RelayQueueSupervisor::STATUS_KEY);
+
+            if (is_array($heartbeat)) {
+                $desired = max(0, (int) ($heartbeat['desired'] ?? $desired));
+                $beatAt = !empty($heartbeat['updated_at']) ? Carbon::parse($heartbeat['updated_at']) : null;
+
+                if ($beatAt && $beatAt->gt(now()->subSeconds(20))) {
+                    $live = max(0, (int) ($heartbeat['workers'] ?? 0));
+                }
+            }
+        } catch (\Throwable $e) {
+            // No heartbeat available; report 0 live.
+        }
+
+        return [
+            'active' => $active,
+            'queued' => $queued,
+            'workers_live' => $live,
+            'workers_desired' => $desired,
+        ];
+    }
+
+    public function relayRuntime()
+    {
+        return response()->json(array_merge(['status' => true], $this->relayRuntimeStatus()));
     }
     
     function fetchSettings()

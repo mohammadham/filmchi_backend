@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Services\Relay\RelaySettings;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Cache;
 use Throwable;
 
 /**
@@ -22,6 +23,9 @@ class RelayQueueSupervisor extends Command
         {--poll=3 : Seconds between desired-concurrency checks}';
 
     protected $description = 'Supervise a panel-controlled number of ingest queue workers';
+
+    /** Cache key read by the settings page. */
+    public const STATUS_KEY = 'relay:queue:supervisor';
 
     /** @var array<int, array{process:resource,pipes:array,stopping:bool,started_at:int}> */
     protected $children = [];
@@ -60,6 +64,8 @@ class RelayQueueSupervisor extends Command
                 }
             }
 
+            $this->heartbeat($desired);
+
             if (!$this->stopping) {
                 sleep(max(1, (int) $this->option('poll')));
             }
@@ -68,6 +74,32 @@ class RelayQueueSupervisor extends Command
         $this->stopAllWorkers();
 
         return 0;
+    }
+
+    /**
+     * Publish a small heartbeat for the panel: how many queue workers are
+     * actually alive, plus the panel's desired count. A stale heartbeat means
+     * the supervisor itself is down, which the panel renders as 0 live.
+     */
+    protected function heartbeat(int $desired): void
+    {
+        $live = 0;
+
+        foreach ($this->children as $child) {
+            if (empty($child['stopping'])) {
+                $live++;
+            }
+        }
+
+        try {
+            Cache::put(self::STATUS_KEY, [
+                'workers' => $live,
+                'desired' => $desired,
+                'updated_at' => now()->toIso8601String(),
+            ], now()->addMinutes(10));
+        } catch (Throwable $e) {
+            // The panel will show "no heartbeat" rather than failing a job.
+        }
     }
 
     protected function desiredConcurrency(): int
@@ -227,6 +259,17 @@ class RelayQueueSupervisor extends Command
         }
 
         $this->children = [];
+
+        try {
+            Cache::put(self::STATUS_KEY, [
+                'workers' => 0,
+                'desired' => 0,
+                'updated_at' => now()->toIso8601String(),
+            ], now()->addMinutes(10));
+        } catch (Throwable $e) {
+            // Ignore: the container is already shutting down.
+        }
+
         $this->info('relay queue supervisor stopped');
     }
 

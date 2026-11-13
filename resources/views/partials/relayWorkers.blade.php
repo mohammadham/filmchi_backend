@@ -8,10 +8,13 @@
                             <h4 class="mb-1 fw-semibold">{{ __('relayWorkersTitle') }}</h4>
                             <div class="text-muted small">{{ __('relayWorkersHint') }}</div>
                         </div>
-                        <div class="d-flex align-items-center gap-2">
+                        <div class="d-flex align-items-center gap-2 flex-wrap">
                             <span class="badge bg-success">{{ __('relayWorkerOnline') }}: {{ $workers->where('last_status', 'ok')->count() }}</span>
                             <span class="badge bg-danger">{{ __('relayWorkerOffline') }}: {{ $workers->where('last_status', 'failed')->count() }}</span>
                             <span class="badge bg-secondary">{{ __('relayWorkerStatus') }}: {{ $workers->count() }}</span>
+                            <span class="badge bg-info">{{ __('relayRuntimeActive') }}: <span id="relayRuntimeActiveValue">{{ (int) $relayRuntime['active'] }}</span></span>
+                            <span class="badge bg-primary">{{ __('relayRuntimeWorkers') }}: <span id="relayRuntimeWorkersValue">{{ (int) $relayRuntime['workers_live'] }}/{{ (int) $relayRuntime['workers_desired'] }}</span></span>
+                            <span class="badge bg-secondary">{{ __('relayRuntimeQueued') }}: <span id="relayRuntimeQueuedValue">{{ (int) $relayRuntime['queued'] }}</span></span>
                         </div>
                     </div>
                 </div>
