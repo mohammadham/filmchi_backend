@@ -31,11 +31,14 @@
         const heartbeatBadge = document.getElementById('relayHeartbeatBadge');
         const supervisorAlert = document.getElementById('relaySupervisorAlert');
         const downloadsBody = document.getElementById('relayRuntimeDownloadsBody');
-        const runtimeLabels = @json([
-            'noActive' => __('relayRuntimeNoActive'),
-            'downloading' => __('relayRuntimeDownloading'),
-            'uploading' => __('relayRuntimeUploading'),
-        ]);
+        @php
+            $runtimeLabels = [
+                'noActive' => __('relayRuntimeNoActive'),
+                'downloading' => __('relayRuntimeDownloading'),
+                'uploading' => __('relayRuntimeUploading'),
+            ];
+        @endphp
+        const runtimeLabels = @json($runtimeLabels);
 
         if (!activeValue || !workersValue || !queuedValue) {
             return;
