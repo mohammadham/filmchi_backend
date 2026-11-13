@@ -20,6 +20,7 @@ class EpisodeSource extends Model
         'upload_attempts' => 'integer',
         'ingest_bytes' => 'integer',
         'ingest_speed_bps' => 'integer',
+        'ingest_connections' => 'integer',
         'ingest_started_at' => 'datetime',
     ];
 

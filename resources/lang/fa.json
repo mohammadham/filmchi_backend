@@ -286,6 +286,8 @@
     "relayRuntimeNoActive": "دانلود فعالی وجود ندارد.",
     "relayRuntimeDownloading": "در حال دانلود",
     "relayRuntimeUploading": "در حال آپلود",
+    "relayRuntimeConnections": "اتصال‌های در حال استفاده",
+    "relayRuntimeTotalSpeed": "سرعت مجموع",
     "relayRuntimeHeartbeat": "آخرین heartbeat",
     "relayRuntimeHeartbeatNow": "همین حالا",
     "relayRuntimeHeartbeatAgo": ":seconds ثانیه پیش",

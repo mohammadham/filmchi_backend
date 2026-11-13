@@ -25,6 +25,8 @@
         const activeValue = document.getElementById('relayRuntimeActiveValue');
         const workersValue = document.getElementById('relayRuntimeWorkersValue');
         const queuedValue = document.getElementById('relayRuntimeQueuedValue');
+        const connectionsValue = document.getElementById('relayRuntimeConnectionsValue');
+        const totalSpeedValue = document.getElementById('relayRuntimeTotalSpeedValue');
         const heartbeatValue = document.getElementById('relayHeartbeatValue');
         const heartbeatBadge = document.getElementById('relayHeartbeatBadge');
         const supervisorAlert = document.getElementById('relaySupervisorAlert');
@@ -131,6 +133,14 @@
                 activeValue.textContent = data.active;
                 workersValue.textContent = data.workers_live + '/' + data.workers_desired;
                 queuedValue.textContent = data.queued;
+
+                if (connectionsValue) {
+                    connectionsValue.textContent = data.connections_in_use;
+                }
+
+                if (totalSpeedValue) {
+                    totalSpeedValue.textContent = data.total_speed || '-';
+                }
 
                 if (heartbeatValue) {
                     heartbeatValue.textContent = data.heartbeat_label || '';

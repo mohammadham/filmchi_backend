@@ -104,6 +104,26 @@ class SettingController extends Controller
             // Keep the settings page usable during a migration.
         }
 
+        $connectionsInUse = 0;
+        $totalSpeedBps = 0;
+
+        try {
+            $aggregate = EpisodeSource::whereIn('ingest_status', ['downloading', 'uploading'])
+                ->where('updated_at', '>=', now()->subMinutes(20))
+                ->selectRaw(
+                    "SUM(CASE WHEN ingest_status = 'downloading' THEN COALESCE(ingest_connections, 0) ELSE 0 END) as connections, "
+                    . "SUM(CASE WHEN ingest_status = 'uploading' THEN COALESCE(upload_speed_bps, 0) ELSE COALESCE(ingest_speed_bps, 0) END) as speed_bps"
+                )
+                ->first();
+
+            if ($aggregate) {
+                $connectionsInUse = max(0, (int) $aggregate->connections);
+                $totalSpeedBps = max(0, (int) $aggregate->speed_bps);
+            }
+        } catch (\Throwable $e) {
+            // The page still works while a deploy is adding the column.
+        }
+
         $live = 0;
         $desired = max(1, (int) config('media_relay.ingest.concurrency', 1));
         $heartbeatAt = null;
@@ -144,6 +164,9 @@ class SettingController extends Controller
             'heartbeat_age_s' => $heartbeatAge,
             'heartbeat_label' => $heartbeatLabel,
             'supervisor_down' => $supervisorDown,
+            'connections_in_use' => $connectionsInUse,
+            'total_speed_bps' => $totalSpeedBps,
+            'total_speed' => $this->humanSpeed($totalSpeedBps),
             'downloads' => $this->activeDownloadRows(),
         ];
     }

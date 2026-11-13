@@ -98,6 +98,7 @@ class IngestUrlJob implements ShouldQueue
         try {
             $source->ingest_bytes = 0;
             $source->ingest_speed_bps = 0;
+            $source->ingest_connections = 0;
             $source->ingest_started_at = now();
             $this->setStatus($source, 'downloading', 0);
             $this->download($source, $part);
@@ -206,6 +207,10 @@ class IngestUrlJob implements ShouldQueue
 
         if ($speedBps !== null) {
             $source->ingest_speed_bps = max(0, $speedBps);
+        }
+
+        if ($status !== 'downloading') {
+            $source->ingest_connections = 0;
         }
 
         $source->save();
@@ -462,6 +467,9 @@ class IngestUrlJob implements ShouldQueue
             : $this->connectionCount();
 
         $slots = max(1, min($slots, (int) ceil($total / $chunkSize)));
+
+        $source->ingest_connections = $slots;
+        $source->save();
 
         $out = @fopen($part, 'c+b');
 
@@ -899,6 +907,9 @@ class IngestUrlJob implements ShouldQueue
 
             throw new \RuntimeException('could not open the ingest target file');
         }
+
+        $source->ingest_connections = 1;
+        $source->save();
 
         $received = 0;
         $lastUpdate = microtime(true);

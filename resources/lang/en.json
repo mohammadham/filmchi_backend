@@ -286,6 +286,8 @@
     "relayRuntimeNoActive": "No active downloads.",
     "relayRuntimeDownloading": "Downloading",
     "relayRuntimeUploading": "Uploading",
+    "relayRuntimeConnections": "Connections in use",
+    "relayRuntimeTotalSpeed": "Total speed",
     "relayRuntimeHeartbeat": "Last heartbeat",
     "relayRuntimeHeartbeatNow": "just now",
     "relayRuntimeHeartbeatAgo": ":seconds s ago",

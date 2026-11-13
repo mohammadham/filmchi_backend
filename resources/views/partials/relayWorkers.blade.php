@@ -15,6 +15,8 @@
                             <span class="badge bg-info">{{ __('relayRuntimeActive') }}: <span id="relayRuntimeActiveValue">{{ (int) $relayRuntime['active'] }}</span></span>
                             <span class="badge bg-primary">{{ __('relayRuntimeWorkers') }}: <span id="relayRuntimeWorkersValue">{{ (int) $relayRuntime['workers_live'] }}/{{ (int) $relayRuntime['workers_desired'] }}</span></span>
                             <span class="badge bg-secondary">{{ __('relayRuntimeQueued') }}: <span id="relayRuntimeQueuedValue">{{ (int) $relayRuntime['queued'] }}</span></span>
+                            <span class="badge bg-dark">{{ __('relayRuntimeConnections') }}: <span id="relayRuntimeConnectionsValue">{{ (int) $relayRuntime['connections_in_use'] }}</span></span>
+                            <span class="badge bg-success">{{ __('relayRuntimeTotalSpeed') }}: <span id="relayRuntimeTotalSpeedValue">{{ $relayRuntime['total_speed'] }}</span></span>
                             <span class="badge {{ $relayRuntime['supervisor_down'] ? 'bg-danger' : 'bg-success' }}" id="relayHeartbeatBadge">
                                 {{ __('relayRuntimeHeartbeat') }}: <span id="relayHeartbeatValue">{{ $relayRuntime['heartbeat_label'] }}</span>
                             </span>
