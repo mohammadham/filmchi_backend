@@ -106,6 +106,10 @@ class SettingController extends Controller
 
         $live = 0;
         $desired = max(1, (int) config('media_relay.ingest.concurrency', 1));
+        $heartbeatAt = null;
+        $heartbeatAge = null;
+        $heartbeatLabel = __('relayRuntimeHeartbeatNever');
+        $supervisorDown = true;
 
         try {
             $heartbeat = Cache::get(RelayQueueSupervisor::STATUS_KEY);
@@ -114,12 +118,21 @@ class SettingController extends Controller
                 $desired = max(0, (int) ($heartbeat['desired'] ?? $desired));
                 $beatAt = !empty($heartbeat['updated_at']) ? Carbon::parse($heartbeat['updated_at']) : null;
 
-                if ($beatAt && $beatAt->gt(now()->subSeconds(20))) {
-                    $live = max(0, (int) ($heartbeat['workers'] ?? 0));
+                if ($beatAt) {
+                    $heartbeatAt = $beatAt->toIso8601String();
+                    $heartbeatAge = max(0, now()->getTimestamp() - $beatAt->getTimestamp());
+                    $heartbeatLabel = $heartbeatAge <= 2
+                        ? __('relayRuntimeHeartbeatNow')
+                        : __('relayRuntimeHeartbeatAgo', ['seconds' => $heartbeatAge]);
+
+                    if ($heartbeatAge <= 20) {
+                        $live = max(0, (int) ($heartbeat['workers'] ?? 0));
+                        $supervisorDown = false;
+                    }
                 }
             }
         } catch (\Throwable $e) {
-            // No heartbeat available; report 0 live.
+            // No heartbeat available; report 0 live and show the alert.
         }
 
         return [
@@ -127,6 +140,10 @@ class SettingController extends Controller
             'queued' => $queued,
             'workers_live' => $live,
             'workers_desired' => $desired,
+            'heartbeat_at' => $heartbeatAt,
+            'heartbeat_age_s' => $heartbeatAge,
+            'heartbeat_label' => $heartbeatLabel,
+            'supervisor_down' => $supervisorDown,
             'downloads' => $this->activeDownloadRows(),
         ];
     }

@@ -15,11 +15,17 @@
                             <span class="badge bg-info">{{ __('relayRuntimeActive') }}: <span id="relayRuntimeActiveValue">{{ (int) $relayRuntime['active'] }}</span></span>
                             <span class="badge bg-primary">{{ __('relayRuntimeWorkers') }}: <span id="relayRuntimeWorkersValue">{{ (int) $relayRuntime['workers_live'] }}/{{ (int) $relayRuntime['workers_desired'] }}</span></span>
                             <span class="badge bg-secondary">{{ __('relayRuntimeQueued') }}: <span id="relayRuntimeQueuedValue">{{ (int) $relayRuntime['queued'] }}</span></span>
+                            <span class="badge {{ $relayRuntime['supervisor_down'] ? 'bg-danger' : 'bg-success' }}" id="relayHeartbeatBadge">
+                                {{ __('relayRuntimeHeartbeat') }}: <span id="relayHeartbeatValue">{{ $relayRuntime['heartbeat_label'] }}</span>
+                            </span>
                         </div>
                     </div>
                 </div>
             </div>
             <div class="card-body px-4">
+                <div id="relaySupervisorAlert" class="alert alert-danger d-flex align-items-center gap-2 {{ $relayRuntime['supervisor_down'] ? '' : 'd-none' }}" role="alert">
+                    <strong>{{ __('relayRuntimeSupervisorDown') }}</strong>
+                </div>
                 <form id="workerSystemForm" method="POST" autocomplete="off">
                     @csrf
                     <div class="card w-auto p-3 mb-4">

@@ -25,6 +25,9 @@
         const activeValue = document.getElementById('relayRuntimeActiveValue');
         const workersValue = document.getElementById('relayRuntimeWorkersValue');
         const queuedValue = document.getElementById('relayRuntimeQueuedValue');
+        const heartbeatValue = document.getElementById('relayHeartbeatValue');
+        const heartbeatBadge = document.getElementById('relayHeartbeatBadge');
+        const supervisorAlert = document.getElementById('relaySupervisorAlert');
         const downloadsBody = document.getElementById('relayRuntimeDownloadsBody');
         const runtimeLabels = @json([
             'noActive' => __('relayRuntimeNoActive'),
@@ -128,6 +131,20 @@
                 activeValue.textContent = data.active;
                 workersValue.textContent = data.workers_live + '/' + data.workers_desired;
                 queuedValue.textContent = data.queued;
+
+                if (heartbeatValue) {
+                    heartbeatValue.textContent = data.heartbeat_label || '';
+                }
+
+                if (heartbeatBadge) {
+                    heartbeatBadge.classList.toggle('bg-danger', !!data.supervisor_down);
+                    heartbeatBadge.classList.toggle('bg-success', !data.supervisor_down);
+                }
+
+                if (supervisorAlert) {
+                    supervisorAlert.classList.toggle('d-none', !data.supervisor_down);
+                }
+
                 renderDownloads(data.downloads || []);
             } catch (error) {
                 // A transient panel/network failure keeps the last values.
