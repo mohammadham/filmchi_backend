@@ -5,6 +5,44 @@ define('LARAVEL_START', microtime(true));
 
 /*
 |--------------------------------------------------------------------------
+| Queue worker compatibility guard
+|--------------------------------------------------------------------------
+|
+| The production compose file has historically invoked `queue:work` directly.
+| When that command is the container entrypoint, turn it into the supervisor
+| so the panel-controlled worker count still applies. The supervisor marks its
+| own children with FLIXY_QUEUE_CHILD=1, so they run the real queue worker and
+| do not recurse into another supervisor.
+|
+*/
+if (PHP_SAPI === 'cli'
+    && ($argv[1] ?? null) === 'queue:work'
+    && getenv('FLIXY_QUEUE_CHILD') !== '1'
+    && !in_array('--once', $argv, true)) {
+    $queue = 'default';
+
+    foreach (array_slice($argv, 2) as $argument) {
+        if (strpos($argument, '--queue=') === 0) {
+            $queue = substr($argument, 8);
+            break;
+        }
+    }
+
+    putenv('FLIXY_QUEUE_CHILD=1');
+
+    $command = escapeshellarg(PHP_BINARY)
+        . ' ' . escapeshellarg(__FILE__)
+        . ' relay:queue-supervisor'
+        . ' --queue=' . escapeshellarg($queue)
+        . ' --poll=3';
+
+    passthru($command, $status);
+
+    exit($status);
+}
+
+/*
+|--------------------------------------------------------------------------
 | Register The Auto Loader
 |--------------------------------------------------------------------------
 |

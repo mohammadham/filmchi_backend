@@ -141,7 +141,9 @@ class RelayQueueSupervisor extends Command
         ];
 
         $pipes = [];
-        $process = @proc_open($command, $descriptors, $pipes);
+        $environment = getenv();
+        $environment['FLIXY_QUEUE_CHILD'] = '1';
+        $process = @proc_open($command, $descriptors, $pipes, null, $environment);
 
         if (!is_resource($process)) {
             $this->error('could not start queue worker ' . $name);
