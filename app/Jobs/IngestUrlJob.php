@@ -8,6 +8,7 @@ use App\Episode;
 use App\EpisodeSource;
 use App\Season;
 use App\RelayLink;
+use App\Services\Relay\RelaySettings;
 use App\Services\Relay\RelayStorage;
 use App\Services\Relay\UploadMetrics;
 use App\Services\Relay\WorkerRegistry;
@@ -65,6 +66,10 @@ class IngestUrlJob implements ShouldQueue
 
     public function handle(RelayStorage $storage): void
     {
+        // A queue worker is long-lived; refresh panel-saved ingest tuning for
+        // every job instead of only at process boot.
+        RelaySettings::apply();
+
         $source = $this->source();
 
         if (!$source) {
