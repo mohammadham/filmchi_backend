@@ -598,6 +598,9 @@ class IngestUrlJob implements ShouldQueue
                     CURLOPT_CONNECTTIMEOUT => 30,
                     CURLOPT_LOW_SPEED_LIMIT => 1,
                     CURLOPT_LOW_SPEED_TIME => (int) config('media_relay.ingest.chunk_stall_timeout', 60),
+                    // Hard ceiling in addition to the low-speed check so a
+                    // half-open connection cannot keep a slot forever.
+                    CURLOPT_TIMEOUT => max(30, (int) config('media_relay.ingest.chunk_stall_timeout', 60) * 2),
                     CURLOPT_TCP_KEEPALIVE => 1,
                     CURLOPT_USERAGENT => (string) config('media_relay.relay.user_agent', 'flixy-media-relay/1.0'),
                     CURLOPT_WRITEFUNCTION => $writer,
@@ -751,12 +754,21 @@ class IngestUrlJob implements ShouldQueue
 
             $failedWorkerIds = array_values(array_unique($failedWorkerIds));
             $retryRound = 0;
+            $retryStartedAt = microtime(true);
+            // A source can fail every chunk at once. Retrying 24 chunks one by
+            // one used to hold a download slot for tens of minutes; cap the
+            // whole retry pass so a dead source releases the queue quickly.
+            $retryBudget = max(30, (int) config('media_relay.ingest.chunk_retry_budget', 180));
 
             while (!empty($failed) && $retryRound < 2) {
                 $retryRound++;
                 $next = [];
 
                 foreach ($failed as $i => $firstError) {
+                    if (microtime(true) - $retryStartedAt >= $retryBudget) {
+                        throw new \RuntimeException('segmented download retry budget exhausted');
+                    }
+
                     $start = $i * $chunkSize;
                     $length = min($chunkSize, $total - $start);
                     $range = $start . '-' . ($start + $length - 1);
@@ -834,6 +846,7 @@ class IngestUrlJob implements ShouldQueue
             CURLOPT_CONNECTTIMEOUT => 30,
             CURLOPT_LOW_SPEED_LIMIT => 1,
             CURLOPT_LOW_SPEED_TIME => (int) config('media_relay.ingest.chunk_stall_timeout', 60),
+            CURLOPT_TIMEOUT => max(30, (int) config('media_relay.ingest.chunk_stall_timeout', 60) * 2),
             CURLOPT_TCP_KEEPALIVE => 1,
             CURLOPT_USERAGENT => (string) config('media_relay.relay.user_agent', 'flixy-media-relay/1.0'),
             CURLOPT_WRITEFUNCTION => function ($ch, string $data) use ($out, $start, $length, &$written) {
