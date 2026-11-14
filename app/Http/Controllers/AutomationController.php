@@ -45,6 +45,9 @@ class AutomationController extends Controller
      */
     protected const STALE_MINUTES = 20;
 
+    /** An upload can legitimately take hours, so it gets a wider window. */
+    protected const UPLOAD_STALE_MINUTES = 360;
+
     /** A catalogue pass that has not reported progress for this long is dead. */
     protected const CATALOGUE_STALE_MINUTES = 15;
 
@@ -82,13 +85,22 @@ class AutomationController extends Controller
         $pending = $this->pendingQuery()->count();
         $queued = (int) ($counts['queued'] ?? 0);
         $activeCount = $this->freshActive()->count();
+        $downloading = $this->freshDownloading()->count();
+        $uploading = $this->freshUploading()->count();
+        $uploadQueued = EpisodeSource::where('ingest_status', 'uploading')
+            ->where('upload_status', UploadMetrics::STATUS_QUEUED)
+            ->where('updated_at', '>=', now()->subMinutes(self::UPLOAD_STALE_MINUTES))
+            ->count();
         $freeGb = $this->diskFreeGb();
         $minGb = (int) config('media_relay.automation.min_free_gb', 25);
         $concurrency = max(1, (int) config('media_relay.ingest.concurrency', 1));
         $maxBatch = max($concurrency, (int) config('media_relay.automation.max_batch', 3));
         $targetDepth = max($concurrency, min($maxBatch, (int) config('media_relay.automation.target_depth', 2)));
         $diskOk = $freeGb === null || $freeGb >= $minGb;
-        $capacity = max(0, $targetDepth - $activeCount - $queued);
+        // Uploading sources must not consume download capacity: the two
+        // phases have independent worker pools. Otherwise both uploads
+        // running would stop new downloads and empty the queue.
+        $capacity = max(0, $targetDepth - $downloading - $queued);
         $recommended = $diskOk ? min($maxBatch, $capacity) : 0;
 
         return response()->json([
@@ -96,6 +108,9 @@ class AutomationController extends Controller
             'pending' => $pending,
             'queued' => $queued,
             'active' => $activeCount,
+            'downloading' => $downloading,
+            'uploading' => $uploading,
+            'upload_queued' => $uploadQueued,
             'stale' => $this->staleActive()->count(),
             'completed' => (int) ($counts['completed'] ?? 0),
             'failed' => (int) ($counts['failed'] ?? 0),
@@ -232,7 +247,7 @@ class AutomationController extends Controller
         // One download at a time is what the worker does anyway; refuse to grow
         // the queue beyond a small buffer so a stuck file cannot pile up work.
         $queued = EpisodeSource::where('ingest_status', 'queued')->count();
-        $active = $this->freshActive()->count();
+        $active = $this->freshDownloading()->count();
         $capacity = max(0, $targetDepth - $queued - $active);
 
         if ($capacity <= 0) {
@@ -295,7 +310,7 @@ class AutomationController extends Controller
             0,
             $targetDepth
                 - EpisodeSource::where('ingest_status', 'queued')->count()
-                - $this->freshActive()->count()
+                - $this->freshDownloading()->count()
         );
 
         return response()->json([
@@ -470,8 +485,25 @@ class AutomationController extends Controller
      */
     protected function freshActive()
     {
-        return EpisodeSource::whereIn('ingest_status', ['downloading', 'uploading'])
+        return EpisodeSource::where(function ($query) {
+            $query->where('ingest_status', 'downloading')
+                ->where('updated_at', '>=', now()->subMinutes(self::STALE_MINUTES));
+        })->orWhere(function ($query) {
+            $query->where('ingest_status', 'uploading')
+                ->where('updated_at', '>=', now()->subMinutes(self::UPLOAD_STALE_MINUTES));
+        });
+    }
+
+    protected function freshDownloading()
+    {
+        return EpisodeSource::where('ingest_status', 'downloading')
             ->where('updated_at', '>=', now()->subMinutes(self::STALE_MINUTES));
+    }
+
+    protected function freshUploading()
+    {
+        return EpisodeSource::where('ingest_status', 'uploading')
+            ->where('updated_at', '>=', now()->subMinutes(self::UPLOAD_STALE_MINUTES));
     }
 
     /**
@@ -479,8 +511,13 @@ class AutomationController extends Controller
      */
     protected function staleActive()
     {
-        return EpisodeSource::whereIn('ingest_status', ['downloading', 'uploading'])
-            ->where('updated_at', '<', now()->subMinutes(self::STALE_MINUTES));
+        return EpisodeSource::where(function ($query) {
+            $query->where('ingest_status', 'downloading')
+                ->where('updated_at', '<', now()->subMinutes(self::STALE_MINUTES));
+        })->orWhere(function ($query) {
+            $query->where('ingest_status', 'uploading')
+                ->where('updated_at', '<', now()->subMinutes(self::UPLOAD_STALE_MINUTES));
+        });
     }
 
     /**

@@ -2,8 +2,10 @@
 
 namespace App\Services\Relay;
 
+use App\Jobs\ProbeWorkerJob;
 use App\RelayWorker;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
@@ -96,6 +98,86 @@ class WorkerRegistry
     public function hasActiveWorkers(): bool
     {
         return $this->activeWorkers()->isNotEmpty();
+    }
+
+    /**
+     * Number of Workers that passed their last health probe and are not in a
+     * cooling-down state. This deliberately excludes failed Workers even when
+     * their cooldown has elapsed: they are still selectable as a last resort,
+     * but they must not make a degraded pool look healthy.
+     */
+    public function healthyCount(string $sourceUrl): int
+    {
+        if (!$this->isEligible($sourceUrl)) {
+            return 0;
+        }
+
+        return $this->selectPool($sourceUrl)
+            ->filter(fn (RelayWorker $worker) => $worker->last_status === RelayWorker::STATUS_OK)
+            ->count();
+    }
+
+    /**
+     * Queue background probes for failed/unknown Workers when the healthy pool
+     * has dropped below the configured floor.
+     *
+     * This is intentionally asynchronous: a Fly.io machine that went to sleep
+     * can take many seconds to answer, and a download must not wait for it.
+     * Cache::add() throttles duplicate probes across the two queue workers.
+     */
+    public function recheckDegraded(?string $sourceUrl = null): int
+    {
+        $sourceUrl = $sourceUrl ?: (string) config('media_relay.workers.test_url', 'https://farsanime.ir/sitemap.xml');
+
+        if (!$this->isEligible($sourceUrl)) {
+            return 0;
+        }
+
+        $minimum = max(1, (int) config('media_relay.workers.min_healthy', 5));
+
+        if ($this->healthyCount($sourceUrl) >= $minimum) {
+            return 0;
+        }
+
+        $staleAfter = max(30, (int) config('media_relay.workers.recheck_seconds', 300));
+        $limit = max(1, (int) config('media_relay.workers.recheck_limit', 3));
+        $staleBefore = now()->subSeconds($staleAfter);
+
+        $workers = RelayWorker::query()
+            ->where('enabled', true)
+            ->where('last_status', '!=', RelayWorker::STATUS_OK)
+            ->where(function ($query) use ($staleBefore) {
+                $query->whereNull('last_checked_at')
+                    ->orWhere('last_checked_at', '<=', $staleBefore);
+            })
+            ->where(function ($query) {
+                $query->whereNull('cooldown_until')
+                    ->orWhere('cooldown_until', '<=', now());
+            })
+            ->orderByRaw('last_checked_at IS NOT NULL ASC')
+            ->orderBy('last_checked_at')
+            ->orderBy('id')
+            ->limit($limit)
+            ->get();
+
+        $dispatched = 0;
+
+        foreach ($workers as $worker) {
+            $key = 'relay:worker:probe:' . (int) $worker->id;
+
+            if (!Cache::add($key, true, now()->addSeconds($staleAfter))) {
+                continue;
+            }
+
+            try {
+                ProbeWorkerJob::dispatch((int) $worker->id);
+                $dispatched++;
+            } catch (Throwable $e) {
+                Cache::forget($key);
+            }
+        }
+
+        return $dispatched;
     }
 
     /**
@@ -308,7 +390,7 @@ class WorkerRegistry
     {
         $started = microtime(true);
         $testUrl = (string) config('media_relay.workers.test_url', 'https://farsanime.ir/sitemap.xml');
-        $timeout = max(3, (int) config('media_relay.workers.timeout', 20));
+        $timeout = max(3, (int) config('media_relay.workers.timeout', 30));
 
         try {
             $response = Http::timeout($timeout)

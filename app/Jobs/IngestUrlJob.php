@@ -7,9 +7,7 @@ use App\ContentSource;
 use App\Episode;
 use App\EpisodeSource;
 use App\Season;
-use App\RelayLink;
 use App\Services\Relay\RelaySettings;
-use App\Services\Relay\RelayStorage;
 use App\Services\Relay\UploadMetrics;
 use App\Services\Relay\WorkerRegistry;
 use Illuminate\Bus\Queueable;
@@ -17,18 +15,19 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Throwable;
 
 /**
- * Pulls a remote URL into the combined storage: downloads the file to a
- * persistent .part file, dedup-checks it, uploads to Telegram Drive and
- * swaps the source's URL for the site-domain relay link.
+ * Downloads a remote URL to a persistent .part file and hands the upload to
+ * the dedicated upload queue.
  *
- * Runs on the Redis queue so the panel never blocks on a multi-gigabyte
- * fetch. The worker pool size is panel-controlled; each job still owns its
- * own connection budget and .part file.
+ * Download and upload intentionally use separate worker pools: two files can
+ * keep downloading while two other files are uploading, so neither panel
+ * list goes empty simply because both ingest workers reached the upload
+ * phase. The upload job owns the .part file from the hand-off onward.
  */
 class IngestUrlJob implements ShouldQueue
 {
@@ -64,7 +63,7 @@ class IngestUrlJob implements ShouldQueue
         $this->onQueue((string) config('media_relay.queue.name', 'default'));
     }
 
-    public function handle(RelayStorage $storage): void
+    public function handle(): void
     {
         // A queue worker is long-lived; refresh panel-saved ingest tuning for
         // every job instead of only at process boot.
@@ -92,47 +91,42 @@ class IngestUrlJob implements ShouldQueue
 
         $part = $dir . '/ingest-' . $this->sourceId . '.part';
 
-        $uploadStartedAt = null;
-        $uploadBytes = 0;
+        $handedOff = false;
 
         try {
             $source->ingest_bytes = 0;
             $source->ingest_speed_bps = 0;
             $source->ingest_connections = 0;
             $source->ingest_started_at = now();
+            $source->upload_status = null;
             $this->setStatus($source, 'downloading', 0);
             $this->download($source, $part);
 
             if (!$this->isRemoteSizeAcceptable($part)) {
                 throw new \RuntimeException(sprintf(
-                    'File is %d MB, above the %d MB limit for direct Telegram Drive uploads. '
-                    . 'The split/merge scenario for large files is not wired up yet.',
+                    'File is %d MB, above the configured %d MB upload limit.',
                     (int) (filesize($part) / 1048576),
                     (int) config('media_relay.upload.max_size', 2048)
                 ));
             }
 
-            $this->setStatus($source, 'uploading', 0);
-            UploadMetrics::markStarted($source);
-            $uploadStartedAt = now();
-            $uploadBytes = (int) @filesize($part);
-            $metrics = [];
+            $source->ingest_bytes = (int) @filesize($part);
+            $source->ingest_progress = 100;
+            $source->ingest_connections = 0;
+            $source->ingest_status = 'uploading';
+            $source->upload_status = UploadMetrics::STATUS_QUEUED;
+            $source->save();
 
-            $relayUrl = $storage->storePath(
+            UploadIngestJob::dispatch(
+                $this->sourceType,
+                (int) $this->sourceId,
                 $part,
                 $this->name,
                 $this->guessMime($source->source),
-                null,
-                0,
-                $this->folderFor($source),
-                $metrics
-            );
+                $this->folderFor($source)
+            )->onQueue((string) config('media_relay.upload.queue', 'uploads'));
 
-            UploadMetrics::apply($source, $metrics);
-            $source->source = $relayUrl;
-            $source->ingest_status = 'completed';
-            $source->ingest_progress = 100;
-            $source->save();
+            $handedOff = true;
         } catch (Throwable $e) {
             Log::warning('URL ingest failed', [
                 'source_type' => $this->sourceType,
@@ -140,17 +134,20 @@ class IngestUrlJob implements ShouldQueue
                 'message' => $e->getMessage(),
             ]);
 
-            if ($uploadStartedAt !== null) {
-                UploadMetrics::markFailed($source, $uploadBytes, $uploadStartedAt);
-            }
-
             $source->ingest_status = 'failed';
             $source->ingest_error = Str::limit($e->getMessage(), 500);
+
+            if (!$handedOff) {
+                $source->upload_status = null;
+            }
+
             $source->save();
 
             throw $e;
         } finally {
-            if (is_file($part)) {
+            // Once handed off, the upload job owns this file until it either
+            // stores it or exhausts its retries.
+            if (!$handedOff && is_file($part)) {
                 @unlink($part);
             }
         }
@@ -230,11 +227,10 @@ class IngestUrlJob implements ShouldQueue
 
         if ($probe['size'] > $maxBytes) {
             throw new \RuntimeException(sprintf(
-                'Remote file is %d MB, above the %d MB limit for direct Telegram Drive uploads. '
-                . 'The split/merge scenario for large files is not wired up yet.',
-                (int) ($probe['size'] / 1048576),
-                (int) config('media_relay.upload.max_size', 2048)
-            ));
+                    'Remote file is %d MB, above the configured %d MB upload limit.',
+                    (int) ($probe['size'] / 1048576),
+                    (int) config('media_relay.upload.max_size', 2048)
+                ));
         }
 
         if ($probe['ranges'] && $probe['size'] > 0 && $this->connectionCount() > 1) {
@@ -450,23 +446,29 @@ class IngestUrlJob implements ShouldQueue
         $maxChunkMb = max($minChunkMb, (int) config('media_relay.ingest.max_chunk_mb', 16));
         $chunkSize = max($minChunkMb, min($maxChunkMb, $chunkMb)) * 1048576;
         $registry = app(WorkerRegistry::class);
-        $pool = $registry->selectPool($this->url);
+        $pool = collect();
+        $slots = 1;
 
         // Cap how many Workers one file may use. 0 keeps the whole pool.
         $maxWorkers = max(0, (int) config('media_relay.ingest.max_workers', 0));
 
-        if ($maxWorkers > 0) {
-            $pool = $pool->take($maxWorkers)->values();
-        }
+        // Worker changes during a long download (an endpoint was added, a
+        // cooled-down one recovered) must be picked up instead of freezing the
+        // width at the start. The closure also recalculates the number of
+        // slots, so a newly added Worker can fill idle connections without
+        // waiting for the next file.
+        $refreshPool = function () use ($registry, $maxWorkers, $total, $chunkSize, &$pool, &$slots) {
+            $fresh = $registry->selectPool($this->url);
 
-        // Each concurrent slot is one connection. With Workers the pool size
-        // times streams-per-worker sets the width and RELAY_INGEST_CONNECTIONS
-        // stays the ceiling; without Workers the direct count applies alone.
-        $slots = $pool->isNotEmpty()
-            ? min($pool->count() * max(1, (int) config('media_relay.ingest.streams_per_worker', 1)), $this->connectionCount())
-            : $this->connectionCount();
+            if ($maxWorkers > 0) {
+                $fresh = $fresh->take($maxWorkers);
+            }
 
-        $slots = max(1, min($slots, (int) ceil($total / $chunkSize)));
+            $pool = $fresh->values();
+            $slots = $this->segmentedSlotCount($pool, $total, $chunkSize);
+        };
+
+        $refreshPool();
 
         $source->ingest_connections = $slots;
         $source->save();
@@ -561,11 +563,13 @@ class IngestUrlJob implements ShouldQueue
 
             // Worker selection strategy
             $selectionStrategy = config('media_relay.workers.selection_strategy', 'round_robin');
-            $workerIndices = array_keys($pool->toArray());
-            $workerCount = count($workerIndices);
+            $workerIndices = $pool->keys()->all();
+            $workerCount = $pool->count();
             $currentWorker = 0;
+            $poolRefreshSeconds = max(3, (int) config('media_relay.ingest.pool_refresh_seconds', 10));
+            $lastPoolRefresh = microtime(true);
 
-            $startChunk = function (int $index) use ($registry, $multi, &$pending, &$handles, &$routes, &$written, &$lengths, &$inFlight, $writer, $chunkSize, $bindHandle, $selectionStrategy, &$workerIndices, &$workerCount, &$currentWorker, $pool) {
+            $startChunk = function (int $index) use ($registry, $multi, &$pending, &$handles, &$routes, &$written, &$lengths, &$inFlight, $writer, $chunkSize, $bindHandle, $selectionStrategy, &$workerIndices, &$workerCount, &$currentWorker, &$pool) {
                 $meta = $pending[$index];
                 unset($pending[$index]);
 
@@ -616,7 +620,7 @@ class IngestUrlJob implements ShouldQueue
             };
 
             // Fill every slot with the first chunks of the queue.
-            $fillSlots = function () use (&$handles, &$pending, $slots, $startChunk, $fillPending) {
+            $fillSlots = function () use (&$handles, &$pending, &$slots, $startChunk, $fillPending) {
                 $fillPending();
 
                 while (count($handles) < $slots) {
@@ -706,6 +710,17 @@ class IngestUrlJob implements ShouldQueue
 
                 $harvest();
 
+                if (microtime(true) - $lastPoolRefresh >= $poolRefreshSeconds) {
+                    $refreshPool();
+                    $workerIndices = $pool->keys()->all();
+                    $workerCount = $pool->count();
+                    $currentWorker = $workerCount > 0 ? $currentWorker % $workerCount : 0;
+                    $lastPoolRefresh = microtime(true);
+                    $source->ingest_connections = max(count($handles), $slots);
+                    $source->save();
+                    $fillSlots();
+                }
+
                 if (microtime(true) - $lastUpdate >= 5) {
                     $elapsed = max(1, microtime(true) - $downloadStartedAt);
                     $this->setStatus(
@@ -785,6 +800,25 @@ class IngestUrlJob implements ShouldQueue
                 $total
             ));
         }
+    }
+
+    /**
+     * Width of the segmented download for the current Worker pool.
+     *
+     * Each slot owns one connection. With Workers, the pool size times
+     * streams-per-worker sets the width and the configured connection budget
+     * remains the ceiling; without Workers only the direct budget applies.
+     */
+    protected function segmentedSlotCount(Collection $pool, int $total, int $chunkSize): int
+    {
+        $slots = $pool->isNotEmpty()
+            ? min(
+                $pool->count() * max(1, (int) config('media_relay.ingest.streams_per_worker', 1)),
+                $this->connectionCount()
+            )
+            : $this->connectionCount();
+
+        return max(1, min($slots, (int) ceil($total / max(1, $chunkSize))));
     }
 
     /**

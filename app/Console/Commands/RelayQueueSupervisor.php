@@ -3,31 +3,31 @@
 namespace App\Console\Commands;
 
 use App\Services\Relay\RelaySettings;
+use App\Services\Relay\WorkerRegistry;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Cache;
 use Throwable;
 
 /**
- * Keeps N ingest queue workers alive.
+ * Keeps the download and upload worker pools alive independently.
  *
- * Laravel's queue:work processes one job at a time. Ingest files are large,
- * so "download two files at once" means running two queue workers. This
- * supervisor reads media_relay.ingest.concurrency (fed by the panel) every few
- * seconds, starts or gracefully stops workers to match it, and restarts any
- * worker that exits after --max-time or a crash.
+ * Laravel's queue:work process handles one job at a time. Ingest files are
+ * large, so a single pool would let both slots end up in the upload phase and
+ * leave the download list empty. The download queue (`default`) and upload
+ * queue (`uploads`) therefore get their own supervised child counts.
  */
 class RelayQueueSupervisor extends Command
 {
     protected $signature = 'relay:queue-supervisor
-        {--queue=default : Queue name}
+        {--queue=default : Download queue name}
         {--poll=3 : Seconds between desired-concurrency checks}';
 
-    protected $description = 'Supervise a panel-controlled number of ingest queue workers';
+    protected $description = 'Supervise panel-controlled download and upload queue workers';
 
     /** Cache key read by the settings page. */
     public const STATUS_KEY = 'relay:queue:supervisor';
 
-    /** @var array<int, array{process:resource,pipes:array,stopping:bool,started_at:int}> */
+    /** @var array<int, array{process:resource,pipes:array,stopping:bool,role:string,started_at:int}> */
     protected $children = [];
 
     /** @var bool */
@@ -36,35 +36,43 @@ class RelayQueueSupervisor extends Command
     /** @var int */
     protected $spawned = 0;
 
-    public function handle(): int
+    /** @var int */
+    protected $lastRecheckAt = 0;
+
+    public function handle(WorkerRegistry $workers): int
     {
         $this->installSignalHandlers();
 
         $this->info(sprintf(
-            'relay queue supervisor started (desired=%d)',
-            $this->desiredConcurrency()
+            'relay queue supervisor started (downloads=%d, uploads=%d)',
+            $this->desiredRoleConcurrency('download'),
+            $this->desiredRoleConcurrency('upload')
         ));
 
         while (!$this->stopping) {
             $this->reapChildren();
 
-            $desired = $this->desiredConcurrency();
+            $this->reconcileRole('download');
+            $this->reconcileRole('upload');
 
-            while (count($this->children) < $desired && !$this->stopping) {
-                if (!$this->spawnWorker()) {
-                    // A missing DB/Redis at boot is transient; retry on the
-                    // next poll instead of spinning or exiting the container.
-                    break;
+            // Re-probe failed Workers in the background when the healthy pool
+            // is below the configured floor. This is asynchronous so a sleeping
+            // Fly.io machine cannot stall the supervisor or a download.
+            if (time() - $this->lastRecheckAt >= 60) {
+                $this->lastRecheckAt = time();
+
+                try {
+                    $dispatched = $workers->recheckDegraded();
+
+                    if ($dispatched > 0) {
+                        $this->info(sprintf('queued %d degraded Worker probe(s)', $dispatched));
+                    }
+                } catch (Throwable $e) {
+                    // A transient DB/Redis hiccup must not stop the pool.
                 }
             }
 
-            while (count($this->children) > $desired && !$this->stopping) {
-                if (!$this->stopOneWorker()) {
-                    break;
-                }
-            }
-
-            $this->heartbeat($desired);
+            $this->heartbeat();
 
             if (!$this->stopping) {
                 sleep(max(1, (int) $this->option('poll')));
@@ -77,24 +85,58 @@ class RelayQueueSupervisor extends Command
     }
 
     /**
-     * Publish a small heartbeat for the panel: how many queue workers are
-     * actually alive, plus the panel's desired count. A stale heartbeat means
-     * the supervisor itself is down, which the panel renders as 0 live.
+     * Match the live child count for one role to its configured target.
      */
-    protected function heartbeat(int $desired): void
+    protected function reconcileRole(string $role): void
     {
-        $live = 0;
+        $desired = $this->desiredRoleConcurrency($role);
 
-        foreach ($this->children as $child) {
-            if (empty($child['stopping'])) {
-                $live++;
+        while ($this->countRole($role) < $desired && !$this->stopping) {
+            if (!$this->spawnWorker($role)) {
+                // A missing DB/Redis at boot is transient; retry on the next
+                // poll instead of spinning or exiting the container.
+                break;
             }
         }
 
+        while ($this->countRole($role) > $desired && !$this->stopping) {
+            if (!$this->stopOneWorker($role)) {
+                break;
+            }
+        }
+    }
+
+    protected function countRole(string $role): int
+    {
+        $count = 0;
+
+        foreach ($this->children as $child) {
+            if (($child['role'] ?? '') === $role) {
+                $count++;
+            }
+        }
+
+        return $count;
+    }
+
+    /**
+     * Publish a small heartbeat for the panel: how many queue workers are
+     * actually alive, plus the configured target. A stale heartbeat means the
+     * supervisor itself is down, which the panel renders as 0 live.
+     */
+    protected function heartbeat(): void
+    {
+        $download = $this->countRole('download');
+        $upload = $this->countRole('upload');
+
         try {
             Cache::put(self::STATUS_KEY, [
-                'workers' => $live,
-                'desired' => $desired,
+                'workers' => $download + $upload,
+                'desired' => $this->desiredRoleConcurrency('download') + $this->desiredRoleConcurrency('upload'),
+                'download_workers' => $download,
+                'upload_workers' => $upload,
+                'download_desired' => $this->desiredRoleConcurrency('download'),
+                'upload_desired' => $this->desiredRoleConcurrency('upload'),
                 'updated_at' => now()->toIso8601String(),
             ], now()->addMinutes(10));
         } catch (Throwable $e) {
@@ -102,7 +144,7 @@ class RelayQueueSupervisor extends Command
         }
     }
 
-    protected function desiredConcurrency(): int
+    protected function desiredRoleConcurrency(string $role): int
     {
         try {
             RelaySettings::apply();
@@ -110,16 +152,23 @@ class RelayQueueSupervisor extends Command
             // Keep the last effective config if the database is briefly down.
         }
 
+        if ($role === 'upload') {
+            return max(1, min(4, (int) config('media_relay.upload.concurrency', 2)));
+        }
+
         return max(1, min(4, (int) config('media_relay.ingest.concurrency', 1)));
     }
 
-    protected function spawnWorker(): bool
+    protected function spawnWorker(string $role): bool
     {
         $this->spawned++;
 
-        $queue = (string) $this->option('queue');
+        $queue = $role === 'upload'
+            ? (string) config('media_relay.upload.queue', 'uploads')
+            : (string) ($this->option('queue') ?: config('media_relay.queue.name', 'default'));
         $connection = (string) (config('media_relay.queue.connection') ?: config('queue.default', 'redis'));
-        $name = 'ingest-' . getmypid() . '-' . $this->spawned;
+        $prefix = $role === 'upload' ? 'upload' : 'ingest';
+        $name = $prefix . '-' . getmypid() . '-' . $this->spawned;
 
         $command = [
             PHP_BINARY,
@@ -155,10 +204,11 @@ class RelayQueueSupervisor extends Command
             'process' => $process,
             'pipes' => $pipes,
             'stopping' => false,
+            'role' => $role,
             'started_at' => time(),
         ];
 
-        $this->info(sprintf('started queue worker %s (total=%d)', $name, count($this->children)));
+        $this->info(sprintf('started %s queue worker %s (total=%d)', $role, $name, count($this->children)));
 
         return true;
     }
@@ -176,7 +226,8 @@ class RelayQueueSupervisor extends Command
             unset($this->children[$index]);
 
             $this->warn(sprintf(
-                'queue worker exited (code=%s, total=%d)',
+                '%s queue worker exited (code=%s, total=%d)',
+                $child['role'] ?? 'queue',
                 $status['exitcode'] ?? '?',
                 count($this->children)
             ));
@@ -185,7 +236,7 @@ class RelayQueueSupervisor extends Command
         $this->children = array_values($this->children);
     }
 
-    protected function stopOneWorker(): bool
+    protected function stopOneWorker(?string $role = null): bool
     {
         if (empty($this->children)) {
             return false;
@@ -196,6 +247,10 @@ class RelayQueueSupervisor extends Command
         // A worker already shutting down still counts as a child; pick the
         // next live one so scaling down cannot spin on the same entry.
         foreach (array_reverse(array_keys($this->children)) as $candidate) {
+            if ($role !== null && ($this->children[$candidate]['role'] ?? '') !== $role) {
+                continue;
+            }
+
             if (!$this->children[$candidate]['stopping']) {
                 $index = $candidate;
                 break;
@@ -219,7 +274,11 @@ class RelayQueueSupervisor extends Command
             @proc_terminate($child['process'], 15);
         }
 
-        $this->info(sprintf('stopping queue worker (total=%d)', count($this->children)));
+        $this->info(sprintf(
+            'stopping %s queue worker (total=%d)',
+            $child['role'] ?? 'queue',
+            count($this->children)
+        ));
 
         return true;
     }
@@ -266,6 +325,8 @@ class RelayQueueSupervisor extends Command
             Cache::put(self::STATUS_KEY, [
                 'workers' => 0,
                 'desired' => 0,
+                'download_workers' => 0,
+                'upload_workers' => 0,
                 'updated_at' => now()->toIso8601String(),
             ], now()->addMinutes(10));
         } catch (Throwable $e) {

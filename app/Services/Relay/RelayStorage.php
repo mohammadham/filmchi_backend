@@ -6,6 +6,7 @@ use App\RelayEvent;
 use App\RelayFile;
 use App\RelayLink;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use RuntimeException;
 
@@ -102,99 +103,129 @@ class RelayStorage
             throw new RuntimeException('Media relay is disabled or Telegram Drive is not configured.');
         }
 
-        // Identical bytes already stored? Point a fresh link at the existing
-        // copy instead of uploading it again.
-        $existing = $this->findByChecksum($path);
+        // Hash once and use the same value for the lock and the lookup. Two
+        // ingest jobs for the same bytes used to both miss the dedup check
+        // and upload the file twice before either row existed. A MySQL named
+        // lock (released by the connection on a crash) serializes the
+        // check/upload/create sequence across queue workers.
+        $checksum = $this->checksumOf($path);
+        $lockName = $checksum ? 'flixy_upload_' . md5($checksum) : null;
+        $locked = false;
+        $db = DB::connection();
 
-        if ($existing) {
-            $metrics = [
-                'upload_status' => UploadMetrics::STATUS_DEDUPLICATED,
-                'upload_bytes' => 0,
-                'upload_duration_ms' => null,
-                'upload_speed_bps' => null,
-            ];
+        if ($lockName && $db->getDriverName() === 'mysql') {
+            // Use the write PDO explicitly: a named lock lives on one MySQL
+            // connection, so the re-check and release must use that same one.
+            $lock = $db->selectOne('SELECT GET_LOCK(?, ?) AS acquired', [$lockName, 900], false);
+            $locked = (int) ($lock->acquired ?? 0) === 1;
+
+            if (!$locked) {
+                throw new RuntimeException('Another upload of the same file is still in progress; retrying later.');
+            }
+        }
+
+        try {
+            // Identical bytes already stored? Point a fresh link at the
+            // existing copy instead of uploading it again. Re-check while
+            // holding the lock, because the first check may race another job.
+            $existing = $checksum
+                ? $db->table('relay_files')->where('checksum', $checksum)->first()
+                : null;
+
+            if ($existing) {
+                $metrics = [
+                    'upload_status' => UploadMetrics::STATUS_DEDUPLICATED,
+                    'upload_bytes' => 0,
+                    'upload_duration_ms' => null,
+                    'upload_speed_bps' => null,
+                ];
+                $link = new RelayLink();
+                $link->relay_file_id = $existing->id;
+                $link->token = Str::random(40);
+                $link->mode = RelayLink::MODE_STREAM;
+                $link->label = $name;
+                $link->save();
+
+                RelayEvent::create([
+                    'relay_file_id' => $existing->id,
+                    'event' => 'uploaded',
+                    'served_by' => 'telegram',
+                    'bytes' => (int) $existing->size,
+                    'message' => 'Deduplicated upload: reused the stored copy.',
+                    'created_at' => now(),
+                ]);
+
+                return $link->streamUrl();
+            }
+
+            $chat = (string) config('media_relay.telegram.storage_chat', '');
+
+            $result = $this->relay->telegram()->uploadFromPath(
+                $path,
+                $name,
+                $mime ?: 'application/octet-stream',
+                $chat,
+                $folder
+            );
+
+            $fileId = $result['file_id'] ?? ($result['id'] ?? null);
+
+            if (empty($fileId)) {
+                throw new RuntimeException('Telegram Drive did not return a file id.');
+            }
+
+            $file = new RelayFile();
+            $file->name = $name;
+            $file->size = (int) ($result['size'] ?? $size);
+            $file->mime = $result['mime'] ?? $mime;
+            $file->extension = $extension;
+            // Prefer Telegram Drive's sha256 (hash of the original file before
+            // any split); fall back to hashing the local copy.
+            $file->checksum = $result['sha256'] ?? $checksum;
+            $file->tg_file_id = (string) $fileId;
+            $file->tg_backend = (string) config('media_relay.telegram.default_backend', 'telegram');
+            $file->tg_storage_chat = $chat;
+            $file->folder = $folder;
+            $file->cache_state = RelayFile::COLD;
+            $file->owner = 'panel';
+            $metrics = UploadMetrics::fromResult($result, (int) ($result['size'] ?? $size));
+            UploadMetrics::apply($file, $metrics);
+            $file->save();
+
+            // The temp upload still exists on this server, so this is the only
+            // moment a poster frame can be extracted cheaply.
+            Thumbnail::make($path, (string) ($file->mime ?? $mime ?? ''), $file);
+
             $link = new RelayLink();
-            $link->relay_file_id = $existing->id;
+            $link->relay_file_id = $file->id;
             $link->token = Str::random(40);
             $link->mode = RelayLink::MODE_STREAM;
             $link->label = $name;
             $link->save();
 
             RelayEvent::create([
-                'relay_file_id' => $existing->id,
+                'relay_file_id' => $file->id,
                 'event' => 'uploaded',
                 'served_by' => 'telegram',
-                'bytes' => (int) $existing->size,
-                'message' => 'Deduplicated upload: reused the stored copy.',
+                'bytes' => (int) $file->size,
+                'message' => 'Stored on Telegram Drive (combined storage).',
                 'created_at' => now(),
             ]);
 
             return $link->streamUrl();
+        } finally {
+            if ($locked) {
+                $db->select('SELECT RELEASE_LOCK(?)', [$lockName], false);
+            }
         }
-
-        $chat = (string) config('media_relay.telegram.storage_chat', '');
-
-        $result = $this->relay->telegram()->uploadFromPath(
-            $path,
-            $name,
-            $mime ?: 'application/octet-stream',
-            $chat,
-            $folder
-        );
-
-        $fileId = $result['file_id'] ?? ($result['id'] ?? null);
-
-        if (empty($fileId)) {
-            throw new RuntimeException('Telegram Drive did not return a file id.');
-        }
-
-        $file = new RelayFile();
-        $file->name = $name;
-        $file->size = (int) ($result['size'] ?? $size);
-        $file->mime = $result['mime'] ?? $mime;
-        $file->extension = $extension;
-        // Prefer Telegram Drive's sha256 (hash of the original file before
-        // any split); fall back to hashing the local copy.
-        $file->checksum = $result['sha256'] ?? $this->checksumOf($path);
-        $file->tg_file_id = (string) $fileId;
-        $file->tg_backend = (string) config('media_relay.telegram.default_backend', 'telegram');
-        $file->tg_storage_chat = $chat;
-        $file->folder = $folder;
-        $file->cache_state = RelayFile::COLD;
-        $file->owner = 'panel';
-        $metrics = UploadMetrics::fromResult($result, (int) ($result['size'] ?? $size));
-        UploadMetrics::apply($file, $metrics);
-        $file->save();
-
-        // The temp upload still exists on this server, so this is the only
-        // moment a poster frame can be extracted cheaply.
-        Thumbnail::make($path, (string) ($file->mime ?? $mime ?? ''), $file);
-
-        $link = new RelayLink();
-        $link->relay_file_id = $file->id;
-        $link->token = Str::random(40);
-        $link->mode = RelayLink::MODE_STREAM;
-        $link->label = $name;
-        $link->save();
-
-        RelayEvent::create([
-            'relay_file_id' => $file->id,
-            'event' => 'uploaded',
-            'served_by' => 'telegram',
-            'bytes' => (int) $file->size,
-            'message' => 'Stored on Telegram Drive (combined storage).',
-            'created_at' => now(),
-        ]);
-
-        return $link->streamUrl();
     }
 
     /**
      * Find a previously stored copy with identical bytes.
      */
-    public function findByChecksum(string $path): ?RelayFile
+    public function findByChecksum(string $path, ?string $checksum = null): ?RelayFile
     {
-        $checksum = $this->checksumOf($path);
+        $checksum = $checksum ?: $this->checksumOf($path);
 
         if ($checksum === null) {
             return null;

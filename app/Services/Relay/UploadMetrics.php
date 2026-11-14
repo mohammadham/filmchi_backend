@@ -16,6 +16,7 @@ use Illuminate\Support\Carbon;
  */
 class UploadMetrics
 {
+    public const STATUS_QUEUED = 'queued';
     public const STATUS_UPLOADING = 'uploading';
     public const STATUS_UPLOADED = 'uploaded';
     public const STATUS_DEDUPLICATED = 'deduplicated';

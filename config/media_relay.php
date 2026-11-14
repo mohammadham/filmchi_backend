@@ -58,6 +58,10 @@ return [
         'streams_per_worker' => (int) env('RELAY_WORKER_STREAMS', 2),
         // Maximum Workers one file may use. 0 = the whole healthy pool.
         'max_workers' => (int) env('RELAY_INGEST_MAX_WORKERS', 0),
+        // How often a running download refreshes its Worker pool. New or
+        // recovered Workers are added to free slots without restarting the
+        // transfer.
+        'pool_refresh_seconds' => (int) env('RELAY_INGEST_POOL_REFRESH_SECONDS', 10),
         // Maximum number of chunks to pre-allocate in the pending queue.
         // 0 = unlimited (limited by memory). Useful for very large files.
         'max_pending_chunks' => (int) env('RELAY_INGEST_MAX_PENDING_CHUNKS', 0),
@@ -81,9 +85,15 @@ return [
         'enabled' => (bool) env('RELAY_WORKERS_ENABLED', true),
         'hosts' => env('RELAY_WORKER_HOSTS', 'farsanime.ir,di.farsanime.ir'),
         'test_url' => env('RELAY_WORKER_TEST_URL', 'https://farsanime.ir/sitemap.xml'),
-        'timeout' => (int) env('RELAY_WORKER_TIMEOUT', 20),
+        'timeout' => (int) env('RELAY_WORKER_TIMEOUT', 30),
         // A failed worker is skipped for this long before it is tried again.
         'cooldown_seconds' => (int) env('RELAY_WORKER_COOLDOWN', 120),
+        // Keep enough healthy endpoints in the pool. When the count falls
+        // below this, failed/stale workers are re-probed in the background
+        // instead of waiting for an operator to press "Test All".
+        'min_healthy' => (int) env('RELAY_WORKER_MIN_HEALTHY', 5),
+        'recheck_seconds' => (int) env('RELAY_WORKER_RECHECK_SECONDS', 300),
+        'recheck_limit' => (int) env('RELAY_WORKER_RECHECK_LIMIT', 3),
         // A cold Worker/origin answers the first ranged request with a full
         // 200 response. Read a little, wait, and ask again once.
         'cold_retry_delay_ms' => (int) env('RELAY_WORKER_COLD_RETRY_DELAY_MS', 2000),
@@ -149,6 +159,10 @@ return [
     */
     'upload' => [
         'max_size' => (int) env('RELAY_MAX_UPLOAD_MB', 2048),
+        // Uploads run on their own queue and worker pool. Downloads therefore
+        // keep two slots even while both upload slots are busy.
+        'concurrency' => (int) env('RELAY_UPLOAD_CONCURRENCY', 2),
+        'queue' => env('RELAY_UPLOAD_QUEUE', 'uploads'),
     ],
 
     /*
