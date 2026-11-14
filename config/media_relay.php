@@ -53,6 +53,9 @@ return [
         // An 8 MB chunk that receives no byte for this long is dead; waiting
         // the old full-file stall timeout would hold a slot for minutes.
         'chunk_stall_timeout' => (int) env('RELAY_INGEST_CHUNK_STALL_TIMEOUT', 60),
+        // A dead source can fail every chunk at once; retrying all of them
+        // sequentially must not pin a download slot for tens of minutes.
+        'chunk_retry_budget' => (int) env('RELAY_INGEST_CHUNK_RETRY_BUDGET', 180),
         // Target number of concurrent streams per Worker. The total is still
         // capped by RELAY_INGEST_CONNECTIONS.
         'streams_per_worker' => (int) env('RELAY_WORKER_STREAMS', 2),
