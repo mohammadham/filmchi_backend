@@ -44,9 +44,10 @@ class RelayQueueSupervisor extends Command
         $this->installSignalHandlers();
 
         $this->info(sprintf(
-            'relay queue supervisor started (downloads=%d, uploads=%d)',
+            'relay queue supervisor started (downloads=%d, uploads=%d, probes=%d)',
             $this->desiredRoleConcurrency('download'),
-            $this->desiredRoleConcurrency('upload')
+            $this->desiredRoleConcurrency('upload'),
+            $this->desiredRoleConcurrency('probe')
         ));
 
         while (!$this->stopping) {
@@ -54,6 +55,7 @@ class RelayQueueSupervisor extends Command
 
             $this->reconcileRole('download');
             $this->reconcileRole('upload');
+            $this->reconcileRole('probe');
 
             // Re-probe failed Workers in the background when the healthy pool
             // is below the configured floor. This is asynchronous so a sleeping
@@ -128,15 +130,18 @@ class RelayQueueSupervisor extends Command
     {
         $download = $this->countRole('download');
         $upload = $this->countRole('upload');
+        $probe = $this->countRole('probe');
 
         try {
             Cache::put(self::STATUS_KEY, [
-                'workers' => $download + $upload,
-                'desired' => $this->desiredRoleConcurrency('download') + $this->desiredRoleConcurrency('upload'),
+                'workers' => $download + $upload + $probe,
+                'desired' => $this->desiredRoleConcurrency('download') + $this->desiredRoleConcurrency('upload') + $this->desiredRoleConcurrency('probe'),
                 'download_workers' => $download,
                 'upload_workers' => $upload,
+                'probe_workers' => $probe,
                 'download_desired' => $this->desiredRoleConcurrency('download'),
                 'upload_desired' => $this->desiredRoleConcurrency('upload'),
+                'probe_desired' => $this->desiredRoleConcurrency('probe'),
                 'updated_at' => now()->toIso8601String(),
             ], now()->addMinutes(10));
         } catch (Throwable $e) {
@@ -156,6 +161,10 @@ class RelayQueueSupervisor extends Command
             return max(1, min(4, (int) config('media_relay.upload.concurrency', 2)));
         }
 
+        if ($role === 'probe') {
+            return max(1, min(2, (int) config('media_relay.workers.probe_concurrency', 1)));
+        }
+
         return max(1, min(4, (int) config('media_relay.ingest.concurrency', 1)));
     }
 
@@ -163,11 +172,17 @@ class RelayQueueSupervisor extends Command
     {
         $this->spawned++;
 
-        $queue = $role === 'upload'
-            ? (string) config('media_relay.upload.queue', 'uploads')
-            : (string) ($this->option('queue') ?: config('media_relay.queue.name', 'default'));
+        $queue = match ($role) {
+            'upload' => (string) config('media_relay.upload.queue', 'uploads'),
+            'probe' => (string) config('media_relay.workers.probe_queue', 'probes'),
+            default => (string) ($this->option('queue') ?: config('media_relay.queue.name', 'default')),
+        };
         $connection = (string) (config('media_relay.queue.connection') ?: config('queue.default', 'redis'));
-        $prefix = $role === 'upload' ? 'upload' : 'ingest';
+        $prefix = match ($role) {
+            'upload' => 'upload',
+            'probe' => 'probe',
+            default => 'ingest',
+        };
         $name = $prefix . '-' . getmypid() . '-' . $this->spawned;
 
         $command = [
@@ -331,6 +346,7 @@ class RelayQueueSupervisor extends Command
                 'desired' => 0,
                 'download_workers' => 0,
                 'upload_workers' => 0,
+                'probe_workers' => 0,
                 'updated_at' => now()->toIso8601String(),
             ], now()->addMinutes(10));
         } catch (Throwable $e) {
