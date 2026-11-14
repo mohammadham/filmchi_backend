@@ -87,7 +87,9 @@ return [
     'workers' => [
         'enabled' => (bool) env('RELAY_WORKERS_ENABLED', true),
         'hosts' => env('RELAY_WORKER_HOSTS', 'farsanime.ir,di.farsanime.ir'),
-        'test_url' => env('RELAY_WORKER_TEST_URL', 'https://farsanime.ir/sitemap.xml'),
+        // Keep the probe tiny: the sitemap is several megabytes and a slow
+        // Worker would be marked dead before it could finish downloading it.
+        'test_url' => env('RELAY_WORKER_TEST_URL', 'https://farsanime.ir/robots.txt'),
         'timeout' => (int) env('RELAY_WORKER_TIMEOUT', 30),
         // A failed worker is skipped for this long before it is tried again.
         'cooldown_seconds' => (int) env('RELAY_WORKER_COOLDOWN', 120),
