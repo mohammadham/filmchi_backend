@@ -34,7 +34,7 @@ class ProbeWorkerJob implements ShouldQueue
     public function __construct(int $workerId)
     {
         $this->workerId = $workerId;
-        $this->onQueue((string) config('media_relay.queue.name', 'default'));
+        $this->onQueue((string) config('media_relay.workers.probe_queue', 'uploads'));
     }
 
     public function handle(WorkerRegistry $registry): void

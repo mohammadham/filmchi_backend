@@ -180,6 +180,10 @@ class RelayQueueSupervisor extends Command
             '--sleep=1',
             '--tries=3',
             '--timeout=7000',
+            // Segmented downloads keep a pool of cURL handles plus pending
+            // chunks; Laravel's 128 MB default made workers recycle at the
+            // worst moment. Give them enough room for a multi-GB transfer.
+            '--memory=512',
             '--max-time=21600',
         ];
 

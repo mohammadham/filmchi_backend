@@ -94,6 +94,9 @@ return [
         'min_healthy' => (int) env('RELAY_WORKER_MIN_HEALTHY', 5),
         'recheck_seconds' => (int) env('RELAY_WORKER_RECHECK_SECONDS', 300),
         'recheck_limit' => (int) env('RELAY_WORKER_RECHECK_LIMIT', 3),
+        // Probe jobs must not compete with downloads for the two download
+        // slots; idle upload workers can process them while uploads wait.
+        'probe_queue' => env('RELAY_WORKER_PROBE_QUEUE', 'uploads'),
         // A cold Worker/origin answers the first ranged request with a full
         // 200 response. Read a little, wait, and ask again once.
         'cold_retry_delay_ms' => (int) env('RELAY_WORKER_COLD_RETRY_DELAY_MS', 2000),
