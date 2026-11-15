@@ -189,6 +189,7 @@ Route::post('saveRelaySettings', [SettingController::class, 'saveRelaySettings']
 Route::post('testRelayConnection', [SettingController::class, 'testRelayConnection'])->middleware(['checkLogin'])->name('testRelayConnection');
 Route::post('saveWorkerSystem', [WorkerController::class, 'saveSystem'])->middleware(['checkLogin'])->name('saveWorkerSystem');
 Route::post('relayWorkers/test-all', [WorkerController::class, 'testAll'])->middleware(['checkLogin'])->name('relayWorkers.testAll');
+Route::post('relayWorkers/test-degraded', [WorkerController::class, 'testDegraded'])->middleware(['checkLogin'])->name('relayWorkers.testDegraded');
 Route::post('relayWorkers/{worker}/test', [WorkerController::class, 'test'])->middleware(['checkLogin'])->name('relayWorkers.test');
 Route::post('relayWorkers/{worker}/toggle', [WorkerController::class, 'toggle'])->middleware(['checkLogin'])->name('relayWorkers.toggle');
 Route::delete('relayWorkers/{worker}', [WorkerController::class, 'destroy'])->middleware(['checkLogin'])->name('relayWorkers.destroy');

@@ -26,7 +26,7 @@ class RelayWorkerTestCommand extends Command
 
         foreach ($workers as $worker) {
             $this->write("Testing {$worker->name}... ");
-            $result = $registry->test($worker);
+            $result = $registry->test($worker, true);
 
             if ($result['ok']) {
                 $this->info("OK ({$result['latency_ms']}ms)");

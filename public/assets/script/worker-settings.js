@@ -42,6 +42,7 @@ $(document).ready(function () {
 
         var formData = new FormData(this);
         formData.set('relay_worker_enabled', $('#workerSystemEnabled').prop('checked') ? 1 : 0);
+        formData.set('relay_worker_auto_disable', $('#workerAutoDisable').prop('checked') ? 1 : 0);
 
         var $button = $(this).find('button[type="submit"]');
         setBusy($button, true);
@@ -161,6 +162,12 @@ $(document).ready(function () {
                 $row.find('.worker-checked').text(label('justNow', 'just now'));
                 $row.find('.worker-error').text(ok ? '' : (result.message || ''));
 
+                if (ok) {
+                    $row.find('.worker-failures').text('0');
+                    $row.find('.worker-next-probe').text('-');
+                    $row.find('.worker-disabled-reason').remove();
+                }
+
                 $testResult
                     .removeClass('text-success text-danger')
                     .addClass(ok ? 'text-success' : 'text-danger')
@@ -229,6 +236,39 @@ $(document).ready(function () {
             success: function (response) {
                 if (response.status) {
                     showSuccessToast(response.ok ? label('testOk', 'All workers are healthy.') : label('testFailed', 'One or more workers failed.'));
+                    window.location.reload();
+                } else {
+                    somethingWentWrongToast();
+                }
+            },
+            error: function (xhr) {
+                $testResult.removeClass('text-success').addClass('text-danger').text(workerError(xhr));
+                somethingWentWrongToast();
+            },
+            complete: function () {
+                setBusy($button, false);
+            },
+        });
+    });
+
+    $('#testDegradedWorkersBtn').on('click', function () {
+        var $button = $(this);
+        setBusy($button, true);
+        $testResult.removeClass('text-success text-danger').text('');
+
+        $.ajax({
+            type: 'POST',
+            url: workerApiUrl('relayWorkers/test-degraded'),
+            data: { _token: csrf },
+            success: function (response) {
+                if (response.status) {
+                    var message = (response.recovered || 0) + ' ' + label('recovered', 'recovered') +
+                        ' / ' + (response.tested || 0) + ' ' + label('tested', 'tested');
+                    $testResult
+                        .removeClass('text-success text-danger')
+                        .addClass(response.failed ? 'text-danger' : 'text-success')
+                        .text(message);
+                    showSuccessToast(message);
                     window.location.reload();
                 } else {
                     somethingWentWrongToast();

@@ -19,11 +19,14 @@ use Throwable;
  *  - the global switch and the per-worker switch must both be on;
  *  - only hosts in media_relay.workers.hosts are proxied, so unrelated links
  *    keep using the direct path;
- *  - a failed worker enters a cooldown and is skipped by later requests;
+ *  - a failed worker leaves the pool until a probe proves it healthy again;
  *  - if no worker is available, the caller receives a direct route.
  */
 class WorkerRegistry
 {
+    /** Bumped whenever Worker health/selection state changes. */
+    public const POOL_VERSION_KEY = 'relay:workers:pool-version';
+
     public function enabled(): bool
     {
         return (bool) config('media_relay.workers.enabled', true);
@@ -101,10 +104,9 @@ class WorkerRegistry
     }
 
     /**
-     * Number of Workers that passed their last health probe and are not in a
-     * cooling-down state. This deliberately excludes failed Workers even when
-     * their cooldown has elapsed: they are still selectable as a last resort,
-     * but they must not make a degraded pool look healthy.
+     * Number of Workers that passed their last health probe and are currently
+     * usable. Failed Workers are excluded until a probe recovers them, so a
+     * degraded pool is never presented as healthy.
      */
     public function healthyCount(string $sourceUrl): int
     {
@@ -118,42 +120,42 @@ class WorkerRegistry
     }
 
     /**
-     * Queue background probes for failed/unknown Workers when the healthy pool
-     * has dropped below the configured floor.
+     * Queue background probes for failed/auto-disabled Workers.
      *
-     * This is intentionally asynchronous: a Fly.io machine that went to sleep
-     * can take many seconds to answer, and a download must not wait for it.
-     * Cache::add() throttles duplicate probes across the two queue workers.
+     * This is intentionally independent of healthyCount(): with a large pool,
+     * one bad Worker must be re-tested even while the rest are healthy. The
+     * probe is asynchronous so a sleeping Worker cannot stall a download.
+     * next_probe_at gives each Worker its own exponential-backoff schedule;
+     * Cache::add() additionally throttles duplicate probes across queue workers.
      */
     public function recheckDegraded(?string $sourceUrl = null): int
     {
-        $sourceUrl = $sourceUrl ?: (string) config('media_relay.workers.test_url', 'https://farsanime.ir/sitemap.xml');
+        $sourceUrl = $sourceUrl ?: (string) config('media_relay.workers.test_url', 'https://farsanime.ir/robots.txt');
 
         if (!$this->isEligible($sourceUrl)) {
             return 0;
         }
 
-        $minimum = max(1, (int) config('media_relay.workers.min_healthy', 5));
-
-        if ($this->healthyCount($sourceUrl) >= $minimum) {
-            return 0;
-        }
-
-        $staleAfter = max(30, (int) config('media_relay.workers.recheck_seconds', 300));
+        $interval = max(10, (int) config('media_relay.workers.probe_interval_seconds',
+            config('media_relay.workers.recheck_seconds', 60)));
+        // The next_probe_at column is the real per-Worker schedule. Keep the
+        // cross-process dispatch lock shorter than a long UI probe interval so
+        // a Worker can still be retried promptly after it fails again.
+        $lockSeconds = max(10, min(60, $interval));
         $limit = max(1, (int) config('media_relay.workers.recheck_limit', 3));
-        $staleBefore = now()->subSeconds($staleAfter);
 
         $workers = RelayWorker::query()
             ->where('enabled', true)
-            ->where('last_status', '!=', RelayWorker::STATUS_OK)
-            ->where(function ($query) use ($staleBefore) {
-                $query->whereNull('last_checked_at')
-                    ->orWhere('last_checked_at', '<=', $staleBefore);
+            ->degraded()
+            ->where(function ($query) {
+                $query->whereNull('next_probe_at')
+                    ->orWhere('next_probe_at', '<=', now());
             })
             ->where(function ($query) {
                 $query->whereNull('cooldown_until')
                     ->orWhere('cooldown_until', '<=', now());
             })
+            ->orderByRaw('auto_disabled_at IS NOT NULL ASC')
             ->orderByRaw('last_checked_at IS NOT NULL ASC')
             ->orderBy('last_checked_at')
             ->orderBy('id')
@@ -165,7 +167,7 @@ class WorkerRegistry
         foreach ($workers as $worker) {
             $key = 'relay:worker:probe:' . (int) $worker->id;
 
-            if (!Cache::add($key, true, now()->addSeconds($staleAfter))) {
+            if (!Cache::add($key, true, now()->addSeconds($lockSeconds))) {
                 continue;
             }
 
@@ -202,10 +204,11 @@ class WorkerRegistry
     /**
      * Pick the best currently usable Workers for one source.
      *
-     * "Usable" means enabled, outside cooldown, not marked failed by the last
-     * real transfer, and (when configured) above the minimum measured speed
-     * and below the maximum latency. Unknown speed/latency is allowed so a
-     * freshly added Worker can prove itself with its first chunk.
+     * "Usable" means enabled, not auto-disabled, outside cooldown, not marked
+     * failed by the last real transfer or probe, and (when configured) above
+     * the minimum measured speed and below the maximum latency. Unknown
+     * speed/latency is allowed so a freshly added Worker can prove itself with
+     * its first chunk. A failed Worker returns only after a successful probe.
      *
      * @param array<int,int> $excludeIds Workers that already failed this job
      * @return Collection<int, RelayWorker>
@@ -222,13 +225,10 @@ class WorkerRegistry
                 ->when(!empty($excludeIds), function ($query) use ($excludeIds) {
                     $query->whereNotIn('id', array_map('intval', $excludeIds));
                 })
-                // A failed status is not a permanent ban: the cooldown above is
-                // what actually parks a Worker. Keeping failed Workers in the
-                // pool (last, behind every healthy one) is what lets them come
-                // back on their own instead of shrinking the pool until a manual
-                // "Test All" — which used to leave ingest on the dead direct
-                // route and fail every file.
-                ->orderByRaw('CASE WHEN last_status = ? THEN 1 ELSE 0 END', [RelayWorker::STATUS_FAILED])
+                // scopeAvailable() already excludes failed/auto-disabled
+                // Workers. They are not admitted to live traffic again until
+                // a probe succeeds, so there is no "failed last" special case
+                // that could still route a chunk to a known-bad endpoint.
                 // Least-recently-used first. Speed is only a tie-breaker:
                 // otherwise the fastest Worker would take every in-flight
                 // slot while the rest of the pool sat idle. Unknown speed and
@@ -384,9 +384,13 @@ class WorkerRegistry
      * response headers tell us whether it reached the origin and whether the
      * key was accepted.
      *
+     * A manual test is an explicit operator override: one success is enough
+     * to return an auto-disabled Worker to the pool. Automatic probes require
+     * the configured consecutive-success threshold.
+     *
      * @return array{ok:bool,status:int|null,latency_ms:int,message:string,worker_id:int,worker_name:string}
      */
-    public function test(RelayWorker $worker): array
+    public function test(RelayWorker $worker, bool $manual = false): array
     {
         $started = microtime(true);
         $testUrl = (string) config('media_relay.workers.test_url', 'https://farsanime.ir/sitemap.xml');
@@ -404,12 +408,12 @@ class WorkerRegistry
 
             if ($ok) {
                 $message = 'online';
-                $this->markHealthy($worker, $latency);
+                $this->markProbeSuccess($worker, $latency, $manual);
             } else {
                 $message = 'HTTP ' . $response->status()
                     . ($upstream !== '' ? ' (upstream ' . $upstream . ')' : '')
                     . ($response->body() !== '' ? ': ' . Str::limit($response->body(), 160) : '');
-                $this->markFailure($worker, $message);
+                $this->markFailure($worker, $message, 'probe', $manual);
             }
 
             return [
@@ -423,7 +427,7 @@ class WorkerRegistry
         } catch (Throwable $e) {
             $latency = (int) round((microtime(true) - $started) * 1000);
             $message = Str::limit($e->getMessage(), 300);
-            $this->markFailure($worker, $message);
+            $this->markFailure($worker, $message, 'probe', $manual);
 
             return [
                 'ok' => false,
@@ -436,25 +440,139 @@ class WorkerRegistry
         }
     }
 
+    /**
+     * A probe succeeded. Automatic probes need consecutive successes; a
+     * manual test recovers immediately. The Worker stays failed and out of the
+     * pool after a first automatic success, so one lucky response cannot
+     * re-introduce a flapping endpoint.
+     */
+    public function markProbeSuccess(RelayWorker $worker, int $latency, bool $manual = false): void
+    {
+        $worker->last_latency_ms = max(0, $latency);
+        $worker->last_checked_at = now();
+        $worker->last_error = null;
+        $worker->probe_success_count = (int) $worker->probe_success_count + 1;
+
+        $threshold = max(1, (int) config('media_relay.workers.probe_success_threshold', 2));
+        // A queued probe can finish after an operator has already recovered
+        // this Worker. A healthy Worker must not be knocked back to "failed"
+        // merely because its old probe job was still in flight.
+        $needsRecovery = $worker->auto_disabled_at !== null
+            || $worker->last_status !== RelayWorker::STATUS_OK
+            || $worker->cooldown_until !== null
+            || (int) $worker->probe_success_count > 1;
+
+        if ($manual || !$needsRecovery || (int) $worker->probe_success_count >= $threshold) {
+            $this->clearFailureState($worker);
+            $worker->last_status = RelayWorker::STATUS_OK;
+            $worker->probe_success_count = 0;
+        } else {
+            $worker->last_status = RelayWorker::STATUS_FAILED;
+            $worker->next_probe_at = now()->addSeconds($this->probeIntervalSeconds());
+        }
+
+        $worker->save();
+        $this->bumpPoolVersion();
+    }
+
+    /**
+     * Clear the failure/auto-disable state without touching the operator's
+     * enabled switch. The Worker becomes eligible on the next pool refresh.
+     */
+    protected function clearFailureState(RelayWorker $worker): void
+    {
+        $worker->failure_count = 0;
+        $worker->last_failure_at = null;
+        $worker->cooldown_until = null;
+        $worker->auto_disabled_at = null;
+        $worker->disabled_reason = null;
+        $worker->next_probe_at = null;
+        $worker->probe_success_count = 0;
+        $worker->last_error = null;
+    }
+
+    /**
+     * Backward-compatible explicit success path used by callers that have
+     * already established that the Worker is healthy (for example a real
+     * transfer). A manual probe should use markProbeSuccess().
+     */
     public function markHealthy(RelayWorker $worker, int $latency): void
     {
         $worker->last_status = RelayWorker::STATUS_OK;
         $worker->last_latency_ms = max(0, $latency);
         $worker->last_checked_at = now();
-        $worker->last_error = null;
-        $worker->failure_count = 0;
-        $worker->cooldown_until = null;
+        $this->clearFailureState($worker);
         $worker->save();
+        $this->bumpPoolVersion();
     }
 
-    public function markFailure(RelayWorker $worker, string $message): void
+    /**
+     * Record a failure. Only real-transfer failures count toward the
+     * auto-disable threshold; a failed probe keeps a Worker out of the pool and
+     * schedules the next probe without letting a flaky probe test permanently
+     * disable an otherwise usable endpoint.
+     */
+    public function markFailure(RelayWorker $worker, string $message, string $source = 'transfer', bool $manual = false): void
     {
         $worker->last_status = RelayWorker::STATUS_FAILED;
         $worker->last_checked_at = now();
         $worker->last_error = Str::limit($message, 1000);
-        $worker->failure_count = (int) $worker->failure_count + 1;
-        $worker->cooldown_until = now()->addSeconds(max(10, (int) config('media_relay.workers.cooldown_seconds', 120)));
+
+        if ($source === 'transfer') {
+            $window = max(30, (int) config('media_relay.workers.failure_window_seconds', 600));
+            $previousFailure = $worker->last_failure_at;
+
+            if (!$previousFailure || $previousFailure->lt(now()->subSeconds($window))) {
+                $worker->failure_count = 0;
+            }
+
+            $worker->failure_count = (int) $worker->failure_count + 1;
+            $worker->last_failure_at = now();
+
+            $threshold = max(1, (int) config('media_relay.workers.failure_threshold', 3));
+            $autoDisable = filter_var(config('media_relay.workers.auto_disable', true), FILTER_VALIDATE_BOOLEAN);
+
+            if ($autoDisable && (int) $worker->failure_count >= $threshold) {
+                $worker->auto_disabled_at = now();
+                $worker->disabled_reason = sprintf(
+                    'auto-disabled after %d consecutive transfer failures',
+                    (int) $worker->failure_count
+                );
+                $worker->cooldown_until = null;
+                $worker->next_probe_at = now()->addSeconds($this->backoffSeconds((int) $worker->failure_count));
+            } else {
+                $delay = $this->backoffSeconds((int) $worker->failure_count);
+                $worker->cooldown_until = now()->addSeconds($delay);
+                $worker->next_probe_at = now()->addSeconds($delay);
+            }
+
+            $worker->probe_success_count = 0;
+        } else {
+            // A probe failure must not increase the transfer-failure counter;
+            // it only keeps the Worker unavailable until the next probe.
+            $worker->probe_success_count = 0;
+            $delay = max(10, (int) config('media_relay.workers.cooldown_seconds', 60));
+            $worker->cooldown_until = now()->addSeconds($delay);
+            $worker->next_probe_at = now()->addSeconds($delay);
+        }
+
         $worker->save();
+        $this->bumpPoolVersion();
+    }
+
+    protected function backoffSeconds(int $failureCount): int
+    {
+        $base = max(1, (int) config('media_relay.workers.backoff_base_seconds', 60));
+        $max = max($base, (int) config('media_relay.workers.backoff_max_seconds', 3600));
+        $exponent = max(0, min(10, $failureCount - 1));
+
+        return min($max, $base * (2 ** $exponent));
+    }
+
+    protected function probeIntervalSeconds(): int
+    {
+        return max(10, (int) config('media_relay.workers.probe_interval_seconds',
+            config('media_relay.workers.recheck_seconds', 60)));
     }
 
     /**
@@ -477,6 +595,9 @@ class WorkerRegistry
 
             $sample = (int) round($bytes / ($durationMs / 1000));
             $previous = (int) ($worker->last_speed_bps ?? 0);
+            $wasUnavailable = $worker->last_status !== RelayWorker::STATUS_OK
+                || $worker->auto_disabled_at !== null
+                || $worker->cooldown_until !== null;
 
             $worker->last_speed_bps = $previous > 0
                 ? (int) round(($previous * 0.7) + ($sample * 0.3))
@@ -485,10 +606,14 @@ class WorkerRegistry
             $worker->success_count = (int) $worker->success_count + 1;
             $worker->last_status = RelayWorker::STATUS_OK;
             $worker->last_checked_at = now();
-            $worker->last_error = null;
-            $worker->failure_count = 0;
-            $worker->cooldown_until = null;
+            $this->clearFailureState($worker);
             $worker->save();
+
+            // Successful chunks are frequent; only notify long-running ingests
+            // when this success actually restored an unavailable Worker.
+            if ($wasUnavailable) {
+                $this->bumpPoolVersion();
+            }
         } catch (Throwable $e) {
             // Telemetry must never fail an ingest.
         }
@@ -512,6 +637,42 @@ class WorkerRegistry
             }
         } catch (Throwable $e) {
             // Telemetry must never fail an ingest.
+        }
+    }
+
+    public function poolVersion(): int
+    {
+        try {
+            $value = Cache::get(self::POOL_VERSION_KEY);
+
+            if ($value === null) {
+                Cache::forever(self::POOL_VERSION_KEY, 1);
+
+                return 1;
+            }
+
+            return (int) $value;
+        } catch (Throwable $e) {
+            return 1;
+        }
+    }
+
+    /**
+     * Notify long-running ingest jobs that a Worker was added, recovered,
+     * failed, or toggled. Ingest checks this cheap counter while chunks are in
+     * flight and refreshes immediately instead of waiting for the 10-second
+     * periodic refresh.
+     */
+    public function bumpPoolVersion(): void
+    {
+        try {
+            if (Cache::get(self::POOL_VERSION_KEY) === null) {
+                Cache::forever(self::POOL_VERSION_KEY, 1);
+            }
+
+            Cache::increment(self::POOL_VERSION_KEY);
+        } catch (Throwable $e) {
+            // A cache outage must not fail a download or a health test.
         }
     }
 

@@ -91,13 +91,28 @@ return [
         // Worker would be marked dead before it could finish downloading it.
         'test_url' => env('RELAY_WORKER_TEST_URL', 'https://farsanime.ir/robots.txt'),
         'timeout' => (int) env('RELAY_WORKER_TIMEOUT', 30),
-        // A failed worker is skipped for this long before it is tried again.
-        'cooldown_seconds' => (int) env('RELAY_WORKER_COOLDOWN', 120),
-        // Keep enough healthy endpoints in the pool. When the count falls
-        // below this, failed/stale workers are re-probed in the background
-        // instead of waiting for an operator to press "Test All".
+        // A failed worker is skipped at least this long before the next probe.
+        // The actual delay grows exponentially up to backoff_max_seconds.
+        'cooldown_seconds' => (int) env('RELAY_WORKER_COOLDOWN', 60),
+        // After this many consecutive real-transfer failures the Worker is
+        // auto-disabled instead of being re-admitted after a cooldown. A
+        // successful transfer resets the counter; a probe does not count as a
+        // transfer.
+        'auto_disable' => (bool) env('RELAY_WORKER_AUTO_DISABLE', true),
+        'failure_threshold' => (int) env('RELAY_WORKER_FAILURE_THRESHOLD', 3),
+        'failure_window_seconds' => (int) env('RELAY_WORKER_FAILURE_WINDOW_SECONDS', 600),
+        'backoff_base_seconds' => (int) env('RELAY_WORKER_BACKOFF_BASE_SECONDS', 60),
+        'backoff_max_seconds' => (int) env('RELAY_WORKER_BACKOFF_MAX_SECONDS', 3600),
+        // A recovered Worker must pass this many consecutive probes before it
+        // is allowed back into the pool. An operator-triggered test is an
+        // explicit override and recovers it immediately on success.
+        'probe_success_threshold' => (int) env('RELAY_WORKER_PROBE_SUCCESS_THRESHOLD', 2),
+        'probe_interval_seconds' => (int) env('RELAY_WORKER_PROBE_INTERVAL_SECONDS', 60),
+        // Keep enough healthy endpoints in the pool. This remains a useful
+        // warning floor, but background probes are no longer gated on it: a
+        // failed Worker is always probed on its own schedule.
         'min_healthy' => (int) env('RELAY_WORKER_MIN_HEALTHY', 5),
-        'recheck_seconds' => (int) env('RELAY_WORKER_RECHECK_SECONDS', 300),
+        'recheck_seconds' => (int) env('RELAY_WORKER_RECHECK_SECONDS', 60),
         'recheck_limit' => (int) env('RELAY_WORKER_RECHECK_LIMIT', 3),
         // Worker probes get their own lane so neither download nor upload
         // slots are blocked while a sleeping Worker is being measured.

@@ -30,7 +30,12 @@ class RelayWorker extends Model
         'last_checked_at',
         'last_error',
         'failure_count',
+        'last_failure_at',
         'cooldown_until',
+        'auto_disabled_at',
+        'disabled_reason',
+        'probe_success_count',
+        'next_probe_at',
         'min_speed_bps',
         'max_latency_ms',
         'last_used_at',
@@ -54,7 +59,12 @@ class RelayWorker extends Model
         'success_count' => 'integer',
         'last_checked_at' => 'datetime',
         'failure_count' => 'integer',
+        'last_failure_at' => 'datetime',
         'cooldown_until' => 'datetime',
+        'auto_disabled_at' => 'datetime',
+        'disabled_reason' => 'string',
+        'probe_success_count' => 'integer',
+        'next_probe_at' => 'datetime',
         'min_speed_bps' => 'integer',
         'max_latency_ms' => 'integer',
         'last_used_at' => 'datetime',
@@ -65,14 +75,38 @@ class RelayWorker extends Model
         return trim((string) $this->api_key) !== '';
     }
 
+    /**
+     * Workers that may receive a real request right now.
+     *
+     * A failed Worker is deliberately excluded until a probe (automatic or
+     * operator-triggered) has proved that it is healthy again. The old
+     * behaviour of re-admitting it after a fixed cooldown put live downloads
+     * on a known-bad endpoint and was the main source of repeated failures.
+     */
     public function scopeAvailable($query)
     {
         return $query
             ->where('enabled', true)
+            ->whereNull('auto_disabled_at')
+            ->where('last_status', '!=', self::STATUS_FAILED)
             ->where(function ($inner) {
                 $inner->whereNull('cooldown_until')
                     ->orWhere('cooldown_until', '<=', now());
             });
+    }
+
+    /**
+     * Workers that need another health probe: failed, auto-disabled, or never
+     * checked. Used by the background recheck loop and the panel's degraded
+     * recovery button, not by normal request routing.
+     */
+    public function scopeDegraded($query)
+    {
+        return $query->where(function ($inner) {
+            $inner->where('last_status', '!=', self::STATUS_OK)
+                ->orWhereNotNull('auto_disabled_at')
+                ->orWhereNull('last_checked_at');
+        });
     }
 
     /**
@@ -82,5 +116,10 @@ class RelayWorker extends Model
     public function getHumanSpeedAttribute(): string
     {
         return \App\Services\Relay\UploadMetrics::formatSpeed($this->last_speed_bps ? (int) $this->last_speed_bps : null);
+    }
+
+    public function isAutoDisabled(): bool
+    {
+        return $this->auto_disabled_at !== null;
     }
 }

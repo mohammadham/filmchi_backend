@@ -22,6 +22,14 @@ class RelaySettings
         'relay_enabled' => ['media_relay.enabled', 'bool'],
         'relay_worker_enabled' => ['media_relay.workers.enabled', 'bool'],
         'relay_worker_selection_strategy' => ['media_relay.workers.selection_strategy', 'strategy'],
+        'relay_worker_auto_disable' => ['media_relay.workers.auto_disable', 'bool'],
+        'relay_worker_failure_threshold' => ['media_relay.workers.failure_threshold', 'positive'],
+        'relay_worker_failure_window' => ['media_relay.workers.failure_window_seconds', 'positive'],
+        'relay_worker_backoff_base' => ['media_relay.workers.backoff_base_seconds', 'positive'],
+        'relay_worker_backoff_max' => ['media_relay.workers.backoff_max_seconds', 'positive'],
+        'relay_worker_probe_success_threshold' => ['media_relay.workers.probe_success_threshold', 'positive'],
+        'relay_worker_probe_interval' => ['media_relay.workers.probe_interval_seconds', 'positive'],
+        'relay_upload_concurrency' => ['media_relay.upload.concurrency', 'concurrency'],
         'relay_ingest_max_workers' => ['media_relay.ingest.max_workers', 'int'],
         'relay_ingest_max_pending_chunks' => ['media_relay.ingest.max_pending_chunks', 'int'],
         'relay_ingest_chunk_mb' => ['media_relay.ingest.chunk_mb', 'int'],
@@ -72,6 +80,14 @@ class RelaySettings
             'relay_enabled' => (bool) config('media_relay.enabled'),
             'relay_worker_enabled' => (bool) config('media_relay.workers.enabled'),
             'relay_worker_selection_strategy' => (string) config('media_relay.workers.selection_strategy'),
+            'relay_worker_auto_disable' => (bool) config('media_relay.workers.auto_disable', true),
+            'relay_worker_failure_threshold' => max(1, (int) config('media_relay.workers.failure_threshold', 3)),
+            'relay_worker_failure_window' => max(30, (int) config('media_relay.workers.failure_window_seconds', 600)),
+            'relay_worker_backoff_base' => max(1, (int) config('media_relay.workers.backoff_base_seconds', 60)),
+            'relay_worker_backoff_max' => max(1, (int) config('media_relay.workers.backoff_max_seconds', 3600)),
+            'relay_worker_probe_success_threshold' => max(1, (int) config('media_relay.workers.probe_success_threshold', 2)),
+            'relay_worker_probe_interval' => max(10, (int) config('media_relay.workers.probe_interval_seconds', 60)),
+            'relay_upload_concurrency' => max(1, min(4, (int) config('media_relay.upload.concurrency', 2))),
             'relay_ingest_max_workers' => (int) config('media_relay.ingest.max_workers'),
             'relay_ingest_max_pending_chunks' => (int) config('media_relay.ingest.max_pending_chunks'),
             'relay_ingest_chunk_mb' => (int) config('media_relay.ingest.chunk_mb'),
@@ -196,6 +212,8 @@ class RelaySettings
                 return max(0, (int) $value);
             case 'concurrency':
                 return max(1, min(4, (int) $value));
+            case 'positive':
+                return max(1, (int) $value);
             case 'kbps':
                 // The panel edits KB/s because 50000 B/s is awkward to type;
                 // the registry still consumes bytes per second.

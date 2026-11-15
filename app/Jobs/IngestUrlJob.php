@@ -466,9 +466,11 @@ class IngestUrlJob implements ShouldQueue
 
             $pool = $fresh->values();
             $slots = $this->segmentedSlotCount($pool, $total, $chunkSize);
+
+            return $registry->poolVersion();
         };
 
-        $refreshPool();
+        $poolVersion = $refreshPool();
 
         $source->ingest_connections = $slots;
         $source->save();
@@ -561,15 +563,16 @@ class IngestUrlJob implements ShouldQueue
                 return $bytes;
             };
 
-            // Worker selection strategy
-            $selectionStrategy = config('media_relay.workers.selection_strategy', 'round_robin');
+            // Every chunk is distributed across the whole usable pool,
+            // regardless of whether the pool was ordered by speed, LRU, or
+            // priority. A long download must not collapse onto one Worker.
             $workerIndices = $pool->keys()->all();
             $workerCount = $pool->count();
             $currentWorker = 0;
             $poolRefreshSeconds = max(3, (int) config('media_relay.ingest.pool_refresh_seconds', 10));
             $lastPoolRefresh = microtime(true);
 
-            $startChunk = function (int $index) use ($registry, $multi, &$pending, &$handles, &$routes, &$written, &$lengths, &$inFlight, $writer, $chunkSize, $bindHandle, $selectionStrategy, &$workerIndices, &$workerCount, &$currentWorker, &$pool) {
+            $startChunk = function (int $index) use ($registry, $multi, &$pending, &$handles, &$routes, &$written, &$lengths, &$inFlight, $writer, $chunkSize, $bindHandle, &$workerIndices, &$workerCount, &$currentWorker, &$pool) {
                 $meta = $pending[$index];
                 unset($pending[$index]);
 
@@ -581,13 +584,18 @@ class IngestUrlJob implements ShouldQueue
 
                 $range = $start . '-' . ($start + $length - 1);
 
-                if ($selectionStrategy === 'round_robin' && $workerCount > 0) {
-                    // Round-robin worker selection
+                if ($workerCount > 0) {
+                    // Round-robin across the current pool. The pool's ordering
+                    // still reflects the selected strategy, but one Worker can
+                    // no longer absorb every chunk of a file.
+                    if ($currentWorker >= $workerCount) {
+                        $currentWorker = 0;
+                    }
+
                     $worker = $pool->get($workerIndices[$currentWorker]);
                     $currentWorker = ($currentWorker + 1) % $workerCount;
                     $route = $registry->routeFor($worker, $this->url, $range);
                 } else {
-                    // Default: fastest worker
                     $route = $registry->route($this->url, $range);
                 }
 
@@ -713,8 +721,13 @@ class IngestUrlJob implements ShouldQueue
 
                 $harvest();
 
-                if (microtime(true) - $lastPoolRefresh >= $poolRefreshSeconds) {
-                    $refreshPool();
+                $healthChanged = $registry->poolVersion() !== $poolVersion;
+
+                if ($healthChanged || microtime(true) - $lastPoolRefresh >= $poolRefreshSeconds) {
+                    // A Worker recovered (or was removed) mid-download: refresh
+                    // immediately so its capacity helps the current file, not
+                    // just the next one.
+                    $poolVersion = $refreshPool();
                     $workerIndices = $pool->keys()->all();
                     $workerCount = $pool->count();
                     $currentWorker = $workerCount > 0 ? $currentWorker % $workerCount : 0;

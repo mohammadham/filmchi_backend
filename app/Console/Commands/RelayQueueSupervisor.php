@@ -57,10 +57,13 @@ class RelayQueueSupervisor extends Command
             $this->reconcileRole('upload');
             $this->reconcileRole('probe');
 
-            // Re-probe failed Workers in the background when the healthy pool
-            // is below the configured floor. This is asynchronous so a sleeping
-            // Fly.io machine cannot stall the supervisor or a download.
-            if (time() - $this->lastRecheckAt >= 60) {
+            // Re-probe failed/auto-disabled Workers on their own backoff
+            // schedule. This is deliberately independent of the healthy-pool
+            // floor: one bad Worker is still retested while 15 good ones are
+            // serving, and a sleeping Fly.io machine cannot stall a download.
+            $probePollSeconds = min(60, max(10, (int) config('media_relay.workers.probe_interval_seconds', 60)));
+
+            if (time() - $this->lastRecheckAt >= $probePollSeconds) {
                 $this->lastRecheckAt = time();
 
                 try {

@@ -84,7 +84,7 @@ class RelayWorkerConfigCommand extends Command
             $this->line("");
             $this->info("Running health test...");
             $registry = app(\App\Services\Relay\WorkerRegistry::class);
-            $result = $registry->test($worker);
+            $result = $registry->test($worker, true);
 
             if ($result['ok']) {
                 $this->info("Test passed ({$result['latency_ms']}ms)");

@@ -9,8 +9,9 @@
                             <div class="text-muted small">{{ __('relayWorkersHint') }}</div>
                         </div>
                         <div class="d-flex align-items-center gap-2 flex-wrap">
-                            <span class="badge bg-success">{{ __('relayWorkerOnline') }}: {{ $workers->where('last_status', 'ok')->count() }}</span>
-                            <span class="badge bg-danger">{{ __('relayWorkerOffline') }}: {{ $workers->where('last_status', 'failed')->count() }}</span>
+                            <span class="badge bg-success">{{ __('relayWorkerOnline') }}: {{ $workers->filter(fn ($w) => $w->last_status === 'ok' && $w->auto_disabled_at === null)->count() }}</span>
+                            <span class="badge bg-danger">{{ __('relayWorkerOffline') }}: {{ $workers->filter(fn ($w) => $w->last_status === 'failed' && $w->auto_disabled_at === null)->count() }}</span>
+                            <span class="badge bg-warning text-dark">{{ __('relayWorkerAutoDisabled') }}: {{ $workers->filter(fn ($w) => $w->auto_disabled_at !== null)->count() }}</span>
                             <span class="badge bg-secondary">{{ __('relayWorkerStatus') }}: {{ $workers->count() }}</span>
                             <span class="badge bg-info">{{ __('relayRuntimeActive') }}: <span id="relayRuntimeActiveValue">{{ (int) $relayRuntime['active'] }}</span></span>
                             <span class="badge bg-primary">{{ __('relayRuntimeWorkers') }}: <span id="relayRuntimeWorkersValue">{{ (int) $relayRuntime['workers_live'] }}/{{ (int) $relayRuntime['workers_desired'] }}</span></span>
@@ -82,6 +83,13 @@
                         </div>
                         <div class="col-lg-2 col-md-4">
                             <div class="form-group">
+                                <label class="form-label">{{ __('relayUploadConcurrency') }}</label>
+                                <input type="number" class="form-control" name="relay_upload_concurrency" min="1" max="4" value="{{ (int) $relay['relay_upload_concurrency'] }}">
+                                <div class="text-muted small">{{ __('relayUploadConcurrencyHint') }}</div>
+                            </div>
+                        </div>
+                        <div class="col-lg-2 col-md-4">
+                            <div class="form-group">
                                 <label class="form-label">{{ __('relayIngestTotalConnections') }}</label>
                                 <input type="number" class="form-control" name="relay_ingest_total_connections" min="0" max="512" value="{{ (int) $relay['relay_ingest_total_connections'] }}">
                                 <div class="text-muted small">{{ __('relayIngestTotalConnectionsHint') }}</div>
@@ -120,6 +128,58 @@
                                 <label class="form-label">{{ __('relayWorkerMaxLatency') }}</label>
                                 <input type="number" class="form-control" name="relay_worker_max_latency_ms" min="0" max="60000" value="{{ (int) $relay['relay_worker_max_latency_ms'] }}">
                                 <div class="text-muted small">{{ __('relayWorkerMaxLatencyHint') }}</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <hr>
+                    <h6 class="fw-semibold mb-2">{{ __('relayWorkerHealthPolicy') }}</h6>
+                    <div class="text-muted small mb-3">{{ __('relayWorkerHealthPolicyHint') }}</div>
+                    <div class="row">
+                        <div class="col-lg-4 col-md-6">
+                            <div class="form-check form-switch mt-2">
+                                <input class="form-check-input" type="checkbox" id="workerAutoDisable" value="1" {{ $relay['relay_worker_auto_disable'] ? 'checked' : '' }}>
+                                <label class="form-check-label" for="workerAutoDisable">{{ __('relayWorkerAutoDisable') }}</label>
+                                <div class="text-muted small">{{ __('relayWorkerAutoDisableHint') }}</div>
+                            </div>
+                        </div>
+                        <div class="col-lg-2 col-md-4">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relayWorkerFailureThreshold') }}</label>
+                                <input type="number" class="form-control" name="relay_worker_failure_threshold" min="1" max="20" value="{{ (int) $relay['relay_worker_failure_threshold'] }}">
+                                <div class="text-muted small">{{ __('relayWorkerFailureThresholdHint') }}</div>
+                            </div>
+                        </div>
+                        <div class="col-lg-2 col-md-4">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relayWorkerFailureWindow') }}</label>
+                                <input type="number" class="form-control" name="relay_worker_failure_window" min="30" max="86400" value="{{ (int) $relay['relay_worker_failure_window'] }}">
+                                <div class="text-muted small">{{ __('relayWorkerFailureWindowHint') }}</div>
+                            </div>
+                        </div>
+                        <div class="col-lg-2 col-md-4">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relayWorkerBackoffBase') }}</label>
+                                <input type="number" class="form-control" name="relay_worker_backoff_base" min="1" max="3600" value="{{ (int) $relay['relay_worker_backoff_base'] }}">
+                            </div>
+                        </div>
+                        <div class="col-lg-2 col-md-4">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relayWorkerBackoffMax') }}</label>
+                                <input type="number" class="form-control" name="relay_worker_backoff_max" min="1" max="86400" value="{{ (int) $relay['relay_worker_backoff_max'] }}">
+                            </div>
+                        </div>
+                        <div class="col-lg-2 col-md-4">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relayWorkerProbeSuccessThreshold') }}</label>
+                                <input type="number" class="form-control" name="relay_worker_probe_success_threshold" min="1" max="10" value="{{ (int) $relay['relay_worker_probe_success_threshold'] }}">
+                            </div>
+                        </div>
+                        <div class="col-lg-2 col-md-4">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relayWorkerProbeInterval') }}</label>
+                                <input type="number" class="form-control" name="relay_worker_probe_interval" min="10" max="3600" value="{{ (int) $relay['relay_worker_probe_interval'] }}">
+                                <div class="text-muted small">{{ __('relayWorkerProbeIntervalHint') }}</div>
                             </div>
                         </div>
                     </div>
@@ -218,9 +278,12 @@
 
                 <hr>
 
-                <div class="d-flex align-items-center justify-content-between mb-3">
+                <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
                     <h6 class="fw-semibold mb-0">{{ __('relayWorkerStatus') }}</h6>
-                    <button type="button" class="btn btn-outline-primary btn-sm" id="testAllWorkersBtn">{{ __('relayWorkerTestAll') }}</button>
+                    <div class="d-flex align-items-center gap-2 flex-wrap">
+                        <button type="button" class="btn btn-outline-warning btn-sm" id="testDegradedWorkersBtn">{{ __('relayWorkerTestDegraded') }}</button>
+                        <button type="button" class="btn btn-outline-primary btn-sm" id="testAllWorkersBtn">{{ __('relayWorkerTestAll') }}</button>
+                    </div>
                 </div>
                 <div id="workerTestResult" class="small mb-2"></div>
                 <div class="table-responsive">
@@ -232,6 +295,8 @@
                                 <th>{{ __('relayWorkerStatus') }}</th>
                                 <th>{{ __('relayWorkerLatency') }}</th>
                                 <th>{{ __('relayWorkerSpeed') }}</th>
+                                <th>{{ __('relayWorkerFailures') }}</th>
+                                <th>{{ __('relayWorkerNextProbe') }}</th>
                                 <th>{{ __('relayWorkerLastChecked') }}</th>
                                 <th>{{ __('relayWorkerActions') }}</th>
                             </tr>
@@ -239,9 +304,24 @@
                         <tbody>
                             @forelse($workers as $worker)
                                 @php
-                                    $status = $worker->last_status ?: 'unknown';
-                                    $statusClass = $status === 'ok' ? 'bg-success' : ($status === 'failed' ? 'bg-danger' : 'bg-secondary');
-                                    $statusLabel = $status === 'ok' ? __('relayWorkerOnline') : ($status === 'failed' ? __('relayWorkerOffline') : __('relayWorkerUnknown'));
+                                    $autoDisabled = $worker->auto_disabled_at !== null;
+                                    $status = !$worker->enabled
+                                        ? 'disabled'
+                                        : ($autoDisabled ? 'auto_disabled' : ($worker->last_status ?: 'unknown'));
+                                    $statusClass = match ($status) {
+                                        'ok' => 'bg-success',
+                                        'failed' => 'bg-danger',
+                                        'auto_disabled' => 'bg-warning text-dark',
+                                        'disabled' => 'bg-secondary',
+                                        default => 'bg-secondary',
+                                    };
+                                    $statusLabel = match ($status) {
+                                        'ok' => __('relayWorkerOnline'),
+                                        'failed' => __('relayWorkerOffline'),
+                                        'auto_disabled' => __('relayWorkerAutoDisabled'),
+                                        'disabled' => __('relayWorkerDisabled'),
+                                        default => __('relayWorkerUnknown'),
+                                    };
                                 @endphp
                                 <tr data-worker-id="{{ $worker->id }}">
                                     <td>
@@ -254,16 +334,21 @@
                                     <td class="text-break" title="{{ $worker->base_url }}">{{ \Illuminate\Support\Str::limit($worker->base_url, 55) }}</td>
                                     <td>
                                         <span class="badge worker-status {{ $statusClass }}">{{ $statusLabel }}</span>
+                                        @if($worker->disabled_reason)
+                                            <div class="text-warning small mt-1 worker-disabled-reason" title="{{ $worker->disabled_reason }}">{{ \Illuminate\Support\Str::limit($worker->disabled_reason, 70) }}</div>
+                                        @endif
                                         @if($worker->last_error)
                                             <div class="text-danger small mt-1 worker-error" title="{{ $worker->last_error }}">{{ \Illuminate\Support\Str::limit($worker->last_error, 60) }}</div>
                                         @endif
                                     </td>
                                     <td class="worker-latency">{{ $worker->last_latency_ms !== null ? $worker->last_latency_ms . ' ms' : '-' }}</td>
                                     <td class="worker-speed">{{ $worker->human_speed }}</td>
+                                    <td class="worker-failures">{{ (int) $worker->failure_count }}</td>
+                                    <td class="worker-next-probe">{{ $worker->next_probe_at ? $worker->next_probe_at->diffForHumans() : '-' }}</td>
                                     <td class="worker-checked">{{ $worker->last_checked_at ? $worker->last_checked_at->diffForHumans() : __('never') }}</td>
                                     <td>
                                         <div class="d-flex align-items-center gap-2 flex-wrap">
-                                            <div class="form-check form-switch mb-0">
+                                            <div class="form-check form-switch mb-0" title="{{ $worker->enabled ? __('relayWorkerEnabled') : __('relayWorkerDisabled') }}">
                                                 <input class="form-check-input worker-toggle" type="checkbox" data-worker-id="{{ $worker->id }}" {{ $worker->enabled ? 'checked' : '' }}>
                                             </div>
                                             <button type="button" class="btn btn-sm btn-outline-primary worker-test" data-worker-id="{{ $worker->id }}">{{ __('relayWorkerTest') }}</button>
@@ -273,7 +358,7 @@
                                 </tr>
                             @empty
                                 <tr>
-                                    <td colspan="7" class="text-center text-muted py-4">{{ __('relayWorkerNoWorkers') }}</td>
+                                    <td colspan="9" class="text-center text-muted py-4">{{ __('relayWorkerNoWorkers') }}</td>
                                 </tr>
                             @endforelse
                         </tbody>

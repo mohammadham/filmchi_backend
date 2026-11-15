@@ -9,6 +9,8 @@
         'deleteConfirm' => __('relayWorkerDeleteConfirm'),
         'testOk' => __('relayWorkerTestOk'),
         'testFailed' => __('relayWorkerTestFailed'),
+        'recovered' => __('relayWorkerRecovered'),
+        'tested' => __('relayWorkerTested'),
         'online' => __('relayWorkerOnline'),
         'offline' => __('relayWorkerOffline'),
         'justNow' => __('justNow'),
