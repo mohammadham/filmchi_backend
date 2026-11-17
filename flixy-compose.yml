@@ -40,13 +40,9 @@ services:
     command:
       - php
       - /app/artisan
-      - queue:work
-      - redis
+      - relay:queue-supervisor
       - --queue=default
-      - --sleep=1
-      - --tries=3
-      - --timeout=7000
-      - --max-time=21600
+      - --poll=3
     volumes:
       - ./storage/app:/app/storage/app
       - ./storage/logs:/app/storage/logs

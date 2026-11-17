@@ -34,6 +34,12 @@ return [
         // Seconds a download may go without a single byte before it is treated
         // as dead. Per read, so a slow source is unaffected.
         'stall_timeout' => (int) env('RELAY_INGEST_STALL_TIMEOUT', 300),
+        // A single-stream download is the last resort for sources that do not
+        // support ranges. Do not let one trickling connection occupy a queue
+        // slot for hours: below this speed for the whole window, fail the job
+        // so it can be retried later with a fresh Worker.
+        'min_stream_kbps' => (int) env('RELAY_INGEST_MIN_STREAM_KBPS', 64),
+        'stream_stall_seconds' => (int) env('RELAY_INGEST_STREAM_STALL_SECONDS', 180),
         // The scraper host throttles each connection hard, so one file is fetched
         // over several ranged connections. Sustained throughput measured on
         // di.farsanime.ir: 8 conns = 327 KB/s, 24 = 838, 32 = 925, 48 = 1072.
@@ -47,6 +53,10 @@ return [
         // concurrent job opens its own connection budget, so the total socket
         // count is roughly connections × concurrency.
         'concurrency' => (int) env('RELAY_INGEST_CONCURRENCY', 1),
+        // Use this percentage of the currently free disk as the budget for
+        // files being downloaded or waiting to upload. 0 disables the disk
+        // budget and keeps the fixed concurrency above.
+        'disk_percent' => (int) env('RELAY_INGEST_DISK_PERCENT', 50),
         // Fixed range size for the dynamic chunk queue. Small chunks let a
         // retry repeat only a few MB instead of a hundred-plus MB slice.
         'chunk_mb' => (int) env('RELAY_INGEST_CHUNK_MB', 8),
@@ -56,6 +66,15 @@ return [
         // A dead source can fail every chunk at once; retrying all of them
         // sequentially must not pin a download slot for tens of minutes.
         'chunk_retry_budget' => (int) env('RELAY_INGEST_CHUNK_RETRY_BUDGET', 180),
+        // chunk_speed watches aggregate throughput and, on a sustained drop,
+        // re-probes every Worker for the next chunks instead of trusting a
+        // Worker that has degraded mid-file.
+        'speed_check_seconds' => (float) env('RELAY_INGEST_SPEED_CHECK_SECONDS', 5),
+        'speed_window_samples' => (int) env('RELAY_INGEST_SPEED_WINDOW_SAMPLES', 6),
+        'speed_drop_ratio' => (float) env('RELAY_INGEST_SPEED_DROP_RATIO', 0.70),
+        'speed_drop_confirmations' => (int) env('RELAY_INGEST_SPEED_DROP_CONFIRMATIONS', 2),
+        'speed_reprobe_chunks' => (int) env('RELAY_INGEST_SPEED_REPROBE_CHUNKS', 2),
+        'speed_reprobe_cooldown_seconds' => (int) env('RELAY_INGEST_SPEED_REPROBE_COOLDOWN_SECONDS', 30),
         // Target number of concurrent streams per Worker. The total is still
         // capped by RELAY_INGEST_CONNECTIONS.
         'streams_per_worker' => (int) env('RELAY_WORKER_STREAMS', 2),

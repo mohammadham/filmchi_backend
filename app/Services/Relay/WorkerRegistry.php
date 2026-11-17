@@ -279,6 +279,13 @@ class WorkerRegistry
                 $workers = $workers->sortBy(function (RelayWorker $worker) {
                     return $worker->last_used_at ?? now()->subYears(1);
                 });
+            } elseif ($strategy === 'chunk_speed') {
+                // The ingest job probes the fastest candidates per chunk.
+                // Keep the pool itself ordered by measured real-transfer speed
+                // as a sane fallback when a probe fails.
+                $workers = $workers->sortByDesc(function (RelayWorker $worker) {
+                    return $worker->last_speed_bps ?? 0;
+                });
             }
 
             $workers = $workers->values();

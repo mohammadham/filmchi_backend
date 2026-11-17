@@ -7,7 +7,10 @@ use App\ContentSource;
 use App\Episode;
 use App\EpisodeSource;
 use App\Season;
+use App\Services\Relay\ChunkRouter;
+use App\Services\Relay\DiskBudget;
 use App\Services\Relay\RelaySettings;
+use App\Services\Relay\SpeedDropDetector;
 use App\Services\Relay\UploadMetrics;
 use App\Services\Relay\WorkerRegistry;
 use Illuminate\Bus\Queueable;
@@ -233,50 +236,67 @@ class IngestUrlJob implements ShouldQueue
                 ));
         }
 
-        if ($probe['ranges'] && $probe['size'] > 0 && $this->connectionCount() > 1) {
-            try {
-                $this->downloadSegmented($source, $part, $probe['size']);
+        // A range-capable source must not fall back to one connection after a
+        // segmented failure. The origin throttles a single stream to roughly
+        // 10-20 KB/s, so a 400 MB file would hold a queue slot for 6+ hours and
+        // block every upload behind it. Fail the job instead; the queue retry
+        // gets a fresh Worker and a fresh range, while the slot is released.
+        if (!$probe['ranges'] || $probe['size'] <= 0 || $this->connectionCount() <= 1) {
+            $this->downloadStream($source, $part, $probe['size']);
 
-                return;
-            } catch (Throwable $e) {
-                // A source can advertise ranges and still misbehave mid-transfer;
-                // the plain stream below is the safety net, not a second failure.
-                Log::info('Segmented ingest download failed; retrying as one stream', [
-                    'source_id' => $this->sourceId,
-                    'message' => $e->getMessage(),
-                ]);
-
-                @unlink($part);
-
-                $registry = app(WorkerRegistry::class);
-
-                // A cold Worker/origin can answer one chunk with 200 even after
-                // the probe was told ranges exist. Give the origin one short
-                // warm-up pass before dropping to the slow single stream.
-                if ($registry->isEligible($this->url) && $registry->hasActiveWorkers()) {
-                    usleep((int) config('media_relay.workers.cold_retry_delay_ms', 2000) * 1000);
-
-                    try {
-                        $retryProbe = $this->probeSource();
-
-                        if ($retryProbe['ranges'] && $retryProbe['size'] > 0 && $this->connectionCount() > 1) {
-                            $this->downloadSegmented($source, $part, $retryProbe['size']);
-
-                            return;
-                        }
-                    } catch (Throwable $retryError) {
-                        Log::info('Worker cold-retry failed; retrying as one stream', [
-                            'source_id' => $this->sourceId,
-                            'message' => $retryError->getMessage(),
-                        ]);
-
-                        @unlink($part);
-                    }
-                }
-            }
+            return;
         }
 
-        $this->downloadStream($source, $part, $probe['size']);
+        try {
+            $this->downloadSegmented($source, $part, $probe['size']);
+
+            return;
+        } catch (Throwable $e) {
+            Log::warning('Segmented ingest download failed; not falling back to single stream', [
+                'source_id' => $this->sourceId,
+                'message' => $e->getMessage(),
+            ]);
+
+            @unlink($part);
+
+            $registry = app(WorkerRegistry::class);
+
+            // A retry-budget failure means many ranged chunks failed over a
+            // multi-minute pass, not one cold Worker answering early. Another
+            // full segmented pass would only double the slot occupancy for the
+            // same dead origin, so fail the job and let the queue backoff it.
+            $skipColdRetry = str_contains($e->getMessage(), 'retry budget exhausted');
+
+            // A cold Worker/origin can answer one chunk with 200 even after
+            // the probe was told ranges exist. Give the origin one short
+            // warm-up pass, then either retry segmented or fail the job.
+            if (!$skipColdRetry && $registry->isEligible($this->url) && $registry->hasActiveWorkers()) {
+                usleep((int) config('media_relay.workers.cold_retry_delay_ms', 2000) * 1000);
+
+                try {
+                    $retryProbe = $this->probeSource();
+
+                    if (!$retryProbe['ranges'] || $retryProbe['size'] <= 0 || $this->connectionCount() <= 1) {
+                        throw new \RuntimeException('source stopped advertising byte ranges after a failed segmented download');
+                    }
+
+                    $this->downloadSegmented($source, $part, $retryProbe['size']);
+
+                    return;
+                } catch (Throwable $retryError) {
+                    Log::warning('Worker cold-retry failed; failing job for a later retry', [
+                        'source_id' => $this->sourceId,
+                        'message' => $retryError->getMessage(),
+                    ]);
+
+                    @unlink($part);
+
+                    throw $retryError;
+                }
+            }
+
+            throw $e;
+        }
     }
 
     /**
@@ -295,7 +315,8 @@ class IngestUrlJob implements ShouldQueue
             return $perFile;
         }
 
-        $concurrency = max(1, (int) config('media_relay.ingest.concurrency', 1));
+        $max = max(1, min(4, (int) config('media_relay.ingest.concurrency', 1)));
+        $concurrency = max(1, DiskBudget::desiredDownloads($max));
 
         return max(1, min($perFile, intdiv($total, $concurrency)));
     }
@@ -448,6 +469,32 @@ class IngestUrlJob implements ShouldQueue
         $registry = app(WorkerRegistry::class);
         $pool = collect();
         $slots = 1;
+        $strategy = (string) config('media_relay.workers.selection_strategy', 'round_robin');
+        $chunkSpeed = $strategy === 'chunk_speed';
+        $workerScores = [];
+        $chunkCounts = [];
+        $assignedTotal = 0;
+        $probeCursor = 0;
+        $forceProbeChunks = 0;
+        $probeWaitSeconds = 0.0;
+        $lastSpeedSampleAt = microtime(true);
+        $lastSpeedSampleBytes = 0;
+        $lastReprobeAt = 0.0;
+        $speedGuard = null;
+        $speedCheckSeconds = 5.0;
+        $speedReprobeChunks = 2;
+        $speedReprobeCooldown = 30;
+
+        if ($chunkSpeed) {
+            $speedGuard = new SpeedDropDetector(
+                (int) config('media_relay.ingest.speed_window_samples', 6),
+                (float) config('media_relay.ingest.speed_drop_ratio', 0.70),
+                (int) config('media_relay.ingest.speed_drop_confirmations', 2)
+            );
+            $speedCheckSeconds = max(3.0, (float) config('media_relay.ingest.speed_check_seconds', 5));
+            $speedReprobeChunks = max(1, (int) config('media_relay.ingest.speed_reprobe_chunks', 2));
+            $speedReprobeCooldown = max(5, (int) config('media_relay.ingest.speed_reprobe_cooldown_seconds', 30));
+        }
 
         // Cap how many Workers one file may use. 0 keeps the whole pool.
         $maxWorkers = max(0, (int) config('media_relay.ingest.max_workers', 0));
@@ -457,7 +504,7 @@ class IngestUrlJob implements ShouldQueue
         // width at the start. The closure also recalculates the number of
         // slots, so a newly added Worker can fill idle connections without
         // waiting for the next file.
-        $refreshPool = function () use ($registry, $maxWorkers, $total, $chunkSize, &$pool, &$slots) {
+        $refreshPool = function () use ($registry, $maxWorkers, $total, $chunkSize, &$pool, &$slots, &$workerScores) {
             $fresh = $registry->selectPool($this->url);
 
             if ($maxWorkers > 0) {
@@ -465,6 +512,19 @@ class IngestUrlJob implements ShouldQueue
             }
 
             $pool = $fresh->values();
+
+            foreach ($pool as $worker) {
+                $workerId = (int) $worker->id;
+
+                // Keep a score learned from probes/real chunks for this file;
+                // only seed a Worker that has no live score yet. Re-seeding
+                // with a stale DB value would keep a degraded Worker in the
+                // candidate list.
+                if (!array_key_exists($workerId, $workerScores)) {
+                    $workerScores[$workerId] = (int) ($worker->last_speed_bps ?? 0);
+                }
+            }
+
             $slots = $this->segmentedSlotCount($pool, $total, $chunkSize);
 
             return $registry->poolVersion();
@@ -513,6 +573,11 @@ class IngestUrlJob implements ShouldQueue
         $lengths = [];   // chunk index => expected bytes
         $inFlight = [];  // chunk index => true, ordered by dispatch
         $failed = [];    // chunk index => error message
+        // One failure per Worker for this file. A failing origin can fail
+        // dozens of chunks at once; charging every chunk to its Worker used to
+        // push the whole pool over the auto-disable threshold in seconds.
+        $failedWorkerMessages = [];
+        $poolSizeAtStart = max(1, $pool->count());
         $received = 0;
         $downloadStartedAt = microtime(true);
 
@@ -572,7 +637,7 @@ class IngestUrlJob implements ShouldQueue
             $poolRefreshSeconds = max(3, (int) config('media_relay.ingest.pool_refresh_seconds', 10));
             $lastPoolRefresh = microtime(true);
 
-            $startChunk = function (int $index) use ($registry, $multi, &$pending, &$handles, &$routes, &$written, &$lengths, &$inFlight, $writer, $chunkSize, $bindHandle, &$workerIndices, &$workerCount, &$currentWorker, &$pool) {
+            $startChunk = function (int $index) use ($registry, $multi, &$pending, &$handles, &$routes, &$written, &$lengths, &$inFlight, $writer, $chunkSize, $bindHandle, &$workerIndices, &$workerCount, &$currentWorker, &$pool, $chunkSpeed, &$workerScores, &$chunkCounts, &$assignedTotal, &$probeCursor, &$forceProbeChunks, &$probeWaitSeconds) {
                 $meta = $pending[$index];
                 unset($pending[$index]);
 
@@ -585,15 +650,76 @@ class IngestUrlJob implements ShouldQueue
                 $range = $start . '-' . ($start + $length - 1);
 
                 if ($workerCount > 0) {
-                    // Round-robin across the current pool. The pool's ordering
-                    // still reflects the selected strategy, but one Worker can
-                    // no longer absorb every chunk of a file.
-                    if ($currentWorker >= $workerCount) {
-                        $currentWorker = 0;
+                    $worker = null;
+
+                    if ($chunkSpeed) {
+                        // Normally probe the two strongest candidates plus one
+                        // explorer. After a throughput drop, force a full-pool
+                        // probe for a few chunks so a newly better Worker can
+                        // replace a degraded one immediately.
+                        if ($forceProbeChunks > 0) {
+                            $candidates = $pool->values();
+                            $forceProbeChunks = max(0, $forceProbeChunks - 1);
+                        } else {
+                            $candidates = $pool->sortByDesc(function ($candidate) use (&$workerScores) {
+                                return (int) ($workerScores[(int) $candidate->id] ?? $candidate->last_speed_bps ?? 0);
+                            })->take(2)->values();
+
+                            // Explore one additional Worker in rotation. Without
+                            // this, a Worker with a stale low score would never be
+                            // probed and could never prove it is faster for this
+                            // chunk.
+                            if ($workerCount > 1) {
+                                $explorer = $pool->get($workerIndices[$probeCursor % $workerCount]);
+                                $probeCursor++;
+
+                                if ($explorer !== null && !$candidates->contains(function ($candidate) use ($explorer) {
+                                    return (int) $candidate->id === (int) $explorer->id;
+                                })) {
+                                    $candidates->push($explorer);
+                                }
+                            }
+                        }
+
+                        if ($candidates->isNotEmpty()) {
+                            $sampleBytes = max(16384, min(65536, intdiv($length, 8)));
+                            $probeStartedAt = microtime(true);
+                            $probe = $this->probeChunkWorkers($candidates, $range, $sampleBytes);
+                            // Probe time is not download throughput; exclude it
+                            // from the speed-drop sample window.
+                            $probeWaitSeconds += max(0.0, microtime(true) - $probeStartedAt);
+
+                            foreach ($probe as $workerId => $speed) {
+                                $workerScores[(int) $workerId] = (int) round(
+                                    (($workerScores[(int) $workerId] ?? 0) * 0.5) + ((int) $speed * 0.5)
+                                );
+                            }
+
+                            $chosen = ChunkRouter::choose($probe, $chunkCounts, $assignedTotal);
+
+                            if ($chosen !== null) {
+                                $worker = $pool->firstWhere('id', $chosen);
+                            }
+                        }
                     }
 
-                    $worker = $pool->get($workerIndices[$currentWorker]);
-                    $currentWorker = ($currentWorker + 1) % $workerCount;
+                    if ($worker === null) {
+                        // Round-robin fallback when a probe fails. The pool's
+                        // ordering still reflects the selected strategy.
+                        if ($currentWorker >= $workerCount) {
+                            $currentWorker = 0;
+                        }
+
+                        $worker = $pool->get($workerIndices[$currentWorker]);
+                        $currentWorker = ($currentWorker + 1) % $workerCount;
+                    }
+
+                    if ($chunkSpeed && $worker !== null) {
+                        $workerId = (int) $worker->id;
+                        $chunkCounts[$workerId] = (int) ($chunkCounts[$workerId] ?? 0) + 1;
+                        $assignedTotal++;
+                    }
+
                     $route = $registry->routeFor($worker, $this->url, $range);
                 } else {
                     $route = $registry->route($this->url, $range);
@@ -648,11 +774,15 @@ class IngestUrlJob implements ShouldQueue
             $fillSlots();
 
             $lastUpdate = microtime(true);
+            $lastSpeedSampleAt = microtime(true);
+            $lastSpeedSampleBytes = $received;
+            // Any probes during the initial fill happened before this window.
+            $probeWaitSeconds = 0.0;
 
             // curl_multi_info_read is the only reliable "this handle finished"
             // signal, so the loop polls it and refills freed slots from the
             // pending queue as soon as a chunk completes.
-            $harvest = function () use ($multi, $registry, &$handles, &$routes, &$written, &$lengths, &$inFlight, &$failed, &$received, &$pending, &$handleChunkMap, $startChunk, $fillSlots) {
+            $harvest = function () use ($multi, $registry, &$handles, &$routes, &$written, &$lengths, &$inFlight, &$failed, &$failedWorkerMessages, &$received, &$pending, &$handleChunkMap, &$workerScores, $startChunk, $fillSlots) {
                 while (true) {
                     $info = curl_multi_info_read($multi);
 
@@ -697,9 +827,23 @@ class IngestUrlJob implements ShouldQueue
 
                     if ($message === null) {
                         $registry->reportSuccess($route['worker_id'] ?? null, $got, $durationMs);
+
+                        $workerId = (int) ($route['worker_id'] ?? 0);
+
+                        if ($workerId > 0 && $got > 0) {
+                            $actualSpeed = $got / max(0.001, $durationMs / 1000);
+                            $workerScores[$workerId] = (int) round(
+                                (($workerScores[$workerId] ?? 0) * 0.5) + ($actualSpeed * 0.5)
+                            );
+
+                            unset($failedWorkerMessages[$workerId]);
+                        }
                     } else {
-                        $registry->reportFailure($route['worker_id'] ?? null, $message);
                         $failed[$index] = $message;
+
+                        if (!empty($route['worker_id'])) {
+                            $failedWorkerMessages[(int) $route['worker_id']] = $message;
+                        }
                     }
 
                     curl_multi_remove_handle($multi, $handle);
@@ -737,6 +881,49 @@ class IngestUrlJob implements ShouldQueue
                     $fillSlots();
                 }
 
+                if ($speedGuard !== null && ($sampleNow = microtime(true)) - $lastSpeedSampleAt >= $speedCheckSeconds) {
+                    $elapsed = $sampleNow - $lastSpeedSampleAt - $probeWaitSeconds;
+                    $probeWaitSeconds = 0.0;
+                    $lastSpeedSampleAt = $sampleNow;
+
+                    if ($elapsed >= 0.5) {
+                        $currentSpeed = max(0.0, ($received - $lastSpeedSampleBytes) / $elapsed);
+                        $lastSpeedSampleBytes = $received;
+
+                        if ($sampleNow - $lastReprobeAt >= $speedReprobeCooldown) {
+                            $baseline = $speedGuard->baseline();
+
+                            if ($speedGuard->observe($currentSpeed)) {
+                                $forceProbeChunks = $speedReprobeChunks;
+                                $lastReprobeAt = $sampleNow;
+                                $poolVersion = $refreshPool();
+                                $workerIndices = $pool->keys()->all();
+                                $workerCount = $pool->count();
+                                $currentWorker = $workerCount > 0 ? $currentWorker % $workerCount : 0;
+                                $probeCursor = 0;
+                                $lastPoolRefresh = $sampleNow;
+                                $source->ingest_connections = max(count($handles), $slots);
+                                $source->save();
+                                $fillSlots();
+
+                                Log::warning('relay download speed dropped; re-probing Workers', [
+                                    'source_id' => $this->sourceId,
+                                    'current_bps' => (int) round($currentSpeed),
+                                    'baseline_bps' => (int) round($baseline),
+                                    'probe_chunks' => $forceProbeChunks,
+                                ]);
+                            }
+                        } else {
+                            // A re-probe is already cooling down; start a fresh
+                            // baseline instead of carrying the old peak into it.
+                            $speedGuard->reset($currentSpeed);
+                        }
+                    } else {
+                        // Almost the whole interval was probe time.
+                        $lastSpeedSampleBytes = $received;
+                    }
+                }
+
                 if (microtime(true) - $lastUpdate >= 5) {
                     $elapsed = max(1, microtime(true) - $downloadStartedAt);
                     $this->setStatus(
@@ -772,6 +959,36 @@ class IngestUrlJob implements ShouldQueue
             // one used to hold a download slot for tens of minutes; cap the
             // whole retry pass so a dead source releases the queue quickly.
             $retryBudget = max(30, (int) config('media_relay.ingest.chunk_retry_budget', 180));
+            $failuresReported = false;
+            $reportFailures = function () use (&$failuresReported, &$failedWorkerMessages, $poolSizeAtStart, $registry) {
+                if ($failuresReported) {
+                    return;
+                }
+
+                $failuresReported = true;
+
+                // If most of the pool failed the same file, the origin is the
+                // common factor, not every Worker. Do not auto-disable the
+                // pool for a source outage; keep one failure at most for
+                // isolated Workers so a genuinely bad endpoint still leaves
+                // the pool.
+                $widespreadFailure = $poolSizeAtStart >= 3
+                    && count($failedWorkerMessages) >= (int) ceil($poolSizeAtStart / 2);
+
+                if ($widespreadFailure) {
+                    Log::warning('Source-wide transfer failure; Worker pool left intact', [
+                        'source_id' => $this->sourceId,
+                        'failed_workers' => count($failedWorkerMessages),
+                        'pool_size' => $poolSizeAtStart,
+                    ]);
+
+                    return;
+                }
+
+                foreach ($failedWorkerMessages as $workerId => $message) {
+                    $registry->reportFailure($workerId, $message);
+                }
+            };
 
             while (!empty($failed) && $retryRound < 2) {
                 $retryRound++;
@@ -779,6 +996,8 @@ class IngestUrlJob implements ShouldQueue
 
                 foreach ($failed as $i => $firstError) {
                     if (microtime(true) - $retryStartedAt >= $retryBudget) {
+                        $reportFailures();
+
                         throw new \RuntimeException('segmented download retry budget exhausted');
                     }
 
@@ -792,12 +1011,16 @@ class IngestUrlJob implements ShouldQueue
 
                     if (!empty($result['ok'])) {
                         $registry->reportSuccess($route['worker_id'] ?? null, $result['bytes'], $result['duration_ms']);
-                    } else {
-                        $registry->reportFailure($route['worker_id'] ?? null, (string) $result['error']);
 
                         if (!empty($route['worker_id'])) {
-                            $failedWorkerIds[] = (int) $route['worker_id'];
+                            unset($failedWorkerMessages[(int) $route['worker_id']]);
+                        }
+                    } else {
+                        if (!empty($route['worker_id'])) {
+                            $workerId = (int) $route['worker_id'];
+                            $failedWorkerIds[] = $workerId;
                             $failedWorkerIds = array_values(array_unique($failedWorkerIds));
+                            $failedWorkerMessages[$workerId] = (string) $result['error'];
                         }
 
                         $next[$i] = (string) $result['error'] ?: $firstError;
@@ -806,6 +1029,8 @@ class IngestUrlJob implements ShouldQueue
 
                 $failed = $next;
             }
+
+            $reportFailures();
 
             if (!empty($failed)) {
                 throw new \RuntimeException((string) reset($failed));
@@ -834,6 +1059,122 @@ class IngestUrlJob implements ShouldQueue
      * streams-per-worker sets the width and the configured connection budget
      * remains the ceiling; without Workers only the direct budget applies.
      */
+
+    /**
+     * Measure the first bytes of one chunk through several Workers in
+     * parallel. Only successful responses with at least one byte contribute a
+     * speed; a failed probe simply removes that Worker from this chunk's
+     * choice and never marks it unhealthy.
+     *
+     * @param  \Illuminate\Support\Collection<int, \App\RelayWorker>  $workers
+     * @return array<int, int> Worker id => bytes per second
+     */
+    protected function probeChunkWorkers($workers, string $range, int $sampleBytes): array
+    {
+        if ($workers->isEmpty() || $sampleBytes <= 0) {
+            return [];
+        }
+
+        $start = (int) explode('-', $range)[0];
+        $sampleRange = $start . '-' . ($start + $sampleBytes - 1);
+        $registry = app(WorkerRegistry::class);
+        $multi = curl_multi_init();
+        $handles = [];
+        $states = [];
+        $speeds = [];
+
+        foreach ($workers as $worker) {
+            $url = $registry->buildUrl($worker, $this->url, $sampleRange);
+            $handle = curl_init($url);
+
+            if ($handle === false) {
+                continue;
+            }
+
+            $state = new \stdClass();
+            $state->workerId = (int) $worker->id;
+            $state->bytes = 0;
+            $state->startedAt = microtime(true);
+
+            $writer = function ($ch, string $data) use ($state, $sampleBytes) {
+                if ($state->bytes >= $sampleBytes) {
+                    return 0;
+                }
+
+                $take = min(strlen($data), $sampleBytes - $state->bytes);
+                $state->bytes += $take;
+
+                return $take;
+            };
+
+            $options = [
+                CURLOPT_FOLLOWLOCATION => true,
+                CURLOPT_MAXREDIRS => 3,
+                CURLOPT_CONNECTTIMEOUT => 5,
+                CURLOPT_TIMEOUT => 8,
+                CURLOPT_LOW_SPEED_LIMIT => 1,
+                CURLOPT_LOW_SPEED_TIME => 3,
+                CURLOPT_NOSIGNAL => true,
+                CURLOPT_USERAGENT => (string) config('media_relay.relay.user_agent', 'flixy-media-relay/1.0'),
+                CURLOPT_WRITEFUNCTION => $writer,
+            ];
+
+            $headers = $registry->headers($worker);
+
+            if (!empty($headers)) {
+                $options[CURLOPT_HTTPHEADER] = $this->curlHeaders($headers);
+            }
+
+            curl_setopt_array($handle, $options);
+            curl_multi_add_handle($multi, $handle);
+
+            $key = spl_object_id($handle);
+            $handles[$key] = $handle;
+            $states[$key] = $state;
+        }
+
+        if (empty($handles)) {
+            curl_multi_close($multi);
+
+            return [];
+        }
+
+        $running = 0;
+
+        do {
+            curl_multi_exec($multi, $running);
+
+            if ($running) {
+                curl_multi_select($multi, 0.5);
+            }
+
+            while (($info = curl_multi_info_read($multi)) !== false) {
+                $handle = $info['handle'];
+                $key = spl_object_id($handle);
+
+                if (!isset($states[$key])) {
+                    continue;
+                }
+
+                $state = $states[$key];
+                $duration = max(0.001, microtime(true) - $state->startedAt);
+                $code = (int) curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
+
+                if ($state->bytes > 0 && in_array($code, [200, 206], true)) {
+                    $speeds[$state->workerId] = (int) round($state->bytes / $duration);
+                }
+
+                curl_multi_remove_handle($multi, $handle);
+                curl_close($handle);
+                unset($handles[$key], $states[$key]);
+            }
+        } while ($running > 0 || !empty($handles));
+
+        curl_multi_close($multi);
+
+        return $speeds;
+    }
+
     protected function segmentedSlotCount(Collection $pool, int $total, int $chunkSize): int
     {
         $slots = $pool->isNotEmpty()
@@ -974,10 +1315,21 @@ class IngestUrlJob implements ShouldQueue
         $received = 0;
         $lastUpdate = microtime(true);
         $downloadStartedAt = microtime(true);
+        $minStreamBps = max(0, (int) config('media_relay.ingest.min_stream_kbps', 64)) * 1024;
+        $streamWindow = max(30, (int) config('media_relay.ingest.stream_stall_seconds', 180));
+        $speedWindowStartedAt = $downloadStartedAt;
+        $speedWindowBytes = 0;
 
         try {
             while (!feof($remote)) {
-                $buffer = fread($remote, 1048576);
+                // A TLS reset is a warning in PHP; promote it to a normal
+                // false return so the retry path handles it instead of the
+                // error handler turning it into a failed job.
+                // Keep each read small enough that the speed guard can run
+                // while the source is still sending. A 1 MB read on a
+                // 10 KB/s connection blocks for over a minute before the
+                // window check gets a chance to fire.
+                $buffer = @fread($remote, 65536);
 
                 if ($buffer === false) {
                     break;
@@ -985,6 +1337,23 @@ class IngestUrlJob implements ShouldQueue
 
                 fwrite($out, $buffer);
                 $received += strlen($buffer);
+
+                if ($minStreamBps > 0 && microtime(true) - $speedWindowStartedAt >= $streamWindow) {
+                    $windowSeconds = max(0.001, microtime(true) - $speedWindowStartedAt);
+                    $windowSpeed = ($received - $speedWindowBytes) / $windowSeconds;
+
+                    if ($windowSpeed < $minStreamBps) {
+                        throw new \RuntimeException(sprintf(
+                            'single-stream transfer is too slow: %.0f KB/s for %d seconds (minimum %d KB/s)',
+                            $windowSpeed / 1024,
+                            $streamWindow,
+                            (int) ($minStreamBps / 1024)
+                        ));
+                    }
+
+                    $speedWindowStartedAt = microtime(true);
+                    $speedWindowBytes = $received;
+                }
 
                 if (microtime(true) - $lastUpdate >= 5) {
                     $elapsed = max(1, microtime(true) - $downloadStartedAt);

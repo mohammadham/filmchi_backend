@@ -3,6 +3,7 @@
 namespace App\Services\Relay;
 
 use App\GlobalSettings;
+use Illuminate\Support\Facades\Cache;
 
 /**
  * Bridges the relay connection settings stored in the panel (global_settings)
@@ -37,6 +38,7 @@ class RelaySettings
         'relay_ingest_connections' => ['media_relay.ingest.connections', 'int'],
         'relay_ingest_total_connections' => ['media_relay.ingest.total_connections', 'int'],
         'relay_ingest_concurrency' => ['media_relay.ingest.concurrency', 'concurrency'],
+        'relay_ingest_disk_percent' => ['media_relay.ingest.disk_percent', 'percent'],
         'relay_worker_min_speed_kbps' => ['media_relay.workers.min_speed_bps', 'kbps'],
         'relay_worker_max_latency_ms' => ['media_relay.workers.max_latency_ms', 'int'],
         'relay_tg_base_url' => ['media_relay.telegram.base_url', 'string'],
@@ -95,6 +97,7 @@ class RelaySettings
             'relay_ingest_connections' => (int) config('media_relay.ingest.connections'),
             'relay_ingest_total_connections' => (int) config('media_relay.ingest.total_connections', 0),
             'relay_ingest_concurrency' => max(1, min(4, (int) config('media_relay.ingest.concurrency', 1))),
+            'relay_ingest_disk_percent' => max(0, min(95, (int) config('media_relay.ingest.disk_percent', 50))),
             'relay_worker_min_speed_kbps' => (int) round(((int) config('media_relay.workers.min_speed_bps', 0)) / 1000),
             'relay_worker_max_latency_ms' => (int) config('media_relay.workers.max_latency_ms', 0),
             'relay_tg_base_url' => (string) config('media_relay.telegram.base_url'),
@@ -194,6 +197,7 @@ class RelaySettings
         $setting->save();
 
         static::apply($setting);
+        Cache::forget(DiskBudget::CACHE_KEY . ':typical');
 
         return $values;
     }
@@ -212,6 +216,8 @@ class RelaySettings
                 return max(0, (int) $value);
             case 'concurrency':
                 return max(1, min(4, (int) $value));
+            case 'percent':
+                return max(0, min(95, (int) $value));
             case 'positive':
                 return max(1, (int) $value);
             case 'kbps':
@@ -225,7 +231,7 @@ class RelaySettings
             case 'strategy':
                 $strategy = strtolower((string) $value);
 
-                return in_array($strategy, ['round_robin', 'fastest', 'least_used'], true)
+                return in_array($strategy, ['round_robin', 'fastest', 'least_used', 'chunk_speed'], true)
                     ? $strategy
                     : 'round_robin';
             default:

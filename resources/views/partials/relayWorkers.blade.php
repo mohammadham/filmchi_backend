@@ -18,6 +18,7 @@
                             <span class="badge bg-secondary">{{ __('relayRuntimeQueued') }}: <span id="relayRuntimeQueuedValue">{{ (int) $relayRuntime['queued'] }}</span></span>
                             <span class="badge bg-dark">{{ __('relayRuntimeConnections') }}: <span id="relayRuntimeConnectionsValue">{{ (int) $relayRuntime['connections_in_use'] }}</span></span>
                             <span class="badge bg-success">{{ __('relayRuntimeTotalSpeed') }}: <span id="relayRuntimeTotalSpeedValue">{{ $relayRuntime['total_speed'] }}</span></span>
+                            <span class="badge bg-info">{{ __('relayIngestDiskBudget') }}: {{ $relayRuntime['disk_budget_gb'] }} GB / {{ $relayRuntime['disk_downloads'] }}</span>
                             <span class="badge {{ $relayRuntime['supervisor_down'] ? 'bg-danger' : 'bg-success' }}" id="relayHeartbeatBadge">
                                 {{ __('relayRuntimeHeartbeat') }}: <span id="relayHeartbeatValue">{{ $relayRuntime['heartbeat_label'] }}</span>
                             </span>
@@ -58,7 +59,9 @@
                                     <option value="round_robin" {{ $relay['relay_worker_selection_strategy'] === 'round_robin' ? 'selected' : '' }}>{{ __('relayWorkerSelectionRoundRobin') }}</option>
                                     <option value="fastest" {{ $relay['relay_worker_selection_strategy'] === 'fastest' ? 'selected' : '' }}>{{ __('relayWorkerSelectionFastest') }}</option>
                                     <option value="least_used" {{ $relay['relay_worker_selection_strategy'] === 'least_used' ? 'selected' : '' }}>{{ __('relayWorkerSelectionLeastUsed') }}</option>
+                                    <option value="chunk_speed" {{ $relay['relay_worker_selection_strategy'] === 'chunk_speed' ? 'selected' : '' }}>{{ __('relayWorkerSelectionChunkSpeed') }}</option>
                                 </select>
+                                <div class="text-muted small">{{ __('relayWorkerSelectionChunkSpeedHint') }}</div>
                             </div>
                         </div>
                         <div class="col-lg-3 col-md-6">
@@ -79,6 +82,18 @@
                                 <label class="form-label">{{ __('relayIngestConcurrency') }}</label>
                                 <input type="number" class="form-control" name="relay_ingest_concurrency" min="1" max="4" value="{{ (int) $relay['relay_ingest_concurrency'] }}">
                                 <div class="text-muted small">{{ __('relayIngestConcurrencyHint') }}</div>
+                            </div>
+                        </div>
+                        <div class="col-lg-2 col-md-4">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relayIngestDiskPercent') }}</label>
+                                <input type="number" class="form-control" name="relay_ingest_disk_percent" min="0" max="95" value="{{ (int) $relay['relay_ingest_disk_percent'] }}">
+                                <div class="text-muted small">{{ __('relayIngestDiskPercentHint') }}</div>
+                                <div class="text-muted small">
+                                    {{ __('relayIngestDiskFree') }}: {{ $relayRuntime['disk_free_gb'] }} GB ·
+                                    {{ __('relayIngestDiskBudget') }}: {{ $relayRuntime['disk_budget_gb'] }} GB ·
+                                    {{ $relayRuntime['disk_downloads'] }} {{ __('relayIngestDiskSlots') }}
+                                </div>
                             </div>
                         </div>
                         <div class="col-lg-2 col-md-4">

@@ -16,6 +16,7 @@ use App\RelayWorker;
 use App\Notification;
 use App\Season;
 use App\Pages;
+use App\Services\Relay\DiskBudget;
 use App\Services\Relay\NineDriveClient;
 use App\Services\Relay\RelaySettings;
 use App\Services\Relay\TelegramDriveClient;
@@ -92,6 +93,12 @@ class SettingController extends Controller
      */
     protected function relayRuntimeStatus(): array
     {
+        try {
+            RelaySettings::apply();
+        } catch (\Throwable $e) {
+            // Keep the page usable if the settings table is mid-migration.
+        }
+
         $active = 0;
         $queued = 0;
 
@@ -155,7 +162,15 @@ class SettingController extends Controller
             // No heartbeat available; report 0 live and show the alert.
         }
 
+        $diskMax = max(1, min(4, (int) config('media_relay.ingest.concurrency', 1)));
+        $disk = DiskBudget::status($diskMax);
+
         return [
+            'disk_free_gb' => round($disk['free'] / 1073741824, 1),
+            'disk_budget_gb' => round($disk['budget'] / 1073741824, 1),
+            'disk_ingest_gb' => round($disk['ingest'] / 1073741824, 1),
+            'disk_percent' => (int) $disk['percent'],
+            'disk_downloads' => (int) $disk['downloads'],
             'active' => $active,
             'queued' => $queued,
             'workers_live' => $live,

@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Services\Relay\DiskBudget;
 use App\Services\Relay\RelaySettings;
 use App\Services\Relay\WorkerRegistry;
 use Illuminate\Console\Command;
@@ -168,7 +169,9 @@ class RelayQueueSupervisor extends Command
             return max(1, min(2, (int) config('media_relay.workers.probe_concurrency', 1)));
         }
 
-        return max(1, min(4, (int) config('media_relay.ingest.concurrency', 1)));
+        $max = max(1, min(4, (int) config('media_relay.ingest.concurrency', 1)));
+
+        return DiskBudget::desiredDownloads($max);
     }
 
     protected function spawnWorker(string $role): bool

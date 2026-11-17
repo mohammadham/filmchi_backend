@@ -54,3 +54,7 @@ read_1p_settings.py
 .veilway-debug/
 conversation_tail.txt
 /storage/framework/testing.sqlite
+
+# runtime artifacts
+/storage/logs/*.log
+.DS_Store
