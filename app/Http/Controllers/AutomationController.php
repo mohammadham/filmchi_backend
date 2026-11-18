@@ -7,6 +7,7 @@ use App\ContentSource;
 use App\Episode;
 use App\EpisodeSource;
 use App\Jobs\IngestUrlJob;
+use App\Services\Relay\SourceRequeuer;
 use App\Services\Relay\UploadMetrics;
 use App\Season;
 use App\Console\Commands\SyncFarsanimeCatalogue;
@@ -287,7 +288,7 @@ class AutomationController extends Controller
                 continue;
             }
 
-            $content = $this->contentOf($episode);
+            $content = app(SourceRequeuer::class)->contentOf($episode);
 
             if (!$content) {
                 $skipped++;
@@ -306,7 +307,7 @@ class AutomationController extends Controller
                 'episode',
                 (int) $source->id,
                 (string) $source->source,
-                $this->nameFor($content, $episode, (string) $source->source)
+                app(SourceRequeuer::class)->nameFor($content, $episode, (string) $source->source)
             );
 
             $dispatched[] = [
@@ -409,71 +410,9 @@ class AutomationController extends Controller
      */
     protected function queueSourceAgain(string $sourceType, int $sourceId): array
     {
-        $source = $sourceType === 'content'
-            ? ContentSource::find($sourceId)
-            : EpisodeSource::find($sourceId);
-
-        if (!$source) {
-            return ['ok' => false, 'message' => 'منبع پیدا نشد.'];
-        }
-
-        if (!in_array((string) $source->ingest_status, ['failed', ''], true)) {
-            return ['ok' => false, 'message' => 'این منبع در وضعیت فعال است و دوباره صف نمی‌شود.'];
-        }
-
-        if ($sourceType === 'episode'
-            && Schema::hasColumn('episode_sources', 'is_blocked')
-            && (bool) $source->is_blocked) {
-            return ['ok' => false, 'message' => 'این منبع بلاک شده و دوباره صف نمی‌شود.'];
-        }
-
-        if (!str_starts_with((string) $source->source, 'http')) {
-            return ['ok' => false, 'message' => 'این منبع دیگر یک لینک HTTP معتبر نیست.'];
-        }
-
-        if ($sourceType === 'episode') {
-            $episode = Episode::find($source->episode_id);
-            $content = $episode ? $this->contentOf($episode) : null;
-
-            if (!$episode || !$content) {
-                return ['ok' => false, 'message' => 'قسمت یا عنوان مربوط به این منبع پیدا نشد.'];
-            }
-
-            $name = $this->nameFor($content, $episode, (string) $source->source);
-        } else {
-            $name = (string) ($source->title ?: 'ingest-' . $source->id);
-            $extension = strtolower(pathinfo((string) parse_url((string) $source->source, PHP_URL_PATH), PATHINFO_EXTENSION));
-
-            if ($extension && !str_ends_with(strtolower($name), '.' . $extension)) {
-                $name .= '.' . $extension;
-            }
-        }
-
-        $source->ingest_status = 'queued';
-        $source->ingest_progress = 0;
-        $source->ingest_error = null;
-        $source->ingest_attempts = 0;
-        $source->ingest_next_retry_at = null;
-        $source->upload_status = null;
-        $source->upload_attempts = 0;
-        $source->upload_next_retry_at = null;
-        $source->save();
-
-        IngestUrlJob::dispatch(
-            $sourceType,
-            (int) $source->id,
-            (string) $source->source,
-            $name
-        );
-
-        return ['ok' => true, 'message' => 'منبع دوباره به صف اضافه شد.'];
+        return app(SourceRequeuer::class)->requeue($sourceType, $sourceId);
     }
 
-    /**
-     * A pass that a deploy (or a kill) took down leaves its flag behind. Clear
-     * it and schedule the retry an hour later, so a crash loop cannot turn into
-     * a pass every ten minutes.
-     */
     protected function reapDeadPass(): void
     {
         $flagged = (bool) Cache::get(SyncFarsanimeCatalogue::RUNNING_KEY);
@@ -654,22 +593,6 @@ class AutomationController extends Controller
         }
 
         return $query;
-    }
-
-    protected function contentOf(Episode $episode): ?Content
-    {
-        $season = Season::find($episode->season_id);
-
-        return $season ? Content::find($season->content_id) : null;
-    }
-
-    protected function nameFor(Content $content, Episode $episode, string $url): string
-    {
-        $extension = strtolower(pathinfo((string) parse_url($url, PHP_URL_PATH), PATHINFO_EXTENSION)) ?: 'mkv';
-        $season = Season::find($episode->season_id);
-        $seasonNumber = (int) preg_replace('/\D+/', '', (string) optional($season)->title) ?: (int) optional($season)->id;
-
-        return sprintf('%s - S%02dE%02d.%s', $content->title, $seasonNumber, (int) $episode->number, $extension);
     }
 
     protected function diskFreeGb(): ?float
