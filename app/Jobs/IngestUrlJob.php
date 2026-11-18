@@ -790,6 +790,15 @@ class IngestUrlJob implements ShouldQueue
                 $meta = $pending[$index];
                 unset($pending[$index]);
 
+                // A retried chunk comes back with the Worker that just failed
+                // it excluded, so one stalled endpoint cannot swallow the retry.
+                $excludeWorkers = array_values(array_filter(
+                    array_map('intval', (array) ($meta['exclude'] ?? [])),
+                    function (int $id) {
+                        return $id > 0;
+                    }
+                ));
+
                 $start = $meta['start'];
                 $length = $meta['length'];
                 $written[$index] = 0;
@@ -863,6 +872,16 @@ class IngestUrlJob implements ShouldQueue
                         $currentWorker = ($currentWorker + 1) % $workerCount;
                     }
 
+                    if ($worker !== null && in_array((int) $worker->id, $excludeWorkers, true)) {
+                        $alternative = $pool->first(function ($candidate) use ($excludeWorkers) {
+                            return !in_array((int) $candidate->id, $excludeWorkers, true);
+                        });
+
+                        if ($alternative !== null) {
+                            $worker = $alternative;
+                        }
+                    }
+
                     if ($chunkSpeed && $worker !== null) {
                         $workerId = (int) $worker->id;
                         $chunkCounts[$workerId] = (int) ($chunkCounts[$workerId] ?? 0) + 1;
@@ -871,7 +890,7 @@ class IngestUrlJob implements ShouldQueue
 
                     $route = $registry->routeFor($worker, $this->url, $range);
                 } else {
-                    $route = $registry->route($this->url, $range);
+                    $route = $registry->route($this->url, $range, $excludeWorkers);
                 }
 
                 $routes[$index] = $route;
@@ -1029,7 +1048,20 @@ class IngestUrlJob implements ShouldQueue
                 }
             };
 
-            do {
+            // Failed chunks are retried by feeding them back into this same
+            // queue: a whole wave of retries is dispatched across free slots
+            // at once instead of one blocking range at a time. Sequential
+            // retries were what exhausted the retry budget on slow endpoints.
+            $retryAttempts = [];
+            $retryRounds = 2;
+            $retryStartedAt = microtime(true);
+            // Bound the whole retry pass so a dead source still releases the
+            // download slot quickly. With concurrent retries one dead source
+            // costs a wave of stall timeouts, not one per failed chunk.
+            $retryBudget = max(30, (int) config('media_relay.ingest.chunk_retry_budget', 180));
+            $budgetExhausted = false;
+
+            while (true) {
                 $status = curl_multi_exec($multi, $running);
 
                 if ($running) {
@@ -1108,30 +1140,52 @@ class IngestUrlJob implements ShouldQueue
                     );
                     $lastUpdate = microtime(true);
                 }
-            } while ((!empty($handles) || !empty($pending) || $nextChunk < $chunkCount) && $status === CURLM_OK);
+                if (!empty($handles) || !empty($pending) || $nextChunk < $chunkCount) {
+                    // Still transferring: keep polling, harvesting, refilling.
+                } elseif (!empty($failed) && $status === CURLM_OK) {
+                    // Every dispatchable chunk finished. Requeue the failures
+                    // so the next wave runs in parallel on other Workers.
+                    $retryable = [];
 
-            $harvest();
+                    foreach (array_keys($failed) as $failedIndex) {
+                        if ((int) ($retryAttempts[$failedIndex] ?? 0) < $retryRounds) {
+                            $retryable[$failedIndex] = true;
+                        }
+                    }
 
-            // A failed chunk is retried on another Worker, not by restarting
-            // the whole file. This is what keeps one bad endpoint from
-            // degrading a multi-Worker download to a single stream.
-            $failedWorkerIds = [];
+                    if (empty($retryable)) {
+                        break;
+                    }
 
-            foreach (array_keys($failed) as $failedIndex) {
-                $failedRoute = $routes[$failedIndex] ?? [];
+                    if (microtime(true) - $retryStartedAt >= $retryBudget) {
+                        // Another wave would hold this download slot past the
+                        // budget: report the failures gathered so far.
+                        $budgetExhausted = true;
+                        break;
+                    }
 
-                if (!empty($failedRoute['worker_id'])) {
-                    $failedWorkerIds[] = (int) $failedRoute['worker_id'];
+                    foreach (array_keys($retryable) as $failedIndex) {
+                        $retryAttempts[$failedIndex] = (int) ($retryAttempts[$failedIndex] ?? 0) + 1;
+                        $retryStart = $failedIndex * $chunkSize;
+                        // Restarting a range rewrites bytes already counted as
+                        // received, so drop them before they arrive twice.
+                        $received = max(0, $received - (int) ($written[$failedIndex] ?? 0));
+                        $pending[$failedIndex] = [
+                            'start' => $retryStart,
+                            'length' => min($chunkSize, $total - $retryStart),
+                            'exclude' => [(int) ($routes[$failedIndex]['worker_id'] ?? 0)],
+                        ];
+                        unset($failed[$failedIndex]);
+                    }
+
+                    $fillSlots();
+                } else {
+                    break;
                 }
             }
 
-            $failedWorkerIds = array_values(array_unique($failedWorkerIds));
-            $retryRound = 0;
-            $retryStartedAt = microtime(true);
-            // A source can fail every chunk at once. Retrying 24 chunks one by
-            // one used to hold a download slot for tens of minutes; cap the
-            // whole retry pass so a dead source releases the queue quickly.
-            $retryBudget = max(30, (int) config('media_relay.ingest.chunk_retry_budget', 180));
+            $harvest();
+
             $failuresReported = false;
             $reportFailures = function () use (&$failuresReported, &$failedWorkerMessages, $poolSizeAtStart, $registry) {
                 if ($failuresReported) {
@@ -1163,77 +1217,6 @@ class IngestUrlJob implements ShouldQueue
                 }
             };
 
-            while (!empty($failed) && $retryRound < 2) {
-                $retryRound++;
-                $next = [];
-
-                foreach ($failed as $i => $firstError) {
-                    if (microtime(true) - $retryStartedAt >= $retryBudget) {
-                        $reportFailures();
-
-                        $summary = $this->failureSummary($failed, $routes, $httpCodes, $upstreamStatuses, $bodySamples, $retryStartedAt);
-
-                        Log::error('relay segmented download failed', [
-                            'source_id' => $this->sourceId,
-                            'source_type' => $this->sourceType,
-                            'url' => $this->url,
-                            'reason' => 'retry budget exhausted',
-                            'elapsed_s' => (int) round(microtime(true) - $retryStartedAt),
-                            'failed_chunks' => count($failed),
-                            'summary' => $summary,
-                        ]);
-
-                        throw new \RuntimeException('segmented download retry budget exhausted: ' . $summary);
-                    }
-
-                    $start = $i * $chunkSize;
-                    $length = min($chunkSize, $total - $start);
-                    $range = $start . '-' . ($start + $length - 1);
-                    $route = $registry->route($this->url, $range, $failedWorkerIds);
-                    $written[$i] = 0;
-                    $result = $this->downloadChunk($route, $out, $start, $length, $range);
-                    $written[$i] = (int) $result['bytes'];
-
-                    if (!empty($result['ok'])) {
-                        $registry->reportSuccess($route['worker_id'] ?? null, $result['bytes'], $result['duration_ms']);
-
-                        if (!empty($route['worker_id'])) {
-                            unset($failedWorkerMessages[(int) $route['worker_id']]);
-                        }
-                    } else {
-                        $httpCodes[$i] = (int) ($result['http_status'] ?? 0);
-                        $upstreamStatuses[$i] = $result['upstream_status'] ?? null;
-                        $retryAfter[$i] = $result['retry_after'] ?? null;
-                        $bodySamples[$i] = $result['body'] ?? ($bodySamples[$i] ?? null);
-
-                        Log::warning('relay chunk retry failed', [
-                            'source_id' => $this->sourceId,
-                            'chunk' => $i,
-                            'range' => $range,
-                            'attempt' => $retryRound,
-                            'worker_id' => $route['worker_id'] ?? null,
-                            'worker' => $route['worker_name'] ?? null,
-                            'proxied' => (bool) ($route['proxied'] ?? false),
-                            'http_status' => $result['http_status'] ?? null,
-                            'upstream_status' => $result['upstream_status'] ?? null,
-                            'retry_after' => $result['retry_after'] ?? null,
-                            'error' => (string) $result['error'],
-                            'body' => $this->bodyExcerpt($result['body'] ?? null),
-                        ]);
-
-                        if (!empty($route['worker_id'])) {
-                            $workerId = (int) $route['worker_id'];
-                            $failedWorkerIds[] = $workerId;
-                            $failedWorkerIds = array_values(array_unique($failedWorkerIds));
-                            $failedWorkerMessages[$workerId] = (string) $result['error'];
-                        }
-
-                        $next[$i] = (string) $result['error'] ?: $firstError;
-                    }
-                }
-
-                $failed = $next;
-            }
 
             $reportFailures();
 
@@ -1244,13 +1227,13 @@ class IngestUrlJob implements ShouldQueue
                     'source_id' => $this->sourceId,
                     'source_type' => $this->sourceType,
                     'url' => $this->url,
-                    'reason' => 'chunks still failing after retries',
+                    'reason' => $budgetExhausted ? 'retry budget exhausted' : 'chunks still failing after retries',
                     'elapsed_s' => (int) round(microtime(true) - $retryStartedAt),
                     'failed_chunks' => count($failed),
                     'summary' => $summary,
                 ]);
 
-                throw new \RuntimeException($summary);
+                throw new \RuntimeException(($budgetExhausted ? 'segmented download retry budget exhausted: ' : '') . $summary);
             }
         } finally {
             curl_multi_close($multi);
