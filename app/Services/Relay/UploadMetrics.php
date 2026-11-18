@@ -21,6 +21,7 @@ class UploadMetrics
     public const STATUS_UPLOADED = 'uploaded';
     public const STATUS_DEDUPLICATED = 'deduplicated';
     public const STATUS_FAILED = 'failed';
+    public const STATUS_RETRYING = 'retrying';
 
     /**
      * Mark the start of an upload and keep an attempt counter on the row.

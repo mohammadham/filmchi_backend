@@ -30,10 +30,10 @@ class UploadIngestJob implements ShouldQueue
     /** Waiting for Telegram Drive to split and store a large file. */
     public $timeout = 7000;
 
-    public $tries = 2;
+    public $tries = 3;
 
     /** @var array<int, int> */
-    public $backoff = [120, 600];
+    public $backoff = [120];
 
     /** @var string */
     public $sourceType;
@@ -69,6 +69,9 @@ class UploadIngestJob implements ShouldQueue
         $this->folder = $folder;
 
         $this->onQueue((string) config('media_relay.upload.queue', 'uploads'));
+
+        $this->tries = $this->configuredMaxAttempts();
+        $this->backoff = [$this->configuredRetryDelay()];
     }
 
     public function handle(RelayStorage $storage): void
@@ -91,15 +94,22 @@ class UploadIngestJob implements ShouldQueue
 
         if (!is_file($this->part)) {
             $message = 'The downloaded .part file is missing; the upload cannot continue.';
-            $this->markFailed($source, $message);
 
-            throw new \RuntimeException($message);
+            // No amount of queue retries can recreate a missing local file.
+            $source->upload_fail_count = (int) $source->upload_fail_count + 1;
+            UploadMetrics::markFailed($source);
+            $this->markFailed($source, $message);
+            $this->removePart();
+
+            return;
         }
 
         $source->ingest_status = 'uploading';
         $source->ingest_progress = 100;
         $source->ingest_connections = 0;
         $source->ingest_error = null;
+        $source->ingest_next_retry_at = null;
+        $source->upload_next_retry_at = null;
         $source->save();
 
         UploadMetrics::markStarted($source);
@@ -123,6 +133,8 @@ class UploadIngestJob implements ShouldQueue
             $source->ingest_status = 'completed';
             $source->ingest_progress = 100;
             $source->ingest_error = null;
+            $source->ingest_next_retry_at = null;
+            $source->upload_next_retry_at = null;
             $source->save();
 
             $this->removePart();
@@ -134,9 +146,31 @@ class UploadIngestJob implements ShouldQueue
             ]);
 
             UploadMetrics::markFailed($source, $uploadBytes, $startedAt);
-            $this->markFailed($source, $e->getMessage());
+            $source->upload_fail_count = (int) $source->upload_fail_count + 1;
+            $source->ingest_error = Str::limit($e->getMessage(), 500);
 
-            throw $e;
+            $attempt = max(1, (int) $source->upload_attempts);
+            $maxAttempts = max(1, (int) $this->tries);
+
+            if ($attempt < $maxAttempts) {
+                $delay = $this->configuredRetryDelay();
+
+                // Keep the .part file and put this job at the tail of the
+                // uploads queue after the delay. The next attempt resumes the
+                // upload instead of downloading the file again.
+                $source->ingest_status = 'retrying';
+                $source->upload_status = UploadMetrics::STATUS_RETRYING;
+                $source->ingest_next_retry_at = now()->addSeconds($delay);
+                $source->upload_next_retry_at = now()->addSeconds($delay);
+                $source->save();
+
+                $this->release($delay);
+
+                return;
+            }
+
+            $this->markFailed($source, $e->getMessage());
+            $this->removePart();
         }
     }
 
@@ -149,11 +183,23 @@ class UploadIngestJob implements ShouldQueue
     {
         $source = $this->source();
 
-        if ($source) {
+        if ($source && (string) $source->ingest_status !== 'completed') {
+            $source->upload_fail_count = (int) $source->upload_fail_count + 1;
+            UploadMetrics::markFailed($source);
             $this->markFailed($source, $e->getMessage());
         }
 
         $this->removePart();
+    }
+
+    protected function configuredMaxAttempts(): int
+    {
+        return max(1, min(10, (int) config('media_relay.upload.retry_max_attempts', 3)));
+    }
+
+    protected function configuredRetryDelay(): int
+    {
+        return max(1, (int) config('media_relay.upload.retry_delay_seconds', 120));
     }
 
     protected function source()
@@ -173,6 +219,8 @@ class UploadIngestJob implements ShouldQueue
     {
         $source->ingest_status = 'failed';
         $source->ingest_error = Str::limit($message, 500);
+        $source->ingest_next_retry_at = null;
+        $source->upload_next_retry_at = null;
         $source->save();
     }
 

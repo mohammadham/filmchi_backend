@@ -7,6 +7,7 @@ use App\RelayEvent;
 use App\RelayFile;
 use App\RelayLink;
 use App\Services\Relay\RelayManager;
+use App\Services\Relay\RelaySettings;
 use App\Services\Relay\UploadMetrics;
 use App\Services\Relay\WorkerRegistry;
 use App\Services\Relay\Thumbnail;
@@ -32,10 +33,10 @@ class IngestRelayUrlJob implements ShouldQueue
 
     public $timeout = 7000;
 
-    public $tries = 2;
+    public $tries = 3;
 
     /** @var array<int, int> */
-    public $backoff = [300, 900];
+    public $backoff = [300];
 
     /** @var int */
     public $relayFileId;
@@ -53,15 +54,33 @@ class IngestRelayUrlJob implements ShouldQueue
         $this->folder = $folder;
 
         $this->onQueue((string) config('media_relay.queue.name', 'default'));
+
+        $this->tries = $this->configuredMaxAttempts();
+        $this->backoff = [$this->configuredRetryDelay()];
     }
 
     public function handle(RelayManager $relay): void
     {
+        RelaySettings::apply();
+
         $file = RelayFile::find($this->relayFileId);
 
         if (!$file) {
             return;
         }
+
+        if ((string) $file->ingest_status === 'completed') {
+            return;
+        }
+
+        $file->ingest_attempts = (int) $file->ingest_attempts + 1;
+        $file->ingest_next_retry_at = null;
+        $file->upload_next_retry_at = null;
+        // A fresh attempt starts in the download phase; this also lets
+        // failed() attribute a crash to download or upload accurately.
+        $file->upload_started_at = null;
+        $file->upload_finished_at = null;
+        $file->save();
 
         $dir = storage_path('app/ingest');
 
@@ -122,6 +141,8 @@ class IngestRelayUrlJob implements ShouldQueue
             $file->ingest_status = 'completed';
             $file->ingest_progress = 100;
             $file->ingest_error = null;
+            $file->ingest_next_retry_at = null;
+            $file->upload_next_retry_at = null;
             $file->save();
 
             Thumbnail::make($part, (string) $file->mime, $file);
@@ -154,16 +175,79 @@ class IngestRelayUrlJob implements ShouldQueue
                 UploadMetrics::markFailed($file, $uploadBytes, $uploadStartedAt);
             }
 
-            $file->ingest_status = 'failed';
-            $file->ingest_error = Str::limit($e->getMessage(), 500);
-            $file->save();
+            if ($uploadStartedAt !== null) {
+                $file->upload_fail_count = (int) $file->upload_fail_count + 1;
+            } else {
+                $file->ingest_fail_count = (int) $file->ingest_fail_count + 1;
+            }
 
-            throw $e;
+            $file->ingest_error = Str::limit($e->getMessage(), 500);
+
+            $attempt = max(1, (int) $file->ingest_attempts);
+            $maxAttempts = max(1, (int) $this->tries);
+
+            if ($attempt < $maxAttempts) {
+                $delay = $this->configuredRetryDelay();
+
+                $file->ingest_status = 'retrying';
+                $file->ingest_next_retry_at = now()->addSeconds($delay);
+                $file->upload_next_retry_at = $uploadStartedAt !== null ? now()->addSeconds($delay) : null;
+                $file->save();
+
+                $this->release($delay);
+
+                return;
+            }
+
+            $file->ingest_status = 'failed';
+            $file->ingest_next_retry_at = null;
+            $file->upload_next_retry_at = null;
+            $file->save();
         } finally {
             if (is_file($part)) {
                 @unlink($part);
             }
         }
+    }
+
+    /**
+     * A timeout or a crash outside the try/catch still needs a terminal row.
+     */
+    public function failed(Throwable $e): void
+    {
+        $file = RelayFile::find($this->relayFileId);
+
+        if (!$file || (string) $file->ingest_status === 'completed') {
+            return;
+        }
+
+        if ($file->upload_started_at !== null) {
+            $file->upload_fail_count = (int) $file->upload_fail_count + 1;
+        } else {
+            $file->ingest_fail_count = (int) $file->ingest_fail_count + 1;
+        }
+
+        $file->ingest_status = 'failed';
+        $file->ingest_error = Str::limit($e->getMessage(), 500);
+        $file->ingest_next_retry_at = null;
+        $file->upload_next_retry_at = null;
+        $file->save();
+
+        $part = storage_path('app/ingest/relay-' . $this->relayFileId . '.part');
+
+        if (is_file($part)) {
+            @unlink($part);
+        }
+    }
+
+    protected function configuredMaxAttempts(): int
+    {
+        return max(1, min(10, (int) config('media_relay.ingest.retry_max_attempts', 3)));
+    }
+
+    protected function configuredRetryDelay(): int
+    {
+        return max(1, (int) config('media_relay.ingest.retry_delay_seconds', 300));
     }
 
     protected function setStatus(RelayFile $file, string $status, int $progress): void

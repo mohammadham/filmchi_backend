@@ -129,7 +129,7 @@
 
             <div class="card mb-4">
                 <div class="card-header d-flex align-items-center justify-content-between">
-                    <h5 class="mb-0 fw-semibold">آپلودنشده‌ها / ناموفق‌ها</h5>
+                    <h5 class="mb-0 fw-semibold">دانلود/آپلود ناموفق و در انتظار تلاش</h5>
                     <span class="badge bg-danger">{{ $failedSourcesCount }}</span>
                 </div>
                 <div class="card-body">
@@ -146,33 +146,64 @@
                                 <thead>
                                     <tr>
                                         <th width="60px">ID</th>
-                                        <th width="80px">کیفیت</th>
+                                        <th width="70px">{{ __('relaySourceType') }}</th>
+                                        <th width="75px">{{ __('quality') }}</th>
                                         <th>منبع</th>
-                                        <th width="110px">وضعیت آپلود</th>
-                                        <th width="70px">تلاش</th>
-                                        <th>خطا</th>
-                                        <th width="130px">آخرین تغییر</th>
-                                        <th width="130px"></th>
+                                        <th width="135px">{{ __('relaySourceStatus') }}</th>
+                                        <th width="145px">{{ __('relayAttempts') }}</th>
+                                        <th width="130px">{{ __('relayErrors') }}</th>
+                                        <th width="120px">{{ __('relayNextRetry') }}</th>
+                                        <th>خطای آخر</th>
+                                        <th width="120px">{{ __('relayLastChange') }}</th>
+                                        <th width="125px"></th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     @foreach($failedSources as $source)
+                                        @php $retryAt = $source->ingest_next_retry_at ?: $source->upload_next_retry_at; @endphp
                                         <tr>
                                             <td>{{ $source->id }}</td>
+                                            <td><span class="badge bg-secondary">{{ $source->source_type }}</span></td>
                                             <td>{{ $source->quality ?: '—' }}</td>
-                                            <td dir="ltr" style="max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-                                                <span title="{{ $source->source }}">{{ \Illuminate\Support\Str::limit($source->source, 90) }}</span>
+                                            <td dir="ltr" style="max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                                                <span title="{{ $source->source }}">{{ \Illuminate\Support\Str::limit($source->source, 80) }}</span>
                                             </td>
-                                            <td>{{ $source->upload_status ?: 'قبل از آپلود' }}</td>
-                                            <td>{{ (int) $source->upload_attempts }}</td>
-                                            <td class="text-danger" style="max-width:300px">{{ \Illuminate\Support\Str::limit((string) $source->ingest_error, 140) }}</td>
+                                            <td>
+                                                @if($source->ingest_status === 'retrying')
+                                                    <span class="badge bg-warning text-dark">{{ __('relayRetryPending') }}</span>
+                                                @else
+                                                    <span class="badge bg-danger">{{ __('ingestFailed') }}</span>
+                                                @endif
+                                                <div class="small text-muted mt-1">{{ $source->upload_status ?: $source->ingest_status }}</div>
+                                            </td>
+                                            <td class="small">
+                                                <div>{{ __('relayRuntimeDownloading') }}: {{ (int) $source->ingest_attempts }}/{{ $downloadRetryMax }}</div>
+                                                <div>{{ __('relayRuntimeUploading') }}: {{ (int) $source->upload_attempts }}/{{ $uploadRetryMax }}</div>
+                                            </td>
+                                            <td class="small">
+                                                <div>{{ __('relayRuntimeDownloading') }}: <strong class="text-danger">{{ (int) $source->ingest_fail_count }}</strong></div>
+                                                <div>{{ __('relayRuntimeUploading') }}: <strong class="text-danger">{{ (int) $source->upload_fail_count }}</strong></div>
+                                            </td>
+                                            <td class="small">
+                                                @if($retryAt)
+                                                    <span title="{{ $retryAt }}">{{ $retryAt->diffForHumans() }}</span>
+                                                @else
+                                                    —
+                                                @endif
+                                            </td>
+                                            <td class="text-danger" style="max-width:260px">{{ \Illuminate\Support\Str::limit((string) $source->ingest_error, 140) }}</td>
                                             <td>{{ optional($source->updated_at)->diffForHumans() }}</td>
                                             <td>
-                                                <form method="POST" action="{{ route('requeueRelaySource') }}" onsubmit="return confirm('این منبع دوباره به صف اضافه شود؟');">
-                                                    @csrf
-                                                    <input type="hidden" name="source_id" value="{{ $source->id }}">
-                                                    <button type="submit" class="btn btn-sm btn-primary text-light">افزودن به صف</button>
-                                                </form>
+                                                @if($source->ingest_status === 'retrying')
+                                                    <span class="badge bg-secondary">{{ __('relayRetryQueued') }}</span>
+                                                @else
+                                                    <form method="POST" action="{{ route('requeueRelaySource') }}" onsubmit="return confirm('این منبع دوباره به صف اضافه شود؟');">
+                                                        @csrf
+                                                        <input type="hidden" name="source_id" value="{{ $source->id }}">
+                                                        <input type="hidden" name="source_type" value="{{ $source->source_type }}">
+                                                        <button type="submit" class="btn btn-sm btn-primary text-light">{{ __('relayRequeue') }}</button>
+                                                    </form>
+                                                @endif
                                             </td>
                                         </tr>
                                     @endforeach
@@ -183,7 +214,7 @@
                             <p class="text-muted small mt-2 mb-0">نمایش {{ $failedSources->count() }} مورد از {{ $failedSourcesCount }} مورد؛ قدیمی‌ترها در دیتابیس باقی هستند.</p>
                         @endif
                     @else
-                        <p class="text-muted mb-0">فایل ناموفقی که به آپلود نرسیده باشد وجود ندارد.</p>
+                        <p class="text-muted mb-0">در حال حاضر لینک ناموفق یا در انتظار تلاش مجدد وجود ندارد.</p>
                     @endif
                 </div>
             </div>

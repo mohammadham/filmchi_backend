@@ -17,6 +17,11 @@ class ContentSource extends Model
         'upload_duration_ms' => 'integer',
         'upload_speed_bps' => 'integer',
         'upload_attempts' => 'integer',
+        'ingest_attempts' => 'integer',
+        'ingest_fail_count' => 'integer',
+        'ingest_next_retry_at' => 'datetime',
+        'upload_fail_count' => 'integer',
+        'upload_next_retry_at' => 'datetime',
     ];
 
     public function media()

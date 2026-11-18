@@ -39,6 +39,26 @@ class RelaySettings
         'relay_ingest_total_connections' => ['media_relay.ingest.total_connections', 'int'],
         'relay_ingest_concurrency' => ['media_relay.ingest.concurrency', 'concurrency'],
         'relay_ingest_disk_percent' => ['media_relay.ingest.disk_percent', 'percent'],
+        'relay_ingest_retry_max_attempts' => ['media_relay.ingest.retry_max_attempts', 'attempts'],
+        'relay_ingest_retry_delay' => ['media_relay.ingest.retry_delay_seconds', 'positive'],
+        'relay_upload_retry_max_attempts' => ['media_relay.upload.retry_max_attempts', 'attempts'],
+        'relay_upload_retry_delay' => ['media_relay.upload.retry_delay_seconds', 'positive'],
+        'relay_ingest_chunk_retry_budget' => ['media_relay.ingest.chunk_retry_budget', 'positive'],
+        'relay_ingest_chunk_stall_timeout' => ['media_relay.ingest.chunk_stall_timeout', 'positive'],
+        'relay_ingest_speed_check_seconds' => ['media_relay.ingest.speed_check_seconds', 'speed_seconds'],
+        'relay_ingest_speed_window_samples' => ['media_relay.ingest.speed_window_samples', 'positive'],
+        'relay_ingest_speed_drop_ratio' => ['media_relay.ingest.speed_drop_ratio', 'ratio'],
+        'relay_ingest_speed_drop_confirmations' => ['media_relay.ingest.speed_drop_confirmations', 'positive'],
+        'relay_ingest_speed_reprobe_chunks' => ['media_relay.ingest.speed_reprobe_chunks', 'positive'],
+        'relay_ingest_speed_reprobe_cooldown' => ['media_relay.ingest.speed_reprobe_cooldown_seconds', 'positive'],
+        'relay_ingest_stall_timeout' => ['media_relay.ingest.stall_timeout', 'positive'],
+        'relay_ingest_stream_min_kbps' => ['media_relay.ingest.min_stream_kbps', 'int'],
+        'relay_ingest_stream_stall_seconds' => ['media_relay.ingest.stream_stall_seconds', 'positive'],
+        'relay_ingest_pool_refresh_seconds' => ['media_relay.ingest.pool_refresh_seconds', 'positive'],
+        'relay_ingest_timeout' => ['media_relay.ingest.timeout', 'positive'],
+        'relay_ingest_min_chunk_mb' => ['media_relay.ingest.min_chunk_mb', 'chunk_mb'],
+        'relay_ingest_max_chunk_mb' => ['media_relay.ingest.max_chunk_mb', 'chunk_mb'],
+        'relay_worker_probe_concurrency' => ['media_relay.workers.probe_concurrency', 'probe_concurrency'],
         'relay_worker_min_speed_kbps' => ['media_relay.workers.min_speed_bps', 'kbps'],
         'relay_worker_max_latency_ms' => ['media_relay.workers.max_latency_ms', 'int'],
         'relay_tg_base_url' => ['media_relay.telegram.base_url', 'string'],
@@ -98,6 +118,26 @@ class RelaySettings
             'relay_ingest_total_connections' => (int) config('media_relay.ingest.total_connections', 0),
             'relay_ingest_concurrency' => max(1, min(4, (int) config('media_relay.ingest.concurrency', 1))),
             'relay_ingest_disk_percent' => max(0, min(95, (int) config('media_relay.ingest.disk_percent', 50))),
+            'relay_ingest_retry_max_attempts' => max(1, min(10, (int) config('media_relay.ingest.retry_max_attempts', 3))),
+            'relay_ingest_retry_delay' => max(1, (int) config('media_relay.ingest.retry_delay_seconds', 300)),
+            'relay_upload_retry_max_attempts' => max(1, min(10, (int) config('media_relay.upload.retry_max_attempts', 3))),
+            'relay_upload_retry_delay' => max(1, (int) config('media_relay.upload.retry_delay_seconds', 120)),
+            'relay_ingest_chunk_retry_budget' => max(30, (int) config('media_relay.ingest.chunk_retry_budget', 180)),
+            'relay_ingest_chunk_stall_timeout' => max(10, (int) config('media_relay.ingest.chunk_stall_timeout', 60)),
+            'relay_ingest_speed_check_seconds' => max(3, (float) config('media_relay.ingest.speed_check_seconds', 5)),
+            'relay_ingest_speed_window_samples' => max(2, (int) config('media_relay.ingest.speed_window_samples', 6)),
+            'relay_ingest_speed_drop_ratio' => max(0.10, min(1.0, (float) config('media_relay.ingest.speed_drop_ratio', 0.70))),
+            'relay_ingest_speed_drop_confirmations' => max(1, (int) config('media_relay.ingest.speed_drop_confirmations', 2)),
+            'relay_ingest_speed_reprobe_chunks' => max(1, (int) config('media_relay.ingest.speed_reprobe_chunks', 2)),
+            'relay_ingest_speed_reprobe_cooldown' => max(5, (int) config('media_relay.ingest.speed_reprobe_cooldown_seconds', 30)),
+            'relay_ingest_stall_timeout' => max(30, (int) config('media_relay.ingest.stall_timeout', 300)),
+            'relay_ingest_stream_min_kbps' => max(0, (int) config('media_relay.ingest.min_stream_kbps', 64)),
+            'relay_ingest_stream_stall_seconds' => max(30, (int) config('media_relay.ingest.stream_stall_seconds', 180)),
+            'relay_ingest_pool_refresh_seconds' => max(3, (int) config('media_relay.ingest.pool_refresh_seconds', 10)),
+            'relay_ingest_timeout' => max(60, (int) config('media_relay.ingest.timeout', 3600)),
+            'relay_ingest_min_chunk_mb' => max(1, min(64, (int) config('media_relay.ingest.min_chunk_mb', 1))),
+            'relay_ingest_max_chunk_mb' => max(1, min(64, (int) config('media_relay.ingest.max_chunk_mb', 16))),
+            'relay_worker_probe_concurrency' => max(1, min(2, (int) config('media_relay.workers.probe_concurrency', 1))),
             'relay_worker_min_speed_kbps' => (int) round(((int) config('media_relay.workers.min_speed_bps', 0)) / 1000),
             'relay_worker_max_latency_ms' => (int) config('media_relay.workers.max_latency_ms', 0),
             'relay_tg_base_url' => (string) config('media_relay.telegram.base_url'),
@@ -220,6 +260,16 @@ class RelaySettings
                 return max(0, min(95, (int) $value));
             case 'positive':
                 return max(1, (int) $value);
+            case 'attempts':
+                return max(1, min(10, (int) $value));
+            case 'chunk_mb':
+                return max(1, min(64, (int) $value));
+            case 'probe_concurrency':
+                return max(1, min(2, (int) $value));
+            case 'speed_seconds':
+                return max(3, (float) $value);
+            case 'ratio':
+                return max(0.10, min(1.0, (float) $value));
             case 'kbps':
                 // The panel edits KB/s because 50000 B/s is awkward to type;
                 // the registry still consumes bytes per second.

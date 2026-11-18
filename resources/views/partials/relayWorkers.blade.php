@@ -16,6 +16,8 @@
                             <span class="badge bg-info">{{ __('relayRuntimeActive') }}: <span id="relayRuntimeActiveValue">{{ (int) $relayRuntime['active'] }}</span></span>
                             <span class="badge bg-primary">{{ __('relayRuntimeWorkers') }}: <span id="relayRuntimeWorkersValue">{{ (int) $relayRuntime['workers_live'] }}/{{ (int) $relayRuntime['workers_desired'] }}</span></span>
                             <span class="badge bg-secondary">{{ __('relayRuntimeQueued') }}: <span id="relayRuntimeQueuedValue">{{ (int) $relayRuntime['queued'] }}</span></span>
+                            <span class="badge bg-warning text-dark">{{ __('relayRuntimeRetrying') }}: <span id="relayRuntimeRetryingValue">{{ (int) $relayRuntime['retrying'] }}</span></span>
+                            <span class="badge bg-danger">{{ __('relayRuntimeFailed') }}: <span id="relayRuntimeFailedValue">{{ (int) $relayRuntime['failed'] }}</span></span>
                             <span class="badge bg-dark">{{ __('relayRuntimeConnections') }}: <span id="relayRuntimeConnectionsValue">{{ (int) $relayRuntime['connections_in_use'] }}</span></span>
                             <span class="badge bg-success">{{ __('relayRuntimeTotalSpeed') }}: <span id="relayRuntimeTotalSpeedValue">{{ $relayRuntime['total_speed'] }}</span></span>
                             <span class="badge bg-info">{{ __('relayIngestDiskBudget') }}: {{ $relayRuntime['disk_budget_gb'] }} GB / {{ $relayRuntime['disk_downloads'] }}</span>
@@ -195,6 +197,149 @@
                                 <label class="form-label">{{ __('relayWorkerProbeInterval') }}</label>
                                 <input type="number" class="form-control" name="relay_worker_probe_interval" min="10" max="3600" value="{{ (int) $relay['relay_worker_probe_interval'] }}">
                                 <div class="text-muted small">{{ __('relayWorkerProbeIntervalHint') }}</div>
+                            </div>
+                        </div>
+                    </div>
+                    <hr>
+                    <h6 class="fw-semibold mb-2">{{ __('relayRetryPolicy') }}</h6>
+                    <div class="text-muted small mb-3">{{ __('relayRetryPolicyHint') }}</div>
+                    <div class="row">
+                        <div class="col-lg-2 col-md-4">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relayDownloadMaxAttempts') }}</label>
+                                <input type="number" class="form-control" name="relay_ingest_retry_max_attempts" min="1" max="10" value="{{ (int) $relay['relay_ingest_retry_max_attempts'] }}">
+                            </div>
+                        </div>
+                        <div class="col-lg-2 col-md-4">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relayDownloadRetryDelay') }}</label>
+                                <input type="number" class="form-control" name="relay_ingest_retry_delay" min="5" max="3600" value="{{ (int) $relay['relay_ingest_retry_delay'] }}">
+                                <div class="text-muted small">{{ __('relayRetryDelayHint') }}</div>
+                            </div>
+                        </div>
+                        <div class="col-lg-2 col-md-4">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relayUploadMaxAttempts') }}</label>
+                                <input type="number" class="form-control" name="relay_upload_retry_max_attempts" min="1" max="10" value="{{ (int) $relay['relay_upload_retry_max_attempts'] }}">
+                            </div>
+                        </div>
+                        <div class="col-lg-2 col-md-4">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relayUploadRetryDelay') }}</label>
+                                <input type="number" class="form-control" name="relay_upload_retry_delay" min="5" max="3600" value="{{ (int) $relay['relay_upload_retry_delay'] }}">
+                            </div>
+                        </div>
+                        <div class="col-lg-2 col-md-4">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relayChunkRetryBudget') }}</label>
+                                <input type="number" class="form-control" name="relay_ingest_chunk_retry_budget" min="30" max="3600" value="{{ (int) $relay['relay_ingest_chunk_retry_budget'] }}">
+                                <div class="text-muted small">{{ __('relayChunkRetryBudgetHint') }}</div>
+                            </div>
+                        </div>
+                        <div class="col-lg-2 col-md-4">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relayChunkStallTimeout') }}</label>
+                                <input type="number" class="form-control" name="relay_ingest_chunk_stall_timeout" min="10" max="600" value="{{ (int) $relay['relay_ingest_chunk_stall_timeout'] }}">
+                                <div class="text-muted small">{{ __('relayChunkStallTimeoutHint') }}</div>
+                            </div>
+                        </div>
+                    </div>
+                    <hr>
+                    <h6 class="fw-semibold mb-2">{{ __('relaySpeedStrategy') }}</h6>
+                    <div class="text-muted small mb-3">{{ __('relaySpeedStrategyHint') }}</div>
+                    <div class="row">
+                        <div class="col-lg-2 col-md-4">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relaySpeedCheckSeconds') }}</label>
+                                <input type="number" step="0.1" class="form-control" name="relay_ingest_speed_check_seconds" min="3" max="60" value="{{ (float) $relay['relay_ingest_speed_check_seconds'] }}">
+                            </div>
+                        </div>
+                        <div class="col-lg-2 col-md-4">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relaySpeedWindowSamples') }}</label>
+                                <input type="number" class="form-control" name="relay_ingest_speed_window_samples" min="2" max="60" value="{{ (int) $relay['relay_ingest_speed_window_samples'] }}">
+                            </div>
+                        </div>
+                        <div class="col-lg-2 col-md-4">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relaySpeedDropRatio') }}</label>
+                                <input type="number" step="0.05" class="form-control" name="relay_ingest_speed_drop_ratio" min="0.1" max="1" value="{{ (float) $relay['relay_ingest_speed_drop_ratio'] }}">
+                                <div class="text-muted small">{{ __('relaySpeedDropRatioHint') }}</div>
+                            </div>
+                        </div>
+                        <div class="col-lg-2 col-md-4">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relaySpeedDropConfirmations') }}</label>
+                                <input type="number" class="form-control" name="relay_ingest_speed_drop_confirmations" min="1" max="10" value="{{ (int) $relay['relay_ingest_speed_drop_confirmations'] }}">
+                            </div>
+                        </div>
+                        <div class="col-lg-2 col-md-4">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relaySpeedReprobeChunks') }}</label>
+                                <input type="number" class="form-control" name="relay_ingest_speed_reprobe_chunks" min="1" max="20" value="{{ (int) $relay['relay_ingest_speed_reprobe_chunks'] }}">
+                            </div>
+                        </div>
+                        <div class="col-lg-2 col-md-4">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relaySpeedReprobeCooldown') }}</label>
+                                <input type="number" class="form-control" name="relay_ingest_speed_reprobe_cooldown" min="5" max="600" value="{{ (int) $relay['relay_ingest_speed_reprobe_cooldown'] }}">
+                            </div>
+                        </div>
+                        <div class="col-lg-2 col-md-4">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relayPoolRefreshSeconds') }}</label>
+                                <input type="number" class="form-control" name="relay_ingest_pool_refresh_seconds" min="3" max="120" value="{{ (int) $relay['relay_ingest_pool_refresh_seconds'] }}">
+                                <div class="text-muted small">{{ __('relayPoolRefreshSecondsHint') }}</div>
+                            </div>
+                        </div>
+                        <div class="col-lg-2 col-md-4">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relayWorkerProbeConcurrency') }}</label>
+                                <input type="number" class="form-control" name="relay_worker_probe_concurrency" min="1" max="2" value="{{ (int) $relay['relay_worker_probe_concurrency'] }}">
+                                <div class="text-muted small">{{ __('relayWorkerProbeConcurrencyHint') }}</div>
+                            </div>
+                        </div>
+                    </div>
+                    <hr>
+                    <h6 class="fw-semibold mb-2">{{ __('relayStreamAndChunkPolicy') }}</h6>
+                    <div class="text-muted small mb-3">{{ __('relayStreamAndChunkPolicyHint') }}</div>
+                    <div class="row">
+                        <div class="col-lg-2 col-md-4">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relayStreamStallTimeout') }}</label>
+                                <input type="number" class="form-control" name="relay_ingest_stall_timeout" min="30" max="3600" value="{{ (int) $relay['relay_ingest_stall_timeout'] }}">
+                            </div>
+                        </div>
+                        <div class="col-lg-2 col-md-4">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relayStreamMinKbps') }}</label>
+                                <input type="number" class="form-control" name="relay_ingest_stream_min_kbps" min="0" max="60000" value="{{ (int) $relay['relay_ingest_stream_min_kbps'] }}">
+                                <div class="text-muted small">{{ __('relayStreamMinKbpsHint') }}</div>
+                            </div>
+                        </div>
+                        <div class="col-lg-2 col-md-4">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relayStreamStallSeconds') }}</label>
+                                <input type="number" class="form-control" name="relay_ingest_stream_stall_seconds" min="30" max="3600" value="{{ (int) $relay['relay_ingest_stream_stall_seconds'] }}">
+                            </div>
+                        </div>
+                        <div class="col-lg-2 col-md-4">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relayMinChunkMb') }}</label>
+                                <input type="number" class="form-control" name="relay_ingest_min_chunk_mb" min="1" max="16" value="{{ (int) $relay['relay_ingest_min_chunk_mb'] }}">
+                            </div>
+                        </div>
+                        <div class="col-lg-2 col-md-4">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relayMaxChunkMb') }}</label>
+                                <input type="number" class="form-control" name="relay_ingest_max_chunk_mb" min="1" max="64" value="{{ (int) $relay['relay_ingest_max_chunk_mb'] }}">
+                            </div>
+                        </div>
+                        <div class="col-lg-2 col-md-4">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('relayIngestTimeout') }}</label>
+                                <input type="number" class="form-control" name="relay_ingest_timeout" min="60" max="3600" value="{{ (int) $relay['relay_ingest_timeout'] }}">
+                                <div class="text-muted small">{{ __('relayIngestTimeoutHint') }}</div>
                             </div>
                         </div>
                     </div>

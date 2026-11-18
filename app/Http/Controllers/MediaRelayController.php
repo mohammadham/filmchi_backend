@@ -45,13 +45,13 @@ class MediaRelayController extends Controller
 
     public function mediaRelay()
     {
-        $failedQuery = $this->failedSourcesQuery();
-        $failedSourcesCount = (clone $failedQuery)->count();
-        $failedSources = $failedQuery->limit(25)->get();
+        [$failedSources, $failedSourcesCount] = $this->failedSources();
 
         return view('mediaRelay', [
             'failedSources' => $failedSources,
             'failedSourcesCount' => $failedSourcesCount,
+            'downloadRetryMax' => max(1, min(10, (int) config('media_relay.ingest.retry_max_attempts', 3))),
+            'uploadRetryMax' => max(1, min(10, (int) config('media_relay.upload.retry_max_attempts', 3))),
             'telegram' => $this->relay->telegram()->health(),
             'ninedrive' => $this->relay->ninedrive()->health(),
             'threshold' => $this->demand->threshold(),
@@ -68,25 +68,54 @@ class MediaRelayController extends Controller
     }
 
     /**
-     * Sources that failed before they ever reached an upload job.
+     * Download/upload failures and rows waiting for their next retry.
      *
-     * Upload failures belong to Tdrive: retrying them here would download the
-     * whole file again and create a duplicate Telegram upload.
+     * Both source tables are included: movie content and episode sources use
+     * the same ingest pipeline. A failed upload is also a retryable row here,
+     * because UploadIngestJob keeps the .part file until its attempts run out.
+     *
+     * @return array{0:\Illuminate\Support\Collection,1:int}
      */
-    protected function failedSourcesQuery()
+    protected function failedSources(): array
     {
-        $query = EpisodeSource::query()
-            ->where('ingest_status', 'failed')
-            ->where('source', 'like', 'http%')
-            ->where(function ($q) {
-                $q->whereNull('upload_status')->orWhere('upload_status', '');
-            });
+        $rows = collect();
+        $total = 0;
 
-        if (Schema::hasColumn('episode_sources', 'is_blocked')) {
-            $query->where('is_blocked', false);
+        foreach (['episode' => EpisodeSource::class, 'content' => ContentSource::class] as $type => $class) {
+            $table = $type === 'content' ? 'content_sources' : 'episode_sources';
+
+            if (!Schema::hasTable($table)) {
+                continue;
+            }
+
+            $query = $class::query()
+                ->whereIn('ingest_status', ['failed', 'retrying'])
+                ->where('source', 'like', 'http%');
+
+            if ($type === 'episode' && Schema::hasColumn('episode_sources', 'is_blocked')) {
+                $query->where('is_blocked', false);
+            }
+
+            $total += (clone $query)->count();
+
+            $part = (clone $query)
+                ->orderByDesc('updated_at')
+                ->limit(25)
+                ->get();
+
+            foreach ($part as $row) {
+                $row->source_type = $type;
+            }
+
+            $rows = $rows->merge($part);
         }
 
-        return $query->orderByDesc('updated_at');
+        return [
+            $rows->sortByDesc(fn ($row) => optional($row->updated_at)->getTimestamp() ?? 0)
+                ->take(25)
+                ->values(),
+            $total,
+        ];
     }
 
     public function relayFileList(Request $request)
@@ -139,8 +168,23 @@ class MediaRelayController extends Controller
             }
 
             if ($item->ingest_status && $item->ingest_status !== 'completed') {
+                $attempt = (int) $item->ingest_attempts;
+                $maxAttempts = max(1, min(10, (int) config('media_relay.ingest.retry_max_attempts', 3)));
+                $errors = (int) $item->ingest_fail_count + (int) $item->upload_fail_count;
+                $retryAt = $item->ingest_next_retry_at ?: $item->upload_next_retry_at;
+                $detail = __('relayIngestAttempts') . ': ' . $attempt . '/' . $maxAttempts
+                    . ' · ' . __('relayIngestErrors') . ': ' . $errors;
+
+                if ($retryAt) {
+                    $detail .= ' · ' . __('relayNextRetry') . ': ' . $retryAt->diffForHumans();
+                }
+
+                $title = e(trim($detail . ' | ' . (string) $item->ingest_error));
+
                 if ($item->ingest_status === 'failed') {
-                    $name .= "<br><span class='badge bg-danger' title='" . e((string) $item->ingest_error) . "'>" . __('ingestFailed') . '</span>';
+                    $name .= "<br><span class='badge bg-danger' title='{$title}'>" . __('ingestFailed') . ' (' . $errors . ')</span>';
+                } elseif ($item->ingest_status === 'retrying') {
+                    $name .= "<br><span class='badge bg-warning text-dark' title='{$title}'>" . __('relayRetryPending') . ' ' . $attempt . '/' . $maxAttempts . '</span>';
                 } else {
                     $name .= "<br><span class='badge bg-warning text-dark'>" . e($item->ingest_status) . ' ' . (int) $item->ingest_progress . '%</span>';
                 }
@@ -415,6 +459,11 @@ class MediaRelayController extends Controller
         $source->ingest_status = 'queued';
         $source->ingest_progress = 0;
         $source->ingest_error = null;
+        $source->ingest_attempts = 0;
+        $source->ingest_next_retry_at = null;
+        $source->upload_status = null;
+        $source->upload_attempts = 0;
+        $source->upload_next_retry_at = null;
         $source->save();
 
         \App\Jobs\IngestUrlJob::dispatch($sourceType, $sourceId, $url, $this->ingestName($source));

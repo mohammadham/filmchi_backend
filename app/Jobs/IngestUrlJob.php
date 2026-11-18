@@ -39,10 +39,10 @@ class IngestUrlJob implements ShouldQueue
     /** Download + upload of a multi-gigabyte file. */
     public $timeout = 7000;
 
-    public $tries = 2;
+    public $tries = 3;
 
     /** @var array<int, int> */
-    public $backoff = [300, 900];
+    public $backoff = [300];
 
     /** @var string */
     public $sourceType;
@@ -64,6 +64,11 @@ class IngestUrlJob implements ShouldQueue
         $this->name = $name;
 
         $this->onQueue((string) config('media_relay.queue.name', 'default'));
+
+        // $tries is captured with the queued job, so a timeout also obeys the
+        // retry policy saved when the operator queued this URL.
+        $this->tries = $this->configuredMaxAttempts();
+        $this->backoff = [$this->configuredRetryDelay()];
     }
 
     public function handle(): void
@@ -86,6 +91,10 @@ class IngestUrlJob implements ShouldQueue
 
             return;
         }
+
+        $source->ingest_attempts = (int) $source->ingest_attempts + 1;
+        $source->ingest_next_retry_at = null;
+        $source->save();
 
         $dir = storage_path('app/ingest');
         if (!is_dir($dir)) {
@@ -118,6 +127,8 @@ class IngestUrlJob implements ShouldQueue
             $source->ingest_connections = 0;
             $source->ingest_status = 'uploading';
             $source->upload_status = UploadMetrics::STATUS_QUEUED;
+            $source->ingest_next_retry_at = null;
+            $source->upload_next_retry_at = null;
             $source->save();
 
             UploadIngestJob::dispatch(
@@ -137,16 +148,36 @@ class IngestUrlJob implements ShouldQueue
                 'message' => $e->getMessage(),
             ]);
 
-            $source->ingest_status = 'failed';
+            $source->ingest_fail_count = (int) $source->ingest_fail_count + 1;
             $source->ingest_error = Str::limit($e->getMessage(), 500);
+            $source->ingest_connections = 0;
+            $source->ingest_speed_bps = 0;
 
             if (!$handedOff) {
                 $source->upload_status = null;
             }
 
-            $source->save();
+            $attempt = max(1, (int) $source->ingest_attempts);
+            $maxAttempts = max(1, (int) $this->tries);
 
-            throw $e;
+            if ($attempt < $maxAttempts) {
+                $delay = $this->configuredRetryDelay();
+
+                // release() returns the job to the tail of the same download
+                // queue after the delay. It does not hold a worker while it
+                // waits, and it cannot jump ahead of already queued work.
+                $source->ingest_status = 'retrying';
+                $source->ingest_next_retry_at = now()->addSeconds($delay);
+                $source->save();
+
+                $this->release($delay);
+
+                return;
+            }
+
+            $source->ingest_status = 'failed';
+            $source->ingest_next_retry_at = null;
+            $source->save();
         } finally {
             // Once handed off, the upload job owns this file until it either
             // stores it or exhausts its retries.
@@ -154,6 +185,43 @@ class IngestUrlJob implements ShouldQueue
                 @unlink($part);
             }
         }
+    }
+
+    /**
+     * Final queue failure (a timeout or a crash outside the try/catch) still
+     * has to leave an accurate terminal state and error count in the panel.
+     */
+    public function failed(Throwable $e): void
+    {
+        $source = $this->source();
+
+        if (!$source || (string) $source->ingest_status === 'completed') {
+            return;
+        }
+
+        $source->ingest_fail_count = (int) $source->ingest_fail_count + 1;
+        $source->ingest_status = 'failed';
+        $source->ingest_error = Str::limit($e->getMessage(), 500);
+        $source->ingest_next_retry_at = null;
+        $source->ingest_connections = 0;
+        $source->ingest_speed_bps = 0;
+        $source->save();
+
+        $part = storage_path('app/ingest/ingest-' . $this->sourceId . '.part');
+
+        if (is_file($part)) {
+            @unlink($part);
+        }
+    }
+
+    protected function configuredMaxAttempts(): int
+    {
+        return max(1, min(10, (int) config('media_relay.ingest.retry_max_attempts', 3)));
+    }
+
+    protected function configuredRetryDelay(): int
+    {
+        return max(1, (int) config('media_relay.ingest.retry_delay_seconds', 300));
     }
 
     protected function source()

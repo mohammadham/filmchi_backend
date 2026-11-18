@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Content;
+use App\ContentSource;
 use App\Episode;
 use App\EpisodeSource;
 use App\Jobs\IngestUrlJob;
@@ -62,7 +63,7 @@ class AutomationController extends Controller
         $active = EpisodeSource::whereIn('ingest_status', ['downloading', 'uploading'])
             ->orderBy('updated_at')
             ->limit(5)
-            ->get(['id', 'quality', 'ingest_status', 'ingest_progress', 'ingest_error', 'upload_status', 'upload_started_at', 'upload_finished_at', 'upload_bytes', 'upload_duration_ms', 'upload_speed_bps', 'upload_attempts', 'updated_at'])
+            ->get(['id', 'quality', 'ingest_status', 'ingest_progress', 'ingest_error', 'upload_status', 'upload_started_at', 'upload_finished_at', 'upload_bytes', 'upload_duration_ms', 'upload_speed_bps', 'upload_attempts', 'ingest_attempts', 'ingest_fail_count', 'upload_fail_count', 'ingest_next_retry_at', 'upload_next_retry_at', 'updated_at'])
             ->map(function (EpisodeSource $source) {
                 return [
                     'source_id' => (int) $source->id,
@@ -78,6 +79,11 @@ class AutomationController extends Controller
                     'upload_duration_ms' => $source->upload_duration_ms ? (int) $source->upload_duration_ms : null,
                     'upload_speed_bps' => $source->upload_speed_bps ? (int) $source->upload_speed_bps : null,
                     'upload_attempts' => (int) $source->upload_attempts,
+                    'ingest_attempts' => (int) $source->ingest_attempts,
+                    'ingest_fail_count' => (int) $source->ingest_fail_count,
+                    'upload_fail_count' => (int) $source->upload_fail_count,
+                    'ingest_next_retry_at' => optional($source->ingest_next_retry_at)->toIso8601String(),
+                    'upload_next_retry_at' => optional($source->upload_next_retry_at)->toIso8601String(),
                 ];
             })
             ->all();
@@ -114,6 +120,7 @@ class AutomationController extends Controller
             'stale' => $this->staleActive()->count(),
             'completed' => (int) ($counts['completed'] ?? 0),
             'failed' => (int) ($counts['failed'] ?? 0),
+            'retrying' => (int) ($counts['retrying'] ?? 0),
             'failed_retryable' => $this->failedQuery()->count(),
             'current' => $active,
             'disk_free_gb' => $freeGb,
@@ -290,6 +297,9 @@ class AutomationController extends Controller
             $source->ingest_status = 'queued';
             $source->ingest_progress = 0;
             $source->ingest_error = null;
+            $source->ingest_attempts = 0;
+            $source->ingest_next_retry_at = null;
+            $source->upload_next_retry_at = null;
             $source->save();
 
             IngestUrlJob::dispatch(
@@ -327,18 +337,22 @@ class AutomationController extends Controller
     }
 
     /**
-     * Manually put one failed pre-upload source back on the queue.
+     * Manually put one failed or retry-exhausted source back on the queue.
      *
-     * Tdrive failures are retried in the Tdrive panel; this endpoint only
-     * handles rows that failed before they ever reached an upload job.
+     * Both download and upload failures are accepted: the source is queued
+     * from the beginning again, and the failure counters stay as history.
      */
     public function requeueSource(Request $request)
     {
         $validated = $request->validate([
             'source_id' => 'required|integer',
+            'source_type' => 'nullable|in:episode,content',
         ]);
 
-        $source = EpisodeSource::find((int) $validated['source_id']);
+        $sourceType = (string) ($validated['source_type'] ?? 'episode');
+        $source = $sourceType === 'content'
+            ? ContentSource::find((int) $validated['source_id'])
+            : EpisodeSource::find((int) $validated['source_id']);
 
         if (!$source) {
             return back()->with('error', 'منبع پیدا نشد.');
@@ -348,11 +362,9 @@ class AutomationController extends Controller
             return back()->with('error', 'این منبع در وضعیت فعال است و دوباره صف نمی‌شود.');
         }
 
-        if ($source->upload_status === UploadMetrics::STATUS_FAILED) {
-            return back()->with('error', 'این فایل در مرحله آپلود شکست خورده؛ آن را از پنل Tdrive دوباره تلاش کنید.');
-        }
-
-        if (Schema::hasColumn('episode_sources', 'is_blocked') && (bool) $source->is_blocked) {
+        if ($sourceType === 'episode'
+            && Schema::hasColumn('episode_sources', 'is_blocked')
+            && (bool) $source->is_blocked) {
             return back()->with('error', 'این منبع بلاک شده و دوباره صف نمی‌شود.');
         }
 
@@ -360,25 +372,39 @@ class AutomationController extends Controller
             return back()->with('error', 'این منبع دیگر یک لینک HTTP معتبر نیست.');
         }
 
-        $episode = Episode::find($source->episode_id);
-        $content = $episode ? $this->contentOf($episode) : null;
+        if ($sourceType === 'episode') {
+            $episode = Episode::find($source->episode_id);
+            $content = $episode ? $this->contentOf($episode) : null;
 
-        if (!$episode || !$content) {
-            return back()->with('error', 'قسمت یا عنوان مربوط به این منبع پیدا نشد.');
+            if (!$episode || !$content) {
+                return back()->with('error', 'قسمت یا عنوان مربوط به این منبع پیدا نشد.');
+            }
+
+            $name = $this->nameFor($content, $episode, (string) $source->source);
+        } else {
+            $name = (string) ($source->title ?: 'ingest-' . $source->id);
+            $extension = strtolower(pathinfo((string) parse_url((string) $source->source, PHP_URL_PATH), PATHINFO_EXTENSION));
+
+            if ($extension && !str_ends_with(strtolower($name), '.' . $extension)) {
+                $name .= '.' . $extension;
+            }
         }
 
         $source->ingest_status = 'queued';
         $source->ingest_progress = 0;
         $source->ingest_error = null;
+        $source->ingest_attempts = 0;
+        $source->ingest_next_retry_at = null;
         $source->upload_status = null;
         $source->upload_attempts = 0;
+        $source->upload_next_retry_at = null;
         $source->save();
 
         IngestUrlJob::dispatch(
-            'episode',
+            $sourceType,
             (int) $source->id,
             (string) $source->source,
-            $this->nameFor($content, $episode, (string) $source->source)
+            $name
         );
 
         return back()->with('success', 'منبع دوباره به صف اضافه شد.');

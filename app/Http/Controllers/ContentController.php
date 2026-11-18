@@ -999,6 +999,9 @@ class ContentController extends Controller
         $source->ingest_status = 'queued';
         $source->ingest_progress = 0;
         $source->ingest_error = null;
+        $source->ingest_attempts = 0;
+        $source->ingest_next_retry_at = null;
+        $source->upload_next_retry_at = null;
         $source->save();
 
         IngestUrlJob::dispatch($sourceType, $source->id, $url, $this->ingestNameFor($source, $url));

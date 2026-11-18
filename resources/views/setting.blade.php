@@ -27,6 +27,8 @@
         const activeValue = document.getElementById('relayRuntimeActiveValue');
         const workersValue = document.getElementById('relayRuntimeWorkersValue');
         const queuedValue = document.getElementById('relayRuntimeQueuedValue');
+        const retryingValue = document.getElementById('relayRuntimeRetryingValue');
+        const failedValue = document.getElementById('relayRuntimeFailedValue');
         const connectionsValue = document.getElementById('relayRuntimeConnectionsValue');
         const totalSpeedValue = document.getElementById('relayRuntimeTotalSpeedValue');
         const heartbeatValue = document.getElementById('relayHeartbeatValue');
@@ -138,6 +140,14 @@
                 activeValue.textContent = data.active;
                 workersValue.textContent = data.workers_live + '/' + data.workers_desired;
                 queuedValue.textContent = data.queued;
+
+                if (retryingValue) {
+                    retryingValue.textContent = data.retrying;
+                }
+
+                if (failedValue) {
+                    failedValue.textContent = data.failed;
+                }
 
                 if (connectionsValue) {
                     connectionsValue.textContent = data.connections_in_use;

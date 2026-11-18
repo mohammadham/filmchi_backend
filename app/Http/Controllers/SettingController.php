@@ -6,6 +6,7 @@ use App\Actor;
 use App\Admin;
 use App\Admob;
 use App\Content;
+use App\ContentSource;
 use App\CustomAd;
 use App\Episode;
 use App\Genre;
@@ -101,12 +102,20 @@ class SettingController extends Controller
 
         $active = 0;
         $queued = 0;
+        $retrying = 0;
+        $failed = 0;
 
         try {
-            $active = EpisodeSource::whereIn('ingest_status', ['downloading', 'uploading'])
-                ->where('updated_at', '>=', now()->subMinutes(20))
-                ->count();
-            $queued = EpisodeSource::where('ingest_status', 'queued')->count();
+            // Count both ingest source tables so the runtime badges match the
+            // failed/retrying card on the Media Relay page.
+            foreach ([EpisodeSource::class, ContentSource::class] as $sourceClass) {
+                $active += $sourceClass::whereIn('ingest_status', ['downloading', 'uploading'])
+                    ->where('updated_at', '>=', now()->subMinutes(20))
+                    ->count();
+                $queued += $sourceClass::where('ingest_status', 'queued')->count();
+                $retrying += $sourceClass::where('ingest_status', 'retrying')->count();
+                $failed += $sourceClass::where('ingest_status', 'failed')->count();
+            }
         } catch (\Throwable $e) {
             // Keep the settings page usable during a migration.
         }
@@ -115,17 +124,19 @@ class SettingController extends Controller
         $totalSpeedBps = 0;
 
         try {
-            $aggregate = EpisodeSource::whereIn('ingest_status', ['downloading', 'uploading'])
-                ->where('updated_at', '>=', now()->subMinutes(20))
-                ->selectRaw(
-                    "SUM(CASE WHEN ingest_status = 'downloading' THEN COALESCE(ingest_connections, 0) ELSE 0 END) as connections, "
-                    . "SUM(CASE WHEN ingest_status = 'uploading' THEN COALESCE(upload_speed_bps, 0) ELSE COALESCE(ingest_speed_bps, 0) END) as speed_bps"
-                )
-                ->first();
+            foreach ([EpisodeSource::class, ContentSource::class] as $sourceClass) {
+                $aggregate = $sourceClass::whereIn('ingest_status', ['downloading', 'uploading'])
+                    ->where('updated_at', '>=', now()->subMinutes(20))
+                    ->selectRaw(
+                        "SUM(CASE WHEN ingest_status = 'downloading' THEN COALESCE(ingest_connections, 0) ELSE 0 END) as connections, "
+                        . "SUM(CASE WHEN ingest_status = 'uploading' THEN COALESCE(upload_speed_bps, 0) ELSE COALESCE(ingest_speed_bps, 0) END) as speed_bps"
+                    )
+                    ->first();
 
-            if ($aggregate) {
-                $connectionsInUse = max(0, (int) $aggregate->connections);
-                $totalSpeedBps = max(0, (int) $aggregate->speed_bps);
+                if ($aggregate) {
+                    $connectionsInUse += max(0, (int) $aggregate->connections);
+                    $totalSpeedBps += max(0, (int) $aggregate->speed_bps);
+                }
             }
         } catch (\Throwable $e) {
             // The page still works while a deploy is adding the column.
@@ -173,6 +184,8 @@ class SettingController extends Controller
             'disk_downloads' => (int) $disk['downloads'],
             'active' => $active,
             'queued' => $queued,
+            'retrying' => $retrying,
+            'failed' => $failed,
             'workers_live' => $live,
             'workers_desired' => $desired,
             'heartbeat_at' => $heartbeatAt,

@@ -91,6 +91,11 @@ return [
         'min_chunk_mb' => (int) env('RELAY_INGEST_MIN_CHUNK_MB', 1),
         // Maximum chunk size in MB (for very large files).
         'max_chunk_mb' => (int) env('RELAY_INGEST_MAX_CHUNK_MB', 16),
+        // Retry policy for a URL that failed while downloading. The failed job
+        // is released back onto the same download queue after this delay, so
+        // it waits behind the work that was already queued.
+        'retry_max_attempts' => (int) env('RELAY_INGEST_RETRY_MAX_ATTEMPTS', 3),
+        'retry_delay_seconds' => (int) env('RELAY_INGEST_RETRY_DELAY_SECONDS', 300),
     ],
 
     /*
@@ -206,6 +211,10 @@ return [
         // keep two slots even while both upload slots are busy.
         'concurrency' => (int) env('RELAY_UPLOAD_CONCURRENCY', 2),
         'queue' => env('RELAY_UPLOAD_QUEUE', 'uploads'),
+        // An upload failure keeps the downloaded .part while attempts remain,
+        // then releases the job to the end of the upload queue after this delay.
+        'retry_max_attempts' => (int) env('RELAY_UPLOAD_RETRY_MAX_ATTEMPTS', 3),
+        'retry_delay_seconds' => (int) env('RELAY_UPLOAD_RETRY_DELAY_SECONDS', 120),
     ],
 
     /*
