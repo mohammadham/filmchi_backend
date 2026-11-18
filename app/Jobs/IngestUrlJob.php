@@ -491,6 +491,7 @@ class IngestUrlJob implements ShouldQueue
         }
 
         $read = 0;
+        $sample = '';
 
         while (!feof($remote) && $read < $maxBytes) {
             $buffer = fread($remote, min(65536, max(1, $maxBytes - $read)));
@@ -499,10 +500,29 @@ class IngestUrlJob implements ShouldQueue
                 break;
             }
 
+            if (strlen($sample) < 300) {
+                $sample .= substr($buffer, 0, 300 - strlen($sample));
+            }
+
             $read += strlen($buffer);
         }
 
         fclose($remote);
+
+        // The probe is the first request of every download: when it is
+        // rate-limited or blocked, every chunk fails the same way, so this
+        // line explains a later "retry budget exhausted" without guessing.
+        if ($status >= 400) {
+            Log::warning('relay source probe rejected', [
+                'source_id' => $this->sourceId,
+                'source_type' => $this->sourceType,
+                'url' => $route['url'],
+                'worker_id' => $route['worker_id'] ?? null,
+                'proxied' => (bool) ($route['proxied'] ?? false),
+                'http_status' => $status,
+                'body' => $this->bodyExcerpt($sample),
+            ]);
+        }
 
         return ['size' => $size, 'ranges' => $ranges, 'status' => $status];
     }
@@ -641,6 +661,15 @@ class IngestUrlJob implements ShouldQueue
         $lengths = [];   // chunk index => expected bytes
         $inFlight = [];  // chunk index => true, ordered by dispatch
         $failed = [];    // chunk index => error message
+        // Response diagnostics kept per chunk. A failing chunk records the
+        // status line, the Worker's upstream status, Retry-After and the first
+        // bytes of the body, so the log explains *why* a download failed
+        // instead of one generic "retry budget exhausted".
+        $httpCodes = [];
+        $upstreamStatuses = [];
+        $retryAfter = [];
+        $contentTypes = [];
+        $bodySamples = [];
         // One failure per Worker for this file. A failing origin can fail
         // dozens of chunks at once; charging every chunk to its Worker used to
         // push the whole pool over the auto-disable threshold in seconds.
@@ -663,11 +692,19 @@ class IngestUrlJob implements ShouldQueue
                 return $handleChunkMap[spl_object_id($handle)] ?? null;
             };
 
-            $writer = function ($ch, string $data) use ($out, $chunkSize, $chunkFor, &$lengths, &$written, &$received) {
+            $writer = function ($ch, string $data) use ($out, $chunkSize, $chunkFor, &$lengths, &$written, &$received, &$bodySamples) {
                 $index = $chunkFor($ch);
 
                 if ($index === null) {
                     return 0;
+                }
+
+                // Only the first 512 bytes matter for an error body; a 206
+                // success uses this buffer once and it is released.
+                $sample = $bodySamples[$index] ?? '';
+
+                if (strlen($sample) < 512) {
+                    $bodySamples[$index] = $sample . substr($data, 0, 512 - strlen($sample));
                 }
 
                 $start = $index * $chunkSize;
@@ -705,7 +742,49 @@ class IngestUrlJob implements ShouldQueue
             $poolRefreshSeconds = max(3, (int) config('media_relay.ingest.pool_refresh_seconds', 10));
             $lastPoolRefresh = microtime(true);
 
-            $startChunk = function (int $index) use ($registry, $multi, &$pending, &$handles, &$routes, &$written, &$lengths, &$inFlight, $writer, $chunkSize, $bindHandle, &$workerIndices, &$workerCount, &$currentWorker, &$pool, $chunkSpeed, &$workerScores, &$chunkCounts, &$assignedTotal, &$probeCursor, &$forceProbeChunks, &$probeWaitSeconds) {
+            // Status line and the headers a Worker uses to describe its own
+            // upstream answer. Kept per chunk so a failure can be logged as
+            // "HTTP 429 (upstream 429)" instead of one generic message.
+            $headerReader = function ($ch, string $header) use ($chunkFor, &$httpCodes, &$upstreamStatuses, &$retryAfter, &$contentTypes) {
+                $index = $chunkFor($ch);
+
+                if ($index === null) {
+                    return strlen($header);
+                }
+
+                $line = trim($header);
+
+                if ($line === '') {
+                    return strlen($header);
+                }
+
+                if (preg_match('#^HTTP/\S+\s+(\d{3})#i', $line, $match)) {
+                    $httpCodes[$index] = (int) $match[1];
+
+                    return strlen($header);
+                }
+
+                $separator = strpos($line, ':');
+
+                if ($separator === false) {
+                    return strlen($header);
+                }
+
+                $name = strtolower(trim(substr($line, 0, $separator)));
+                $value = trim(substr($line, $separator + 1));
+
+                if ($name === 'x-proxy-upstream-status') {
+                    $upstreamStatuses[$index] = $value;
+                } elseif ($name === 'retry-after') {
+                    $retryAfter[$index] = $value;
+                } elseif ($name === 'content-type') {
+                    $contentTypes[$index] = $value;
+                }
+
+                return strlen($header);
+            };
+
+            $startChunk = function (int $index) use ($registry, $multi, &$pending, &$handles, &$routes, &$written, &$lengths, &$inFlight, $writer, $headerReader, $chunkSize, $bindHandle, &$workerIndices, &$workerCount, &$currentWorker, &$pool, $chunkSpeed, &$workerScores, &$chunkCounts, &$assignedTotal, &$probeCursor, &$forceProbeChunks, &$probeWaitSeconds) {
                 $meta = $pending[$index];
                 unset($pending[$index]);
 
@@ -805,6 +884,7 @@ class IngestUrlJob implements ShouldQueue
                     CURLOPT_TIMEOUT => max(30, (int) config('media_relay.ingest.chunk_stall_timeout', 60) * 2),
                     CURLOPT_TCP_KEEPALIVE => 1,
                     CURLOPT_USERAGENT => (string) config('media_relay.relay.user_agent', 'flixy-media-relay/1.0'),
+                    CURLOPT_HEADERFUNCTION => $headerReader,
                     CURLOPT_WRITEFUNCTION => $writer,
                 ];
 
@@ -850,7 +930,7 @@ class IngestUrlJob implements ShouldQueue
             // curl_multi_info_read is the only reliable "this handle finished"
             // signal, so the loop polls it and refills freed slots from the
             // pending queue as soon as a chunk completes.
-            $harvest = function () use ($multi, $registry, &$handles, &$routes, &$written, &$lengths, &$inFlight, &$failed, &$failedWorkerMessages, &$received, &$pending, &$handleChunkMap, &$workerScores, $startChunk, $fillSlots) {
+            $harvest = function () use ($multi, $registry, &$handles, &$routes, &$written, &$lengths, &$inFlight, &$failed, &$failedWorkerMessages, &$received, &$pending, &$handleChunkMap, &$workerScores, &$httpCodes, &$upstreamStatuses, &$retryAfter, &$contentTypes, &$bodySamples, $chunkSize, $startChunk, $fillSlots) {
                 while (true) {
                     $info = curl_multi_info_read($multi);
 
@@ -894,6 +974,7 @@ class IngestUrlJob implements ShouldQueue
                     }
 
                     if ($message === null) {
+                        unset($bodySamples[$index]);
                         $registry->reportSuccess($route['worker_id'] ?? null, $got, $durationMs);
 
                         $workerId = (int) ($route['worker_id'] ?? 0);
@@ -908,6 +989,28 @@ class IngestUrlJob implements ShouldQueue
                         }
                     } else {
                         $failed[$index] = $message;
+                        $chunkStart = $index * $chunkSize;
+                        $chunkLength = (int) ($lengths[$index] ?? 0);
+
+                        Log::warning('relay chunk failed', [
+                            'source_id' => $this->sourceId,
+                            'source_type' => $this->sourceType,
+                            'chunk' => $index,
+                            'range' => $chunkStart . '-' . ($chunkStart + max(0, $chunkLength - 1)),
+                            'worker_id' => $route['worker_id'] ?? null,
+                            'worker' => $route['worker_name'] ?? null,
+                            'proxied' => (bool) ($route['proxied'] ?? false),
+                            'http_status' => $httpCodes[$index] ?? null,
+                            'upstream_status' => $upstreamStatuses[$index] ?? null,
+                            'retry_after' => $retryAfter[$index] ?? null,
+                            'content_type' => $contentTypes[$index] ?? null,
+                            'curl_errno' => $errno,
+                            'curl_error' => $errno !== 0 ? $message : null,
+                            'bytes' => $got . '/' . $expected,
+                            'duration_ms' => $durationMs,
+                            'error' => $message,
+                            'body' => $this->bodyExcerpt($bodySamples[$index] ?? null),
+                        ]);
 
                         if (!empty($route['worker_id'])) {
                             $failedWorkerMessages[(int) $route['worker_id']] = $message;
@@ -1066,7 +1169,19 @@ class IngestUrlJob implements ShouldQueue
                     if (microtime(true) - $retryStartedAt >= $retryBudget) {
                         $reportFailures();
 
-                        throw new \RuntimeException('segmented download retry budget exhausted');
+                        $summary = $this->failureSummary($failed, $routes, $httpCodes, $upstreamStatuses, $bodySamples, $retryStartedAt);
+
+                        Log::error('relay segmented download failed', [
+                            'source_id' => $this->sourceId,
+                            'source_type' => $this->sourceType,
+                            'url' => $this->url,
+                            'reason' => 'retry budget exhausted',
+                            'elapsed_s' => (int) round(microtime(true) - $retryStartedAt),
+                            'failed_chunks' => count($failed),
+                            'summary' => $summary,
+                        ]);
+
+                        throw new \RuntimeException('segmented download retry budget exhausted: ' . $summary);
                     }
 
                     $start = $i * $chunkSize;
@@ -1084,6 +1199,26 @@ class IngestUrlJob implements ShouldQueue
                             unset($failedWorkerMessages[(int) $route['worker_id']]);
                         }
                     } else {
+                        $httpCodes[$i] = (int) ($result['http_status'] ?? 0);
+                        $upstreamStatuses[$i] = $result['upstream_status'] ?? null;
+                        $retryAfter[$i] = $result['retry_after'] ?? null;
+                        $bodySamples[$i] = $result['body'] ?? ($bodySamples[$i] ?? null);
+
+                        Log::warning('relay chunk retry failed', [
+                            'source_id' => $this->sourceId,
+                            'chunk' => $i,
+                            'range' => $range,
+                            'attempt' => $retryRound,
+                            'worker_id' => $route['worker_id'] ?? null,
+                            'worker' => $route['worker_name'] ?? null,
+                            'proxied' => (bool) ($route['proxied'] ?? false),
+                            'http_status' => $result['http_status'] ?? null,
+                            'upstream_status' => $result['upstream_status'] ?? null,
+                            'retry_after' => $result['retry_after'] ?? null,
+                            'error' => (string) $result['error'],
+                            'body' => $this->bodyExcerpt($result['body'] ?? null),
+                        ]);
+
                         if (!empty($route['worker_id'])) {
                             $workerId = (int) $route['worker_id'];
                             $failedWorkerIds[] = $workerId;
@@ -1101,7 +1236,19 @@ class IngestUrlJob implements ShouldQueue
             $reportFailures();
 
             if (!empty($failed)) {
-                throw new \RuntimeException((string) reset($failed));
+                $summary = $this->failureSummary($failed, $routes, $httpCodes, $upstreamStatuses, $bodySamples, $retryStartedAt);
+
+                Log::error('relay segmented download failed', [
+                    'source_id' => $this->sourceId,
+                    'source_type' => $this->sourceType,
+                    'url' => $this->url,
+                    'reason' => 'chunks still failing after retries',
+                    'elapsed_s' => (int) round(microtime(true) - $retryStartedAt),
+                    'failed_chunks' => count($failed),
+                    'summary' => $summary,
+                ]);
+
+                throw new \RuntimeException($summary);
             }
         } finally {
             curl_multi_close($multi);
@@ -1262,6 +1409,10 @@ class IngestUrlJob implements ShouldQueue
     protected function downloadChunk(array $route, $out, int $start, int $length, string $range): array
     {
         $written = 0;
+        $httpStatus = 0;
+        $upstreamStatus = null;
+        $retryAfterHeader = null;
+        $body = '';
         $options = [
             CURLOPT_FOLLOWLOCATION => true,
             CURLOPT_MAXREDIRS => 3,
@@ -1271,11 +1422,41 @@ class IngestUrlJob implements ShouldQueue
             CURLOPT_TIMEOUT => max(30, (int) config('media_relay.ingest.chunk_stall_timeout', 60) * 2),
             CURLOPT_TCP_KEEPALIVE => 1,
             CURLOPT_USERAGENT => (string) config('media_relay.relay.user_agent', 'flixy-media-relay/1.0'),
-            CURLOPT_WRITEFUNCTION => function ($ch, string $data) use ($out, $start, $length, &$written) {
+            CURLOPT_HEADERFUNCTION => function ($ch, string $header) use (&$httpStatus, &$upstreamStatus, &$retryAfterHeader) {
+                $line = trim($header);
+
+                if (preg_match('#^HTTP/\S+\s+(\d{3})#i', $line, $match)) {
+                    $httpStatus = (int) $match[1];
+
+                    return strlen($header);
+                }
+
+                $separator = strpos($line, ':');
+
+                if ($separator === false) {
+                    return strlen($header);
+                }
+
+                $name = strtolower(trim(substr($line, 0, $separator)));
+                $value = trim(substr($line, $separator + 1));
+
+                if ($name === 'x-proxy-upstream-status') {
+                    $upstreamStatus = $value;
+                } elseif ($name === 'retry-after') {
+                    $retryAfterHeader = $value;
+                }
+
+                return strlen($header);
+            },
+            CURLOPT_WRITEFUNCTION => function ($ch, string $data) use ($out, $start, $length, &$written, &$body) {
                 $remaining = $length - $written;
 
                 if ($remaining <= 0) {
                     return 0;
+                }
+
+                if (strlen($body) < 512) {
+                    $body .= substr($data, 0, 512 - strlen($body));
                 }
 
                 if (strlen($data) > $remaining) {
@@ -1328,6 +1509,10 @@ class IngestUrlJob implements ShouldQueue
             'bytes' => $written,
             'duration_ms' => $durationMs,
             'error' => $error ?: 'chunk retry failed',
+            'http_status' => $httpStatus > 0 ? $httpStatus : $code,
+            'upstream_status' => $upstreamStatus,
+            'retry_after' => $retryAfterHeader,
+            'body' => $this->bodyExcerpt($body),
         ];
     }
 
@@ -1452,6 +1637,80 @@ class IngestUrlJob implements ShouldQueue
                 $expected
             ));
         }
+    }
+
+    /**
+     * Bounded, printable body sample from a failed response. A Worker or CDN
+     * usually answers 429/403 with a short JSON/HTML body; media bytes must
+     * never end up in the log.
+     */
+    protected function bodyExcerpt(?string $body): string
+    {
+        if ($body === null || $body === '') {
+            return '';
+        }
+
+        $text = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]+/', ' ', $body);
+
+        if ($text === null) {
+            $text = $body;
+        }
+
+        $text = preg_replace('/\s+/u', ' ', $text) ?? $text;
+
+        return Str::limit(trim((string) $text), 300);
+    }
+
+    /**
+     * One line explaining a failed segmented download: how many chunks failed,
+     * which HTTP statuses they returned, and a sample body from the first
+     * failure. It is also stored in ingest_error, so the Media Relay panel
+     * shows the cause without shell access to the server.
+     */
+    protected function failureSummary(array $failed, array $routes, array $httpCodes, array $upstreamStatuses, array $bodySamples, float $startedAt): string
+    {
+        $codes = [];
+
+        foreach (array_keys($failed) as $index) {
+            $code = (int) ($httpCodes[$index] ?? 0);
+            $codes[$code] = ($codes[$code] ?? 0) + 1;
+        }
+
+        ksort($codes);
+
+        $parts = [];
+
+        foreach ($codes as $code => $count) {
+            $parts[] = ($code > 0 ? 'HTTP ' . $code : 'no response') . ' x' . $count;
+        }
+
+        $first = array_key_first($failed);
+
+        if ($first === null) {
+            return 'no failed chunk recorded';
+        }
+
+        $route = $routes[$first] ?? [];
+        $worker = !empty($route['worker_id'])
+            ? 'worker #' . $route['worker_id'] . (!empty($route['worker_name']) ? ' (' . $route['worker_name'] . ')' : '')
+            : 'direct';
+        $status = (int) ($httpCodes[$first] ?? 0);
+        $upstream = (string) ($upstreamStatuses[$first] ?? '');
+        $body = $this->bodyExcerpt($bodySamples[$first] ?? ($failed[$first] ?? null));
+
+        $summary = sprintf(
+            '%d chunk(s) failed after %ds [%s]; first: chunk %s via %s, %s%s%s',
+            count($failed),
+            (int) round(microtime(true) - $startedAt),
+            implode(', ', $parts),
+            (string) $first,
+            $worker,
+            $status > 0 ? 'HTTP ' . $status : 'no HTTP response',
+            $upstream !== '' ? ', upstream ' . $upstream : '',
+            $body !== '' ? ', body: "' . $body . '"' : ''
+        );
+
+        return Str::limit($summary, 380);
     }
 
     protected function isRemoteSizeAcceptable(string $part): bool
