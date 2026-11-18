@@ -692,18 +692,20 @@ class IngestUrlJob implements ShouldQueue
                 return $handleChunkMap[spl_object_id($handle)] ?? null;
             };
 
-            $writer = function ($ch, string $data) use ($out, $chunkSize, $chunkFor, &$lengths, &$written, &$received, &$bodySamples) {
+            $writer = function ($ch, string $data) use ($out, $chunkSize, $chunkFor, &$lengths, &$written, &$received, &$bodySamples, &$httpCodes) {
                 $index = $chunkFor($ch);
 
                 if ($index === null) {
                     return 0;
                 }
 
-                // Only the first 512 bytes matter for an error body; a 206
-                // success uses this buffer once and it is released.
+                // Only an error response has a meaningful body. A 206 body is
+                // media bytes and must never reach the log; headers always
+                // arrive before the first write, so the status is known here.
+                $status = (int) ($httpCodes[$index] ?? 0);
                 $sample = $bodySamples[$index] ?? '';
 
-                if (strlen($sample) < 512) {
+                if (($status === 0 || $status >= 400) && strlen($sample) < 512) {
                     $bodySamples[$index] = $sample . substr($data, 0, 512 - strlen($sample));
                 }
 
@@ -1448,14 +1450,14 @@ class IngestUrlJob implements ShouldQueue
 
                 return strlen($header);
             },
-            CURLOPT_WRITEFUNCTION => function ($ch, string $data) use ($out, $start, $length, &$written, &$body) {
+            CURLOPT_WRITEFUNCTION => function ($ch, string $data) use ($out, $start, $length, &$written, &$body, &$httpStatus) {
                 $remaining = $length - $written;
 
                 if ($remaining <= 0) {
                     return 0;
                 }
 
-                if (strlen($body) < 512) {
+                if (($httpStatus === 0 || $httpStatus >= 400) && strlen($body) < 512) {
                     $body .= substr($data, 0, 512 - strlen($body));
                 }
 
@@ -1696,7 +1698,8 @@ class IngestUrlJob implements ShouldQueue
             : 'direct';
         $status = (int) ($httpCodes[$first] ?? 0);
         $upstream = (string) ($upstreamStatuses[$first] ?? '');
-        $body = $this->bodyExcerpt($bodySamples[$first] ?? ($failed[$first] ?? null));
+        $body = $this->bodyExcerpt($bodySamples[$first] ?? null);
+        $detail = Str::limit((string) ($failed[$first] ?? ''), 140);
 
         $summary = sprintf(
             '%d chunk(s) failed after %ds [%s]; first: chunk %s via %s, %s%s%s',
@@ -1707,7 +1710,7 @@ class IngestUrlJob implements ShouldQueue
             $worker,
             $status > 0 ? 'HTTP ' . $status : 'no HTTP response',
             $upstream !== '' ? ', upstream ' . $upstream : '',
-            $body !== '' ? ', body: "' . $body . '"' : ''
+            $body !== '' ? ', body: "' . $body . '"' : ($detail !== '' ? ', detail: "' . $detail . '"' : '')
         );
 
         return Str::limit($summary, 380);
