@@ -7,6 +7,7 @@ use App\ContentSource;
 use App\Episode;
 use App\EpisodeSource;
 use App\Season;
+use App\Services\Relay\ChunkResumeState;
 use App\Services\Relay\ChunkRouter;
 use App\Services\Relay\DiskBudget;
 use App\Services\Relay\RelaySettings;
@@ -180,9 +181,12 @@ class IngestUrlJob implements ShouldQueue
             $source->save();
         } finally {
             // Once handed off, the upload job owns this file until it either
-            // stores it or exhausts its retries.
-            if (!$handedOff && is_file($part)) {
+            // stores it or exhausts its retries. While the queue still intends
+            // to retry this source the partial file is kept, so the next
+            // attempt resumes its completed chunks instead of starting over.
+            if (!$handedOff && is_file($part) && (string) $source->ingest_status !== 'retrying') {
                 @unlink($part);
+                ChunkResumeState::forPart($part)->forget();
             }
         }
     }
@@ -212,6 +216,8 @@ class IngestUrlJob implements ShouldQueue
         if (is_file($part)) {
             @unlink($part);
         }
+
+        ChunkResumeState::forPart($part)->forget();
     }
 
     protected function configuredMaxAttempts(): int
@@ -325,8 +331,8 @@ class IngestUrlJob implements ShouldQueue
                 'message' => $e->getMessage(),
             ]);
 
-            @unlink($part);
-
+            // Keep the .part file: the next attempt resumes the chunks that are
+            // already flushed to disk instead of re-fetching the whole file.
             $registry = app(WorkerRegistry::class);
 
             // A retry-budget failure means many ranged chunks failed over a
@@ -356,8 +362,6 @@ class IngestUrlJob implements ShouldQueue
                         'source_id' => $this->sourceId,
                         'message' => $retryError->getMessage(),
                     ]);
-
-                    @unlink($part);
 
                     throw $retryError;
                 }
@@ -623,11 +627,22 @@ class IngestUrlJob implements ShouldQueue
         $source->ingest_connections = $slots;
         $source->save();
 
+        // Chunk count first: the resume manifest is keyed by the chunk size, so
+        // a changed chunk_mb must restart the file instead of trusting offsets
+        // that no longer line up.
+        $chunkCount = (int) ceil($total / $chunkSize);
+
         $out = @fopen($part, 'c+b');
 
         if ($out === false) {
             throw new \RuntimeException('could not open the ingest target file');
         }
+
+        // Completed chunks from an earlier attempt of this source. The target is
+        // pre-sized, so its length cannot say how much of it is real; only the
+        // sidecar manifest knows which ranges are already there.
+        $resume = ChunkResumeState::forPart($part);
+        $resumedChunks = $resume->chunks($total, $chunkSize, $chunkCount);
 
         if (!ftruncate($out, $total)) {
             fclose($out);
@@ -635,20 +650,47 @@ class IngestUrlJob implements ShouldQueue
             throw new \RuntimeException('could not reserve space for the ingest target file');
         }
 
+        if ($resumedChunks === []) {
+            $resume->begin($total, $chunkSize);
+        }
+
+        $resumedBytes = 0;
+
+        foreach (array_keys($resumedChunks) as $resumedIndex) {
+            $resumedStart = $resumedIndex * $chunkSize;
+            $resumedBytes += min($chunkSize, $total - $resumedStart);
+        }
+
+        if ($resumedChunks !== []) {
+            Log::info('relay download resuming from the partial file', [
+                'source_id' => $this->sourceId,
+                'chunks_done' => count($resumedChunks),
+                'chunks_total' => $chunkCount,
+                'bytes_done' => $resumedBytes,
+                'bytes_total' => $total,
+            ]);
+        }
+
         // Pending queue: chunk index => ['start' => int, 'length' => int].
         // Materialise chunks lazily so max_pending_chunks bounds memory while
         // still letting the remaining chunks be fetched as slots free up.
         $pending = [];
-        $chunkCount = (int) ceil($total / $chunkSize);
         $configuredPending = max(0, (int) config('media_relay.ingest.max_pending_chunks', 0));
         $pendingLimit = $configuredPending > 0 ? $configuredPending : $chunkCount;
         $nextChunk = 0;
 
-        $fillPending = function () use (&$pending, &$nextChunk, $chunkCount, $chunkSize, $total, $pendingLimit) {
+        $fillPending = function () use (&$pending, &$nextChunk, $chunkCount, $chunkSize, $total, $pendingLimit, &$resumedChunks) {
             while ($nextChunk < $chunkCount && count($pending) < $pendingLimit) {
-                $start = $nextChunk * $chunkSize;
-                $pending[$nextChunk] = ['start' => $start, 'length' => min($chunkSize, $total - $start)];
+                $index = $nextChunk;
                 $nextChunk++;
+
+                // Already flushed to disk by an earlier attempt: never refetch.
+                if (isset($resumedChunks[$index])) {
+                    continue;
+                }
+
+                $start = $index * $chunkSize;
+                $pending[$index] = ['start' => $start, 'length' => min($chunkSize, $total - $start)];
             }
         };
 
@@ -675,7 +717,7 @@ class IngestUrlJob implements ShouldQueue
         // push the whole pool over the auto-disable threshold in seconds.
         $failedWorkerMessages = [];
         $poolSizeAtStart = max(1, $pool->count());
-        $received = 0;
+        $received = $resumedBytes;
         $downloadStartedAt = microtime(true);
 
         try {
@@ -951,7 +993,7 @@ class IngestUrlJob implements ShouldQueue
             // curl_multi_info_read is the only reliable "this handle finished"
             // signal, so the loop polls it and refills freed slots from the
             // pending queue as soon as a chunk completes.
-            $harvest = function () use ($multi, $registry, &$handles, &$routes, &$written, &$lengths, &$inFlight, &$failed, &$failedWorkerMessages, &$received, &$pending, &$handleChunkMap, &$workerScores, &$httpCodes, &$upstreamStatuses, &$retryAfter, &$contentTypes, &$bodySamples, $chunkSize, $startChunk, $fillSlots) {
+            $harvest = function () use ($multi, $registry, &$handles, &$routes, &$written, &$lengths, &$inFlight, &$failed, &$failedWorkerMessages, &$received, &$pending, &$handleChunkMap, &$workerScores, &$httpCodes, &$upstreamStatuses, &$retryAfter, &$contentTypes, &$bodySamples, $chunkSize, $startChunk, $fillSlots, $out, $resume) {
                 while (true) {
                     $info = curl_multi_info_read($multi);
 
@@ -996,6 +1038,18 @@ class IngestUrlJob implements ShouldQueue
 
                     if ($message === null) {
                         unset($bodySamples[$index]);
+
+                        // Record the chunk only after its bytes left PHP and the
+                        // kernel cache, so a resumed attempt never skips a range
+                        // that was not really written.
+                        @fflush($out);
+
+                        if (function_exists('fsync')) {
+                            @fsync($out);
+                        }
+
+                        $resume->remember($index);
+
                         $registry->reportSuccess($route['worker_id'] ?? null, $got, $durationMs);
 
                         $workerId = (int) ($route['worker_id'] ?? 0);
@@ -1250,6 +1304,9 @@ class IngestUrlJob implements ShouldQueue
                 $total
             ));
         }
+
+        // The whole file is on disk now; the manifest has done its job.
+        $resume->forget();
     }
 
     /**
@@ -1538,6 +1595,10 @@ class IngestUrlJob implements ShouldQueue
                 }
             }
         }
+
+        // A sequential stream always starts at byte zero, so a manifest left by
+        // a segmented attempt no longer describes this file.
+        ChunkResumeState::forPart($part)->forget();
 
         $out = @fopen($part, 'wb');
 
