@@ -425,5 +425,9 @@
     "relayIngestAttempts": "Attempts",
     "relayIngestErrors": "Errors",
     "relayRuntimeRetrying": "Waiting to retry",
-    "relayRuntimeFailed": "Failed"
+    "relayRuntimeFailed": "Failed",
+    "relaySelectAll": "Select all",
+    "relayRequeueSelected": "Requeue selected",
+    "relayRequeueSelectedHint": "Only failed rows can be selected; rows already waiting in the queue are skipped.",
+    "relayRequeueSelectedConfirm": "Put the selected sources back on the download/upload queue?"
 }

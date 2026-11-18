@@ -140,11 +140,22 @@
                         <div class="alert alert-danger py-2">{{ session('error') }}</div>
                     @endif
 
+                    <form method="POST" action="{{ route('requeueRelaySources') }}" id="relayRequeueBulkForm"
+                          class="d-flex flex-wrap align-items-center gap-2 mb-3"
+                          data-confirm="{{ __('relayRequeueSelectedConfirm') }}">
+                        @csrf
+                        <button type="submit" id="relayRequeueSelected" class="btn btn-sm btn-primary text-light" disabled>
+                            {{ __('relayRequeueSelected') }} <span id="relayRequeueCount"></span>
+                        </button>
+                        <span class="text-muted small">{{ __('relayRequeueSelectedHint') }}</span>
+                    </form>
+
                     @if($failedSources->count())
                         <div class="table-responsive">
                             <table class="table table-sm table-striped align-middle mb-0">
                                 <thead>
                                     <tr>
+                                        <th width="36px"><input type="checkbox" id="relaySelectAllFailed" title="{{ __('relaySelectAll') }}"></th>
                                         <th width="60px">ID</th>
                                         <th width="70px">{{ __('relaySourceType') }}</th>
                                         <th width="75px">{{ __('quality') }}</th>
@@ -162,6 +173,14 @@
                                     @foreach($failedSources as $source)
                                         @php $retryAt = $source->ingest_next_retry_at ?: $source->upload_next_retry_at; @endphp
                                         <tr>
+                                            <td>
+                                                @if($source->ingest_status === 'failed')
+                                                    <input type="checkbox" class="failed-source-check" form="relayRequeueBulkForm"
+                                                           name="sources[]" value="{{ $source->source_type }}:{{ $source->id }}">
+                                                @else
+                                                    <input type="checkbox" disabled title="{{ __('relayRetryQueued') }}">
+                                                @endif
+                                            </td>
                                             <td>{{ $source->id }}</td>
                                             <td><span class="badge bg-secondary">{{ $source->source_type }}</span></td>
                                             <td>{{ $source->quality ?: '—' }}</td>

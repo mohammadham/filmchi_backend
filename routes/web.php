@@ -217,6 +217,7 @@ Route::post('addToTopContent', [ContentController::class, 'addToTopContent'])->m
 // Media Relay (Telegram Drive primary storage + 9drive cache)
 Route::get('mediaRelay', [MediaRelayController::class, 'mediaRelay'])->middleware(['checkLogin'])->name('mediaRelay');
 Route::post('requeueRelaySource', [AutomationController::class, 'requeueSource'])->middleware(['checkLogin'])->name('requeueRelaySource');
+Route::post('requeueRelaySources', [AutomationController::class, 'requeueSources'])->middleware(['checkLogin'])->name('requeueRelaySources');
 Route::post('relayFileList', [MediaRelayController::class, 'relayFileList'])->middleware(['checkLogin'])->name('relayFileList');
 Route::post('uploadRelayFile', [MediaRelayController::class, 'uploadRelayFile'])->middleware(['checkLogin'])->name('uploadRelayFile');
 Route::post('relayFileFromUrl', [MediaRelayController::class, 'relayFileFromUrl'])->middleware(['checkLogin'])->name('relayFileFromUrl');

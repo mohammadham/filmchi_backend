@@ -425,5 +425,9 @@
     "relayIngestAttempts": "تلاش",
     "relayIngestErrors": "خطا",
     "relayRuntimeRetrying": "در انتظار تلاش",
-    "relayRuntimeFailed": "ناموفق"
+    "relayRuntimeFailed": "ناموفق",
+    "relaySelectAll": "انتخاب همه",
+    "relayRequeueSelected": "افزودن موارد انتخاب‌شده به صف",
+    "relayRequeueSelectedHint": "فقط ردیف‌های ناموفق قابل انتخاب هستند؛ ردیف‌های در انتظار تلاش دوباره صف نمی‌شوند.",
+    "relayRequeueSelectedConfirm": "موارد انتخاب‌شده دوباره به صف دانلود و آپلود اضافه شوند؟"
 }

@@ -567,4 +567,37 @@ $(document).ready(function () {
             });
         });
     });
+    /* --------------------------------------- failed sources bulk requeue */
+
+    function updateFailedSourceSelection() {
+        var boxes = $("input.failed-source-check");
+        var checked = boxes.filter(":checked").length;
+
+        $("#relayRequeueCount").text(checked > 0 ? "(" + checked + ")" : "");
+        $("#relayRequeueSelected").prop("disabled", checked === 0);
+        $("#relaySelectAllFailed").prop("checked", boxes.length > 0 && checked === boxes.length);
+    }
+
+    $("#relaySelectAllFailed").on("change", function () {
+        $("input.failed-source-check").prop("checked", $(this).prop("checked"));
+        updateFailedSourceSelection();
+    });
+
+    $(document).on("change", "input.failed-source-check", updateFailedSourceSelection);
+
+    $("#relayRequeueBulkForm").on("submit", function (e) {
+        if ($("input.failed-source-check:checked").length === 0) {
+            e.preventDefault();
+            return;
+        }
+
+        var confirmText = $(this).data("confirm") || "Requeue the selected sources?";
+
+        if (!window.confirm(confirmText)) {
+            e.preventDefault();
+        }
+    });
+
+    updateFailedSourceSelection();
+
 });

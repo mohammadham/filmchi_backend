@@ -349,27 +349,86 @@ class AutomationController extends Controller
             'source_type' => 'nullable|in:episode,content',
         ]);
 
-        $sourceType = (string) ($validated['source_type'] ?? 'episode');
+        $result = $this->queueSourceAgain(
+            (string) ($validated['source_type'] ?? 'episode'),
+            (int) $validated['source_id']
+        );
+
+        return back()->with($result['ok'] ? 'success' : 'error', $result['message']);
+    }
+
+    /**
+     * Put a batch of failed rows back on the queue.
+     *
+     * The Media Relay table posts "type:id" pairs, so one request can carry
+     * both content and episode rows. A row that is no longer failed (already
+     * queued, downloading, blocked) is reported instead of queued twice.
+     */
+    public function requeueSources(Request $request)
+    {
+        $validated = $request->validate([
+            'sources' => 'required|array|max:200',
+            'sources.*' => ['string', 'regex:/^(episode|content):[0-9]+$/'],
+        ]);
+
+        $done = 0;
+        $skipped = [];
+
+        foreach (array_unique($validated['sources']) as $pair) {
+            list($sourceType, $sourceId) = explode(':', $pair, 2);
+            $result = $this->queueSourceAgain($sourceType, (int) $sourceId);
+
+            if ($result['ok']) {
+                $done++;
+            } else {
+                $skipped[] = $pair . ': ' . $result['message'];
+            }
+        }
+
+        if ($done === 0) {
+            return back()->with(
+                'error',
+                'هیچ منبعی دوباره صف نشد. ' . implode(' | ', array_slice($skipped, 0, 5))
+            );
+        }
+
+        $message = $done . ' منبع دوباره به صف دانلود/آپلود اضافه شد.';
+
+        if (!empty($skipped)) {
+            $message .= ' ' . count($skipped) . ' مورد رد شد: '
+                . implode(' | ', array_slice($skipped, 0, 5));
+        }
+
+        return back()->with('success', $message);
+    }
+
+    /**
+     * Validate one source row and dispatch its ingest job from the beginning.
+     *
+     * @return array{ok:bool,message:string}
+     */
+    protected function queueSourceAgain(string $sourceType, int $sourceId): array
+    {
         $source = $sourceType === 'content'
-            ? ContentSource::find((int) $validated['source_id'])
-            : EpisodeSource::find((int) $validated['source_id']);
+            ? ContentSource::find($sourceId)
+            : EpisodeSource::find($sourceId);
 
         if (!$source) {
-            return back()->with('error', 'منبع پیدا نشد.');
+            return ['ok' => false, 'message' => 'منبع پیدا نشد.'];
         }
 
         if (!in_array((string) $source->ingest_status, ['failed', ''], true)) {
-            return back()->with('error', 'این منبع در وضعیت فعال است و دوباره صف نمی‌شود.');
+            return ['ok' => false, 'message' => 'این منبع در وضعیت فعال است و دوباره صف نمی‌شود.'];
         }
 
         if ($sourceType === 'episode'
             && Schema::hasColumn('episode_sources', 'is_blocked')
             && (bool) $source->is_blocked) {
-            return back()->with('error', 'این منبع بلاک شده و دوباره صف نمی‌شود.');
+            return ['ok' => false, 'message' => 'این منبع بلاک شده و دوباره صف نمی‌شود.'];
         }
 
         if (!str_starts_with((string) $source->source, 'http')) {
-            return back()->with('error', 'این منبع دیگر یک لینک HTTP معتبر نیست.');
+            return ['ok' => false, 'message' => 'این منبع دیگر یک لینک HTTP معتبر نیست.'];
         }
 
         if ($sourceType === 'episode') {
@@ -377,7 +436,7 @@ class AutomationController extends Controller
             $content = $episode ? $this->contentOf($episode) : null;
 
             if (!$episode || !$content) {
-                return back()->with('error', 'قسمت یا عنوان مربوط به این منبع پیدا نشد.');
+                return ['ok' => false, 'message' => 'قسمت یا عنوان مربوط به این منبع پیدا نشد.'];
             }
 
             $name = $this->nameFor($content, $episode, (string) $source->source);
@@ -407,7 +466,7 @@ class AutomationController extends Controller
             $name
         );
 
-        return back()->with('success', 'منبع دوباره به صف اضافه شد.');
+        return ['ok' => true, 'message' => 'منبع دوباره به صف اضافه شد.'];
     }
 
     /**
