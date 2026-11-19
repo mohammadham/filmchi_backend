@@ -94,6 +94,16 @@ jobs:
             cd /opt/flixy
             cp flixy.Dockerfile Dockerfile
             cp flixy-compose.yml docker-compose.yml
+            # A full disk makes apt report "invalid signature" for every
+            # package, which looks like a broken key but is really ENOSPC.
+            # Drop superseded layers first, then refuse to build without room.
+            docker builder prune -f >/dev/null 2>&1 || true
+            AVAIL_MB=$(df -Pm / | awk 'NR==2 {print $4}')
+            echo "Free space on /: ${AVAIL_MB}MB"
+            if [ "$AVAIL_MB" -lt 3000 ]; then
+              echo "Not enough free space to build (need 3000MB)." >&2
+              exit 1
+            fi
             docker compose build
             docker compose up -d
             sleep 3
