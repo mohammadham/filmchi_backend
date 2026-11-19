@@ -11,8 +11,21 @@ use Illuminate\Support\Facades\Schema;
  *
  * Every download writes a .part file, and an upload keeps that same file on
  * disk until Telegram Drive has stored it. The budget therefore covers both
- * phases: new downloads may only start while their expected bytes fit inside
- * the configured percentage of the disk that is free right now.
+ * phases: a new download may only start while the bytes it is actually going
+ * to write still fit inside the configured percentage of the disk that is
+ * free right now, minus the bytes already held by files that are downloading
+ * or waiting to upload.
+ *
+ * Two rules keep this honest:
+ *
+ *  - Sizes are read from the allocated 512-byte blocks, never from the file
+ *    length. An ingest target is pre-sized with ftruncate() to the whole remote
+ *    file, so a source that has downloaded 300 MB of a 107 GB episode has an
+ *    apparent size of 107 GB and an allocated size of 300 MB. Counting lengths
+ *    both overstates usage and hides a genuinely full disk.
+ *  - The decision is per file, from that file's own Content-Length. A median
+ *    file size cannot answer "does this one fit": a single 2 GB episode does
+ *    not fit in 900 MB that are actually left, however small the median is.
  */
 class DiskBudget
 {
@@ -45,17 +58,40 @@ class DiskBudget
         return max(0, (int) $total);
     }
 
+    /**
+     * Bytes a file really occupies on disk.
+     *
+     * stat() reports allocated blocks in 512-byte units, which is what the
+     * filesystem has actually handed out: a sparse ftruncate()'d file that has
+     * no data in it counts as zero even though its length is gigabytes. Zero
+     * blocks is therefore a real answer and must not be turned back into the
+     * length; only a platform that cannot report blocks at all (-1, as on
+     * Windows) falls back to the length.
+     */
+    public static function fileBytes(string $path): int
+    {
+        $stat = @stat($path);
+
+        if (!is_array($stat)) {
+            return 0;
+        }
+
+        $blocks = (int) ($stat['blocks'] ?? -1);
+
+        if ($blocks >= 0) {
+            return $blocks * 512;
+        }
+
+        return max(0, (int) ($stat['size'] ?? 0));
+    }
+
     /** Bytes currently held by downloaded or pending-upload .part files. */
     public static function ingestBytes(): int
     {
         $bytes = 0;
 
         foreach (glob(storage_path('app/ingest/*.part')) ?: [] as $file) {
-            $size = @filesize($file);
-
-            if ($size !== false) {
-                $bytes += (int) $size;
-            }
+            $bytes += self::fileBytes($file);
         }
 
         return $bytes;
@@ -74,9 +110,23 @@ class DiskBudget
     }
 
     /**
-     * Typical size of a file in this relay, used to turn a byte budget into a
-     * slot count. Median is deliberate: one huge file must not make every
-     * other file wait.
+     * What is left of that budget once the files already on disk are counted.
+     *
+     * Those bytes are in flight: they are downloaded and not yet uploaded, so
+     * they cannot be spent on another download.
+     */
+    public static function remainingBytes(): int
+    {
+        return max(0, self::budgetBytes() - self::ingestBytes());
+    }
+
+    /**
+     * Typical size of a file in this relay.
+     *
+     * Only two narrow uses are left: turning what is left of the budget into a
+     * worker count, and reserving something when a source does not report a
+     * Content-Length at all. Admission of a file with a known length never
+     * uses it.
      */
     public static function typicalBytes(): int
     {
@@ -130,31 +180,70 @@ class DiskBudget
     }
 
     /**
+     * Does one more file of this size fit in the ingest budget?
+     *
+     * $reserveBytes is the number of bytes the caller is about to write (the
+     * file's Content-Length minus whatever its .part file already holds), and
+     * $inFlight is what the files on disk already occupy. A zero percentage
+     * disables the budget entirely.
+     */
+    public static function canAdmit(int $reserveBytes, ?int $budget = null, ?int $inFlight = null): bool
+    {
+        if (self::percent() <= 0) {
+            return true;
+        }
+
+        return self::fits(
+            $reserveBytes,
+            $budget ?? self::budgetBytes(),
+            $inFlight ?? self::ingestBytes()
+        );
+    }
+
+    /** The admission rule itself, kept pure so it can be asserted directly. */
+    public static function fits(int $reserveBytes, int $budget, int $inFlight): bool
+    {
+        return max(0, $inFlight) + max(0, $reserveBytes) <= max(0, $budget);
+    }
+
+    /**
+     * How many files of the typical size still fit.
+     *
+     * Returning 0 is a real answer: when the files already on disk fill the
+     * budget, no download may start. The old floor of one was exactly what let
+     * the relay keep adding files to a full disk.
+     */
+    public static function slots(int $budget, int $inFlight, int $typical, int $max): int
+    {
+        $max = max(0, $max);
+        $remaining = max(0, $budget) - max(0, $inFlight);
+
+        if ($max === 0 || $remaining <= 0) {
+            return 0;
+        }
+
+        return min($max, intdiv($remaining, max(1, $typical)));
+    }
+
+    /**
      * How many downloads fit in the disk budget right now.
      *
      * A zero percentage keeps the fixed concurrency from the panel; otherwise
-     * the count is derived from free space and the typical file size, capped
-     * by the panel's maximum.
+     * the count is derived from what is left of the budget, capped by the
+     * panel's maximum. Zero means the pool is stopped until uploads drain.
      */
     public static function desiredDownloads(int $max): int
     {
-        $max = max(1, $max);
+        $max = max(0, $max);
 
         if (self::percent() <= 0) {
             return $max;
         }
 
-        $budget = self::budgetBytes();
-        $typical = max(1, self::typicalBytes());
-
-        if ($budget <= 0) {
-            return 1;
-        }
-
-        return max(1, min($max, (int) floor($budget / $typical)));
+        return self::slots(self::budgetBytes(), self::ingestBytes(), self::typicalBytes(), $max);
     }
 
-    /** @return array{free:int,total:int,percent:int,budget:int,ingest:int,typical:int,downloads:int} */
+    /** @return array{free:int,total:int,percent:int,budget:int,ingest:int,remaining:int,typical:int,downloads:int} */
     public static function status(int $max): array
     {
         return [
@@ -163,6 +252,7 @@ class DiskBudget
             'percent' => self::percent(),
             'budget' => self::budgetBytes(),
             'ingest' => self::ingestBytes(),
+            'remaining' => self::remainingBytes(),
             'typical' => self::typicalBytes(),
             'downloads' => self::desiredDownloads($max),
         ];

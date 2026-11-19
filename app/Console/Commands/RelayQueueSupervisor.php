@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Services\Relay\DiskBudget;
+use App\Services\Relay\IngestPartSweeper;
 use App\Services\Relay\RelaySettings;
 use App\Services\Relay\WorkerRegistry;
 use Illuminate\Console\Command;
@@ -39,6 +40,9 @@ class RelayQueueSupervisor extends Command
 
     /** @var int */
     protected $lastRecheckAt = 0;
+
+    /** @var int */
+    protected $lastSweepAt = 0;
 
     public function handle(WorkerRegistry $workers): int
     {
@@ -77,6 +81,8 @@ class RelayQueueSupervisor extends Command
                     // A transient DB/Redis hiccup must not stop the pool.
                 }
             }
+
+            $this->sweepDeferredParts();
 
             $this->heartbeat();
 
@@ -153,6 +159,45 @@ class RelayQueueSupervisor extends Command
         }
     }
 
+    /**
+     * Delete .part files whose retry will never resume them.
+     *
+     * A retried source keeps its partial file; when the retry is lost the file
+     * stays on the same disk as MySQL and Redis until someone removes it. The
+     * sweeper is deliberately conservative (see IngestPartSweeper) and runs
+     * once at supervisor start, then on its configured interval.
+     */
+    protected function sweepDeferredParts(): void
+    {
+        $interval = (int) config('media_relay.ingest.stale_sweep_seconds', 900);
+
+        if ($interval <= 0) {
+            return;
+        }
+
+        if ($this->lastSweepAt > 0 && time() - $this->lastSweepAt < $interval) {
+            return;
+        }
+
+        $this->lastSweepAt = time();
+
+        try {
+            $result = (new IngestPartSweeper())->sweep();
+
+            if ($result['deleted'] > 0 || $result['sidecars'] > 0) {
+                $this->info(sprintf(
+                    'swept %d stale ingest part(s), %d MB, %d orphan chunk manifest(s)',
+                    $result['deleted'],
+                    (int) round($result['bytes'] / 1048576),
+                    $result['sidecars']
+                ));
+            }
+        } catch (Throwable $e) {
+            // A transient DB hiccup must not stop the pool; retry next tick.
+            $this->lastSweepAt = 0;
+        }
+    }
+
     protected function desiredRoleConcurrency(string $role): int
     {
         try {
@@ -171,6 +216,8 @@ class RelayQueueSupervisor extends Command
 
         $max = max(1, min(4, (int) config('media_relay.ingest.concurrency', 1)));
 
+        // May be zero: a full ingest budget stops the download pool instead of
+        // keeping one worker feeding more files onto the disk.
         return DiskBudget::desiredDownloads($max);
     }
 

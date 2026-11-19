@@ -10,6 +10,7 @@ use App\Season;
 use App\Services\Relay\ChunkResumeState;
 use App\Services\Relay\ChunkRouter;
 use App\Services\Relay\DiskBudget;
+use App\Services\Relay\DiskBudgetExceeded;
 use App\Services\Relay\RelaySettings;
 use App\Services\Relay\SpeedDropDetector;
 use App\Services\Relay\UploadMetrics;
@@ -142,6 +143,27 @@ class IngestUrlJob implements ShouldQueue
             )->onQueue((string) config('media_relay.upload.queue', 'uploads'));
 
             $handedOff = true;
+        } catch (DiskBudgetExceeded $e) {
+            // Nothing was fetched: the files already on disk have not been
+            // uploaded yet. That is not a source failure, so no attempt is
+            // spent and the partial file stays for the next run. A release()
+            // would burn one of this job's tries on a disk condition that can
+            // outlast them, so a fresh attempt is queued after the delay.
+            $delay = max(30, $this->configuredRetryDelay());
+
+            $source->ingest_attempts = max(0, (int) $source->ingest_attempts - 1);
+            $source->ingest_error = Str::limit($e->getMessage(), 500);
+            $source->ingest_connections = 0;
+            $source->ingest_speed_bps = 0;
+            $source->upload_status = null;
+            $source->ingest_status = 'retrying';
+            $source->ingest_next_retry_at = now()->addSeconds($delay);
+            $source->save();
+
+            static::dispatch($this->sourceType, (int) $this->sourceId, $this->url, $this->name)
+                ->delay(now()->addSeconds($delay));
+
+            return;
         } catch (Throwable $e) {
             Log::warning('URL ingest failed', [
                 'source_type' => $this->sourceType,
@@ -310,6 +332,11 @@ class IngestUrlJob implements ShouldQueue
                 ));
         }
 
+        // Admission comes before the first byte is written: this file's own
+        // Content-Length is what will land on the disk, and the files already
+        // there are already claimed.
+        $this->assertDiskBudget($probe['size'], $part);
+
         // A range-capable source must not fall back to one connection after a
         // segmented failure. The origin throttles a single stream to roughly
         // 10-20 KB/s, so a 400 MB file would hold a queue slot for 6+ hours and
@@ -369,6 +396,40 @@ class IngestUrlJob implements ShouldQueue
 
             throw $e;
         }
+    }
+
+    /**
+     * Admission for one file.
+     *
+     * The reservation is this file's own Content-Length minus the bytes its
+     * .part file already holds (a retry only needs the missing tail), measured
+     * against what is left of the ingest budget after the files currently on
+     * disk. A median file size cannot answer this: one 2 GB episode does not
+     * fit in the 900 MB that are actually left.
+     */
+    protected function assertDiskBudget(int $contentLength, string $part): void
+    {
+        $reserve = $contentLength > 0
+            ? max(0, $contentLength - DiskBudget::fileBytes($part))
+            : DiskBudget::typicalBytes();
+
+        if ($this->diskBudgetAllows($reserve)) {
+            return;
+        }
+
+        throw new DiskBudgetExceeded(sprintf(
+            'disk budget exhausted: %d MB needed, %d MB left for ingest (%d MB on disk of a %d MB budget)',
+            (int) round($reserve / 1048576),
+            (int) round(DiskBudget::remainingBytes() / 1048576),
+            (int) round(DiskBudget::ingestBytes() / 1048576),
+            (int) round(DiskBudget::budgetBytes() / 1048576)
+        ));
+    }
+
+    /** Kept separate so admission can be asserted without filling a disk. */
+    protected function diskBudgetAllows(int $reserveBytes): bool
+    {
+        return DiskBudget::canAdmit($reserveBytes);
     }
 
     /**

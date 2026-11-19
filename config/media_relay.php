@@ -54,9 +54,18 @@ return [
         // count is roughly connections × concurrency.
         'concurrency' => (int) env('RELAY_INGEST_CONCURRENCY', 1),
         // Use this percentage of the currently free disk as the budget for
-        // files being downloaded or waiting to upload. 0 disables the disk
-        // budget and keeps the fixed concurrency above.
+        // files being downloaded or waiting to upload. A file is admitted only
+        // when its own Content-Length (minus what its .part file already
+        // holds) still fits after the bytes already on disk are counted. 0
+        // disables the disk budget and keeps the fixed concurrency above.
         'disk_percent' => (int) env('RELAY_INGEST_DISK_PERCENT', 50),
+        // A retried download keeps its .part file so the next attempt can
+        // resume it. When that retry never comes back the file is dead weight,
+        // so a sweeper removes it once neither the source nor the file has
+        // moved for this many hours.
+        'stale_part_hours' => (int) env('RELAY_INGEST_STALE_PART_HOURS', 12),
+        // How often the queue supervisor runs that sweeper. 0 disables it.
+        'stale_sweep_seconds' => (int) env('RELAY_INGEST_STALE_SWEEP_SECONDS', 900),
         // Fixed range size for the dynamic chunk queue. Small chunks let a
         // retry repeat only a few MB instead of a hundred-plus MB slice.
         'chunk_mb' => (int) env('RELAY_INGEST_CHUNK_MB', 8),
