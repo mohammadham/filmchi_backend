@@ -197,6 +197,146 @@ class TelegramDriveClient
         return $this->decode($response, 'file info');
     }
 
+    /* -------------------------------------------------- zero-byte adopt (bot) */
+
+    /**
+     * Path B: register a message that already sits in the storage channel.
+     *
+     * The bot copied the user's document there with Telegram's copyMessage, so
+     * no byte ever reaches this server. The service reads size/name back from
+     * the stored document and returns the ready file record.
+     *
+     * $meta accepts name, size, mime, folder_path, storage_chat and uploader.
+     * storage_chat is only a wish: the service rejects it with 409 when the API
+     * key is pinned to another channel (the destination is never taken from us).
+     */
+    public function adopt(int $messageId, array $meta = []): array
+    {
+        if ($messageId <= 0) {
+            throw new RuntimeException('adopt needs the message_id of the stored copy.');
+        }
+
+        $payload = ['message_id' => $messageId];
+
+        foreach (['name', 'size', 'mime', 'folder_path', 'storage_chat', 'uploader'] as $field) {
+            if (isset($meta[$field]) && $meta[$field] !== '' && $meta[$field] !== null) {
+                $payload[$field] = $meta[$field];
+            }
+        }
+
+        $response = $this->request('POST', 'api/v1/files/adopt', ['json' => $payload]);
+        $result = $this->decode($response, 'adopt');
+
+        $fileId = (string) ($result['file_id'] ?? '');
+
+        if ($fileId === '') {
+            throw new RuntimeException('Telegram Drive did not return a file id for the adopted message.');
+        }
+
+        $result['file_id'] = $fileId;
+        $result['deduplicated'] = (bool) ($result['deduplicated'] ?? false);
+        $result['verified'] = (bool) ($result['verified'] ?? true);
+
+        if (($result['status'] ?? '') !== 'ready') {
+            // The adopt path writes a ready row; anything else is worth waiting on.
+            $result = $this->waitForReady($fileId) + $result;
+        }
+
+        return $result;
+    }
+
+    /**
+     * An id in the shape Telegram Drive uses, so a manifest can name its row.
+     */
+    public function newFileId(): string
+    {
+        return 'f_' . bin2hex(random_bytes(12));
+    }
+
+    /**
+     * Path B″ (fallback): the channel-backup JSON that /channels/{id}/restore
+     * merges. Each entry is one message already stored in the channel, so the
+     * manifest carries pointers only — a few KB, never the file itself.
+     */
+    public function channelManifest(array $files, string $chat, array $extra = []): array
+    {
+        $rows = [];
+        $bytes = 0;
+
+        foreach ($files as $file) {
+            $messageId = (int) ($file['message_id'] ?? 0);
+
+            if ($messageId <= 0) {
+                throw new RuntimeException('Every manifest entry needs a positive message_id.');
+            }
+
+            $size = (int) ($file['size'] ?? 0);
+            $bytes += $size;
+
+            $rows[] = [
+                'id' => (string) ($file['id'] ?? $this->newFileId()),
+                'name' => (string) ($file['name'] ?? ($messageId . '.bin')),
+                'size' => $size,
+                'mime' => (string) ($file['mime'] ?? 'application/octet-stream'),
+                'sha256' => (string) ($file['sha256'] ?? ''),
+                'uploader' => (string) ($file['uploader'] ?? 'bot:flixy'),
+                'source' => (string) ($file['source'] ?? 'bot'),
+                'status' => 'ready',
+                'parts' => 1,
+                'storage_chat' => (string) ($file['storage_chat'] ?? $chat),
+                'message_ids' => [$messageId],
+                'file_parts' => [[
+                    'idx' => 0,
+                    'message_id' => $messageId,
+                    'size' => $size,
+                ]],
+            ];
+        }
+
+        return [
+            'app' => 'TelegramDrive',
+            'kind' => 'channel-backup',
+            'version' => 1,
+            'channel' => [
+                'chat' => $chat,
+                'label' => (string) ($extra['label'] ?? ''),
+                'kind' => (string) ($extra['kind'] ?? 'storage'),
+            ],
+            'ts' => time(),
+            'counts' => ['files' => count($rows), 'bytes' => $bytes],
+            'files' => $rows,
+        ];
+    }
+
+    /**
+     * Path B″ step 2: ask the service to merge a manifest the bot already sent
+     * into the channel (sendDocument → message id).
+     *
+     * The endpoint is panel-authenticated (admin JWT), not API-key, so this
+     * forces a login even when a static key is configured. Rows that already
+     * exist are skipped, so a retry is harmless.
+     */
+    public function restoreFromManifest(int $channelId, int $manifestMessageId): array
+    {
+        if ($channelId <= 0 || $manifestMessageId <= 0) {
+            throw new RuntimeException('restore needs the channel id and the manifest message id.');
+        }
+
+        $jwt = $this->login();
+
+        $response = $this->request(
+            'POST',
+            'api/v1/channels/' . rawurlencode((string) $channelId) . '/restore',
+            [
+                'headers' => ['Authorization' => 'Bearer ' . $jwt, 'Accept' => 'application/json'],
+                'query' => ['message_id' => $manifestMessageId],
+            ],
+            false
+        );
+
+        return $this->decode($response, 'channel restore');
+    }
+
     /**
      * Upload a local file (an upload buffer, not a persistent copy) and return
      * the created record. Nothing is written to this server's storage.
