@@ -27,6 +27,12 @@ class SourceQuarantine
         return strtolower((string) ($source->link_status ?? '')) === 'dead';
     }
 
+    /** The panel-ready reason for a quarantined row, or null for a live one. */
+    public function reasonFor($source): ?string
+    {
+        return $this->isQuarantined($source) ? $this->message($source) : null;
+    }
+
     /**
      * Record one attempt that moved zero bytes.
      *

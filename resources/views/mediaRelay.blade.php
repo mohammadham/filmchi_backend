@@ -151,14 +151,12 @@
                                 class="btn btn-sm btn-outline-info" disabled>
                             تست لینک انتخاب‌شده‌ها <span id="relayProbeCount"></span>
                         </button>
-                        <button type="submit" id="relayProbeAll" formaction="{{ route('probeRelaySources') }}"
-                                class="btn btn-sm btn-outline-secondary">
-                            تست لینک همهٔ موارد این لیست
-                        </button>
                         <span class="text-muted small">{{ __('relayRequeueSelectedHint') }}</span>
                     </form>
 
                     @if($failedSources->count())
+                        @include('partials.probeAllSourcesForm', ['failedSources' => $failedSources])
+
                         <div class="table-responsive">
                             <table class="table table-sm table-striped align-middle mb-0">
                                 <thead>
@@ -241,17 +239,10 @@
                                                 </form>
                                             </td>
                                         </tr>
-                                        @php
-                                            $attempts = $attemptHistory[$source->source_type . ':' . $source->id] ?? [];
-                                        @endphp
-                                        @if($attempts)
-                                            <tr>
-                                                <td></td>
-                                                <td colspan="12" class="pt-0 pb-2">
-                                                    @include('partials.ingestAttemptHistory', ['attempts' => $attempts])
-                                                </td>
-                                            </tr>
-                                        @endif
+                                        @include('partials.sourceFailureDetails', [
+                                            'attempts' => $attemptHistory[$source->source_type . ':' . $source->id] ?? [],
+                                            'source' => $source,
+                                        ])
                                     @endforeach
                                 </tbody>
                             </table>

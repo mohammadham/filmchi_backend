@@ -6,6 +6,7 @@ use App\ContentSource;
 use App\EpisodeSource;
 use App\IngestAttempt;
 use App\Jobs\IngestRelayUrlJob;
+use App\Jobs\ProbeSourceLinkJob;
 use App\MediaGallery;
 use App\RelayEvent;
 use App\RelayFile;
@@ -13,6 +14,8 @@ use App\RelayLink;
 use App\Services\Relay\CachePromoter;
 use App\Services\Relay\DemandTracker;
 use App\Services\Relay\RelayManager;
+use App\Services\Relay\SourceQuarantine;
+use App\Services\Relay\SourceRequeuer;
 use App\Services\Relay\Thumbnail;
 use App\Services\Relay\UploadMetrics;
 use Illuminate\Http\Request;
@@ -28,6 +31,9 @@ use Throwable;
  */
 class MediaRelayController extends Controller
 {
+    /** The "type:id" rows the failed-source table posts for bulk actions. */
+    protected const SOURCE_PAIR_REGEX = '/^(episode|content):[0-9]+$/';
+
     /** @var RelayManager */
     protected $relay;
 
@@ -42,6 +48,124 @@ class MediaRelayController extends Controller
         $this->relay = $relay;
         $this->promoter = $promoter;
         $this->demand = $demand;
+    }
+
+    /**
+     * Put one failed or retry-exhausted source back on the queue.
+     *
+     * Both download and upload failures are accepted: the source is queued
+     * from the beginning again, and the failure counters stay as history.
+     */
+    public function requeueSource(Request $request)
+    {
+        [$sourceType, $sourceId] = $this->sourceKey($request);
+
+        $result = app(SourceRequeuer::class)->requeue($sourceType, $sourceId);
+
+        return back()->with($result['ok'] ? 'success' : 'error', $result['message']);
+    }
+
+    /**
+     * Put a batch of failed rows back on the queue.
+     *
+     * A row that is no longer failed (already queued, downloading, blocked)
+     * is reported instead of queued twice.
+     */
+    public function requeueSources(Request $request)
+    {
+        $done = 0;
+        $skipped = [];
+
+        foreach ($this->sourcePairs($request) as [$sourceType, $sourceId]) {
+            $result = app(SourceRequeuer::class)->requeue($sourceType, $sourceId);
+
+            if ($result['ok']) {
+                $done++;
+            } else {
+                $skipped[] = $sourceType . ':' . $sourceId . ': ' . $result['message'];
+            }
+        }
+
+        if ($done === 0) {
+            return back()->with(
+                'error',
+                'هیچ منبعی دوباره صف نشد. ' . implode(' | ', array_slice($skipped, 0, 5))
+            );
+        }
+
+        $message = $done . ' منبع دوباره به صف دانلود/آپلود اضافه شد.';
+
+        if (!empty($skipped)) {
+            $message .= ' ' . count($skipped) . ' مورد رد شد: '
+                . implode(' | ', array_slice($skipped, 0, 5));
+        }
+
+        return back()->with('success', $message);
+    }
+
+    /**
+     * Probe the link of one row, whatever its current status.
+     *
+     * Probing is what revives a quarantined (dead) row: the probe writes the
+     * real answer back to link_status, so the requeue buttons accept the row
+     * again once the origin answers.
+     */
+    public function probeSource(Request $request)
+    {
+        ProbeSourceLinkJob::dispatch(...$this->sourceKey($request));
+
+        return back()->with('success', 'بررسی لینک در صف قرار گرفت؛ نتیجه بعد از پایان probe در ستون «لینک» دیده می‌شود.');
+    }
+
+    /**
+     * Probe a batch of rows ("type:id" pairs) from the failed-source table.
+     */
+    public function probeSources(Request $request)
+    {
+        $pairs = $this->sourcePairs($request);
+
+        foreach ($pairs as [$sourceType, $sourceId]) {
+            ProbeSourceLinkJob::dispatch($sourceType, $sourceId);
+        }
+
+        return back()->with('success', count($pairs) . ' لینک برای بررسی در صف قرار گرفت.');
+    }
+
+    /**
+     * The single "type:id" pair a row button posts.
+     *
+     * @return array{0:string,1:int}
+     */
+    protected function sourceKey(Request $request): array
+    {
+        $validated = $request->validate([
+            'source_id' => 'required|integer|min:1',
+            'source_type' => 'nullable|in:episode,content',
+        ]);
+
+        return [(string) ($validated['source_type'] ?? 'episode'), (int) $validated['source_id']];
+    }
+
+    /**
+     * The unique, well-formed pairs a bulk button posts.
+     *
+     * @return array<int,array{0:string,1:int}>
+     */
+    protected function sourcePairs(Request $request): array
+    {
+        $validated = $request->validate([
+            'sources' => 'required|array|max:200',
+            'sources.*' => ['string', 'regex:' . self::SOURCE_PAIR_REGEX],
+        ]);
+
+        $pairs = [];
+
+        foreach (array_unique($validated['sources']) as $pair) {
+            [$sourceType, $sourceId] = explode(':', (string) $pair, 2);
+            $pairs[] = [$sourceType, (int) $sourceId];
+        }
+
+        return $pairs;
     }
 
     public function mediaRelay()
@@ -88,6 +212,8 @@ class MediaRelayController extends Controller
         $rows = collect();
         $total = 0;
 
+        $quarantine = app(SourceQuarantine::class);
+
         foreach (['episode' => EpisodeSource::class, 'content' => ContentSource::class] as $type => $class) {
             $table = $type === 'content' ? 'content_sources' : 'episode_sources';
 
@@ -112,6 +238,7 @@ class MediaRelayController extends Controller
 
             foreach ($part as $row) {
                 $row->source_type = $type;
+                $row->quarantine_reason = $quarantine->reasonFor($row);
             }
 
             $rows = $rows->merge($part);

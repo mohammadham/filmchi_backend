@@ -65,6 +65,66 @@ class SourceQuarantineTest extends TestCase
         parent::tearDown();
     }
 
+    public function test_only_a_dead_row_has_a_panel_reason(): void
+    {
+        $quarantine = app(\App\Services\Relay\SourceQuarantine::class);
+
+        $dead = (object) ['link_status' => 'dead', 'ingest_zero_attempts' => 3, 'ingest_zero_workers' => [11, 12]];
+        $live = (object) ['link_status' => 'alive', 'ingest_zero_attempts' => 0, 'ingest_zero_workers' => []];
+
+        $reason = $quarantine->reasonFor($dead);
+
+        $this->assertNotNull($reason);
+        $this->assertStringContainsString('3 تلاش', $reason);
+        $this->assertStringContainsString('2 ورکر', $reason);
+        $this->assertNull($quarantine->reasonFor($live), 'a live link must not look quarantined');
+    }
+
+    public function test_a_dead_row_reaches_the_panel_with_its_quarantine_reason(): void
+    {
+        $source = new EpisodeSource();
+        $source->forceFill([
+            'episode_id' => 1,
+            'source' => 'http://cdn.test/dead-reason.mp4',
+            'ingest_status' => 'failed',
+            'link_status' => 'dead',
+            'ingest_zero_attempts' => 2,
+            'ingest_zero_workers' => [11],
+        ])->save();
+
+        $controller = app(\App\Http\Controllers\MediaRelayController::class);
+        $method = new \ReflectionMethod($controller, 'failedSources');
+        $method->setAccessible(true);
+
+        [$rows] = $method->invoke($controller);
+        $row = $rows->firstWhere('id', $source->id);
+
+        $this->assertNotNull($row, 'the failed row is listed');
+        $this->assertStringContainsString('قرنطینه شد', (string) $row->quarantine_reason);
+        $this->assertStringContainsString('2 تلاش', (string) $row->quarantine_reason);
+    }
+
+    public function test_the_requeue_rejection_explains_the_quarantine(): void
+    {
+        $source = new EpisodeSource();
+        $source->forceFill([
+            'episode_id' => 1,
+            'source' => 'http://cdn.test/dead-rejection.mp4',
+            'ingest_status' => 'failed',
+            'link_status' => 'dead',
+            'ingest_zero_attempts' => 2,
+            'ingest_zero_workers' => [11, 12],
+        ])->save();
+
+        $rejection = app(SourceRequeuer::class)->rejection('episode', (int) $source->id);
+
+        $this->assertNotNull($rejection);
+        $this->assertStringContainsString('قرنطینه شد', $rejection);
+        $this->assertStringContainsString('2 تلاش', $rejection);
+        $this->assertStringContainsString('2 ورکر', $rejection);
+        $this->assertStringContainsString('probe', $rejection);
+    }
+
     protected function source(string $url): EpisodeSource
     {
         $source = new EpisodeSource();

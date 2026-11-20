@@ -43,8 +43,12 @@ class SourceRequeuer
             return 'این منبع در وضعیت فعال است و دوباره صف نمی‌شود.';
         }
 
-        if ((string) ($source->link_status ?? '') === 'dead') {
-            return 'این منبع در قرنطینه است (لینک مرده)؛ تا probe موفق بعدی دوباره صف نمی‌شود.';
+        $quarantine = app(SourceQuarantine::class);
+
+        // The panel flash is the only explanation a user gets, so it carries
+        // the same verdict the row shows instead of a generic "dead link".
+        if ($quarantine->isQuarantined($source)) {
+            return $quarantine->message($source);
         }
 
         if ($sourceType === 'episode'

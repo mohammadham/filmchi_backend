@@ -587,11 +587,6 @@ $(document).ready(function () {
 
     $(document).on("change", "input.failed-source-check", updateFailedSourceSelection);
 
-    $("#relayProbeAll").on("click", function () {
-        $("input.failed-source-check:not(:disabled)").prop("checked", true);
-        updateFailedSourceSelection();
-    });
-
     $("#relayRequeueBulkForm").on("submit", function (e) {
         if ($("input.failed-source-check:checked").length === 0) {
             e.preventDefault();
