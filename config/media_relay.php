@@ -411,4 +411,30 @@ return [
         'name'       => env('RELAY_QUEUE_NAME', 'default'),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Telegram bot (Flixy)
+    |--------------------------------------------------------------------------
+    |
+    | Everything is off by default: with enabled=false the webhook route answers
+    | 404 and no token is used, so an install that never configures the bot
+    | behaves exactly like one without the feature.
+    |
+    */
+    'bot' => [
+        'enabled'        => (bool) env('RELAY_BOT_ENABLED', false),
+        'token'          => (string) env('RELAY_BOT_TOKEN', ''),
+        // Telegram's X-Telegram-Bot-Api-Secret-Token value; also the URL path.
+        'webhook_secret' => (string) env('RELAY_BOT_WEBHOOK_SECRET', ''),
+        // Numeric Telegram user ids, comma/space separated (usernames can change).
+        'allowed_ids'    => (string) env('RELAY_BOT_ALLOWED_IDS', ''),
+        // Destination channel the bot copies documents into (zero bytes).
+        'storage_chat'   => (string) env('RELAY_BOT_STORAGE_CHAT', ''),
+        // Telegram Drive channel-registry id used by the manifest fallback.
+        'channel_id'     => (int) env('RELAY_BOT_CHANNEL_ID', 0),
+        'quality'        => (string) env('RELAY_BOT_QUALITY', '1080'),
+        // Files one allowed user may submit per day (0 = unlimited).
+        'daily_limit'    => (int) env('RELAY_BOT_DAILY_LIMIT', 20),
+    ],
+
 ];

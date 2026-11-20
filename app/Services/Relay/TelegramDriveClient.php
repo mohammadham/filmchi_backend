@@ -168,12 +168,17 @@ class TelegramDriveClient
                 ? ($data['detail'] ?? $data['message'] ?? $body)
                 : $body;
 
-            throw new RuntimeException(sprintf(
-                'Telegram Drive %s failed (%d): %s',
-                $context,
-                $response->getStatusCode(),
-                is_array($message) ? json_encode($message) : (string) $message
-            ));
+            // The status is all a caller can act on (adopt → manifest
+            // fallback); the message still carries the service's detail text.
+            throw new TelegramDriveRefusal(
+                sprintf(
+                    'Telegram Drive %s failed (%d): %s',
+                    $context,
+                    $response->getStatusCode(),
+                    is_array($message) ? json_encode($message) : (string) $message
+                ),
+                (int) $response->getStatusCode()
+            );
         }
 
         return is_array($data) ? $data : [];
@@ -235,11 +240,10 @@ class TelegramDriveClient
 
         $result['file_id'] = $fileId;
         $result['deduplicated'] = (bool) ($result['deduplicated'] ?? false);
-        $result['verified'] = (bool) ($result['verified'] ?? true);
 
         if (($result['status'] ?? '') !== 'ready') {
-            // The adopt path writes a ready row; anything else is worth waiting on.
-            $result = $this->waitForReady($fileId) + $result;
+            // Adopt writes a ready row; anything else is worth waiting on.
+            return $this->waitForReady($fileId);
         }
 
         return $result;
@@ -258,7 +262,7 @@ class TelegramDriveClient
      * merges. Each entry is one message already stored in the channel, so the
      * manifest carries pointers only — a few KB, never the file itself.
      */
-    public function channelManifest(array $files, string $chat, array $extra = []): array
+    public function channelManifest(array $files, string $chat): array
     {
         $rows = [];
         $bytes = 0;
@@ -278,13 +282,16 @@ class TelegramDriveClient
                 'name' => (string) ($file['name'] ?? ($messageId . '.bin')),
                 'size' => $size,
                 'mime' => (string) ($file['mime'] ?? 'application/octet-stream'),
-                'sha256' => (string) ($file['sha256'] ?? ''),
                 'uploader' => (string) ($file['uploader'] ?? 'bot:flixy'),
                 'source' => (string) ($file['source'] ?? 'bot'),
                 'status' => 'ready',
                 'parts' => 1,
                 'storage_chat' => (string) ($file['storage_chat'] ?? $chat),
                 'message_ids' => [$messageId],
+                // restore_channel writes these straight into the row; without
+                // them a restored file is ready but has no ready_at
+                'created_at' => time(),
+                'ready_at' => time(),
                 'file_parts' => [[
                     'idx' => 0,
                     'message_id' => $messageId,
@@ -293,16 +300,11 @@ class TelegramDriveClient
             ];
         }
 
+        // Only the keys restore_channel actually reads (kind, channel.chat for
+        // logging, and the file rows) — no unused envelope fields.
         return [
-            'app' => 'TelegramDrive',
             'kind' => 'channel-backup',
-            'version' => 1,
-            'channel' => [
-                'chat' => $chat,
-                'label' => (string) ($extra['label'] ?? ''),
-                'kind' => (string) ($extra['kind'] ?? 'storage'),
-            ],
-            'ts' => time(),
+            'channel' => ['chat' => $chat],
             'counts' => ['files' => count($rows), 'bytes' => $bytes],
             'files' => $rows,
         ];

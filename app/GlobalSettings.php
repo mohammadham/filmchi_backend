@@ -59,6 +59,11 @@ class GlobalSettings extends Model
         'relay_tg_api_key' => EncryptedString::class,
         'relay_nine_password' => EncryptedString::class,
         'relay_nine_api_key' => EncryptedString::class,
+        'relay_bot_enabled' => 'boolean',
+        'relay_bot_token' => EncryptedString::class,
+        'relay_bot_webhook_secret' => EncryptedString::class,
+        'relay_bot_channel_id' => 'integer',
+        'relay_bot_daily_limit' => 'integer',
     ];
 
     const STORAGE_LOCAL = 0;

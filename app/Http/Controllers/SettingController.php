@@ -365,7 +365,10 @@ class SettingController extends Controller
         $input = RelaySettings::filterInput($request->all());
 
         // Never blank out a secret by accident: an empty box keeps the saved value.
-        foreach (['relay_tg_password', 'relay_tg_api_key', 'relay_nine_password', 'relay_nine_api_key'] as $secret) {
+        foreach ([
+            'relay_tg_password', 'relay_tg_api_key', 'relay_nine_password', 'relay_nine_api_key',
+            'relay_bot_token', 'relay_bot_webhook_secret',
+        ] as $secret) {
             if (array_key_exists($secret, $input) && trim((string) $input[$secret]) === '') {
                 unset($input[$secret]);
             }

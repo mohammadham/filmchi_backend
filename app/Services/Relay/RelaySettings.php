@@ -75,6 +75,14 @@ class RelaySettings
         'relay_nine_serve_mode' => ['media_relay.ninedrive.serve_mode', 'mode'],
         'relay_promote_threshold' => ['media_relay.cache.promote_threshold', 'int'],
         'relay_demand_window' => ['media_relay.cache.window', 'int'],
+        'relay_bot_enabled' => ['media_relay.bot.enabled', 'bool'],
+        'relay_bot_token' => ['media_relay.bot.token', 'string'],
+        'relay_bot_webhook_secret' => ['media_relay.bot.webhook_secret', 'string'],
+        'relay_bot_allowed_ids' => ['media_relay.bot.allowed_ids', 'string'],
+        'relay_bot_storage_chat' => ['media_relay.bot.storage_chat', 'string'],
+        'relay_bot_channel_id' => ['media_relay.bot.channel_id', 'int'],
+        'relay_bot_quality' => ['media_relay.bot.quality', 'string'],
+        'relay_bot_daily_limit' => ['media_relay.bot.daily_limit', 'int'],
     ];
 
     /**
@@ -158,6 +166,16 @@ class RelaySettings
             'relay_nine_serve_mode' => (string) config('media_relay.ninedrive.serve_mode'),
             'relay_promote_threshold' => (int) config('media_relay.cache.promote_threshold'),
             'relay_demand_window' => (int) config('media_relay.cache.window'),
+            'relay_bot_enabled' => (bool) config('media_relay.bot.enabled', false),
+            'relay_bot_token' => '',
+            'relay_bot_token_set' => (string) config('media_relay.bot.token') !== '',
+            'relay_bot_webhook_secret' => '',
+            'relay_bot_webhook_secret_set' => (string) config('media_relay.bot.webhook_secret') !== '',
+            'relay_bot_allowed_ids' => (string) config('media_relay.bot.allowed_ids'),
+            'relay_bot_storage_chat' => (string) config('media_relay.bot.storage_chat'),
+            'relay_bot_channel_id' => (int) config('media_relay.bot.channel_id', 0),
+            'relay_bot_quality' => (string) config('media_relay.bot.quality', '1080'),
+            'relay_bot_daily_limit' => (int) config('media_relay.bot.daily_limit', 20),
         ];
     }
 

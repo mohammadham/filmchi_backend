@@ -75,6 +75,12 @@ class AppServiceProvider extends ServiceProvider
         RateLimiter::for('panelLogin', function (Request $request) {
             return Limit::perMinute(10)->by($request->ip());
         });
+
+        // Telegram retries bursts of updates from a handful of IPs; 120/min is
+        // far above normal traffic and still caps a flood.
+        RateLimiter::for('telegramWebhook', function (Request $request) {
+            return Limit::perMinute(120)->by($request->ip());
+        });
     }
 
     /**

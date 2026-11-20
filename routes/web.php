@@ -9,6 +9,7 @@ use App\Http\Controllers\GenreController;
 use App\Http\Controllers\HealthController;
 use App\Http\Controllers\LanguageController;
 use App\Http\Controllers\SettingController;
+use App\Http\Controllers\TelegramWebhookController;
 use App\Http\Controllers\LoginController;
 use App\Http\Controllers\MediaGalleryController;
 use App\Http\Controllers\MediaRelayController;
@@ -44,6 +45,12 @@ Route::get($relayDownloadPath, [RelayController::class, 'download'])
     ->name('relayDownload');
 
 Route::get('healthz', [HealthController::class, 'index'])->name('healthz');
+
+// Telegram bot webhook: secret path + secret header, CSRF-exempt, throttled,
+// and a 404 for everyone until the bot is switched on in the panel.
+Route::post('telegram/webhook/{secret}', [TelegramWebhookController::class, 'handle'])
+    ->middleware('throttle:telegramWebhook')
+    ->name('telegramWebhook');
 
 Route::get('/', [LoginController::class, 'login'])->name('/');
 

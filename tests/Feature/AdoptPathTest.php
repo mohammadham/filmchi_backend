@@ -47,7 +47,6 @@ class AdoptPathTest extends TestCase
                 'parts' => 1,
                 'storage_chat' => '@store',
                 'deduplicated' => true,
-                'verified' => true,
             ])),
         ]);
 
@@ -55,7 +54,6 @@ class AdoptPathTest extends TestCase
 
         $this->assertSame('f_abc123', $result['file_id']);
         $this->assertTrue($result['deduplicated']);
-        $this->assertTrue($result['verified']);
 
         $this->assertCount(1, $drive->history);
         $this->assertSame('POST', $drive->history[0]['method']);
