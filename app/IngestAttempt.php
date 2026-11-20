@@ -36,10 +36,56 @@ class IngestAttempt extends Model
         'finished_at' => 'datetime',
     ];
 
-    public function source()
+    /**
+     * The newest attempts for a set of "type:id" keys.
+     *
+     * The read is capped at $perSource × sources, so a panel list never loads
+     * a long history: the newest rows of every listed source always sit in the
+     * top of that slice.
+     *
+     * @param  array<int,string>  $keys
+     * @return array<string, array<int, IngestAttempt>>
+     */
+    public static function latestPerSource(array $keys, int $perSource = 3): array
     {
-        return $this->source_type === 'content'
-            ? ContentSource::find($this->source_id)
-            : EpisodeSource::find($this->source_id);
+        $ids = ['episode' => [], 'content' => []];
+
+        foreach ($keys as $key) {
+            [$type, $id] = array_pad(explode(':', (string) $key, 2), 2, null);
+
+            if (isset($ids[$type]) && (int) $id > 0) {
+                $ids[$type][] = (int) $id;
+            }
+        }
+
+        $ids = array_filter($ids);
+
+        if ($ids === []) {
+            return [];
+        }
+
+        $rows = static::query()
+            ->where(function ($query) use ($ids) {
+                foreach ($ids as $type => $sourceIds) {
+                    $query->orWhere(function ($inner) use ($type, $sourceIds) {
+                        $inner->where('source_type', $type)->whereIn('source_id', $sourceIds);
+                    });
+                }
+            })
+            ->orderByDesc('id')
+            ->limit($perSource * array_sum(array_map('count', $ids)))
+            ->get();
+
+        $grouped = [];
+
+        foreach ($rows as $row) {
+            $key = $row->source_type . ':' . $row->source_id;
+
+            if (count($grouped[$key] ?? []) < $perSource) {
+                $grouped[$key][] = $row;
+            }
+        }
+
+        return $grouped;
     }
 }

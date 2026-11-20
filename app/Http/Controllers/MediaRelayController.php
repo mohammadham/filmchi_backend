@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\ContentSource;
 use App\EpisodeSource;
+use App\IngestAttempt;
 use App\Jobs\IngestRelayUrlJob;
 use App\MediaGallery;
 use App\RelayEvent;
@@ -47,9 +48,15 @@ class MediaRelayController extends Controller
     {
         [$failedSources, $failedSourcesCount] = $this->failedSources();
 
+        // Only the newest few attempts of the listed rows are read (3 × rows).
+        $attemptHistory = IngestAttempt::latestPerSource(
+            $failedSources->map(fn ($source) => $source->source_type . ':' . $source->id)->all()
+        );
+
         return view('mediaRelay', [
             'failedSources' => $failedSources,
             'failedSourcesCount' => $failedSourcesCount,
+            'attemptHistory' => $attemptHistory,
             'downloadRetryMax' => max(1, min(10, (int) config('media_relay.ingest.retry_max_attempts', 3))),
             'uploadRetryMax' => max(1, min(10, (int) config('media_relay.upload.retry_max_attempts', 3))),
             'telegram' => $this->relay->telegram()->health(),

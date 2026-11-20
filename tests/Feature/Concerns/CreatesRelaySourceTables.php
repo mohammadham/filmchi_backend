@@ -58,23 +58,11 @@ trait CreatesRelaySourceTables
             $this->createdSourceTables[] = $table;
         }
 
-        // Attempt history: the real table ships with a migration, tests that
-        // create the source tables themselves need it as well.
+        // The attempt history ships with a migration; run it here instead of
+        // duplicating the schema, so the test table cannot drift from it.
         if (!Schema::hasTable('ingest_attempt_log')) {
-            Schema::create('ingest_attempt_log', function ($blueprint) {
-                $blueprint->bigIncrements('id');
-                $blueprint->string('source_type', 16);
-                $blueprint->unsignedBigInteger('source_id');
-                $blueprint->unsignedSmallInteger('attempt_no')->default(0);
-                $blueprint->string('outcome', 24);
-                $blueprint->unsignedBigInteger('bytes')->default(0);
-                $blueprint->string('route', 191)->nullable();
-                $blueprint->text('error')->nullable();
-                $blueprint->unsignedInteger('duration_ms')->nullable();
-                $blueprint->timestamp('started_at')->nullable();
-                $blueprint->timestamp('finished_at')->nullable();
-                $blueprint->timestamps();
-            });
+            $migration = require base_path('database/migrations/2026_11_20_000002_create_ingest_attempt_log.php');
+            $migration->up();
 
             $this->createdSourceTables[] = 'ingest_attempt_log';
         }

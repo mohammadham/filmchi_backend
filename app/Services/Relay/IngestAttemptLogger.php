@@ -16,80 +16,46 @@ use Illuminate\Support\Str;
  */
 class IngestAttemptLogger
 {
-    public function record($source, string $outcome, array $context = []): ?IngestAttempt
+    public function record($source, string $outcome, array $context = []): void
     {
         // A partial deploy (code before migration) must keep ingesting, so a
         // missing table costs the history row, never the download.
         if (!Schema::hasTable('ingest_attempt_log')) {
-            return null;
+            return;
         }
 
-        $workers = [];
+        // A quarantined attempt is judged on accumulated evidence (several
+        // attempts over several Workers), so the whole evidence wins over this
+        // attempt's routes alone.
+        $workerIds = $outcome === IngestAttempt::OUTCOME_QUARANTINED
+            ? ($source->ingest_zero_workers ?: ($context['workers'] ?? []))
+            : ($context['workers'] ?? []);
 
-        foreach ((array) ($context['workers'] ?? []) as $workerId) {
-            $workerId = (int) $workerId;
-
-            if ($workerId > 0) {
-                $workers[$workerId] = $workerId;
-            }
-        }
-
+        $workers = array_values(array_unique(array_filter(array_map('intval', (array) $workerIds))));
         $startedAt = $source->ingest_started_at ?? null;
+        $error = trim((string) ($context['error'] ?? $source->ingest_error ?? ''));
         $finishedAt = now();
+        $sourceType = $source->getTable() === 'content_sources' ? 'content' : 'episode';
+        $sourceId = (int) $source->getKey();
 
-        // Not every source model casts the timestamps; a raw string from the
-        // database must not turn a history row into an exception.
-        $durationMs = null;
-
-        if ($startedAt instanceof \DateTimeInterface) {
-            $durationMs = max(0, (int) \Carbon\Carbon::instance($startedAt)->diffInMilliseconds($finishedAt));
-        }
-
-        $row = IngestAttempt::create([
-            'source_type' => $source->getTable() === 'content_sources' ? 'content' : 'episode',
-            'source_id' => (int) $source->getKey(),
+        IngestAttempt::create([
+            'source_type' => $sourceType,
+            'source_id' => $sourceId,
             'attempt_no' => max(0, (int) ($context['attempt_no'] ?? $source->ingest_attempts ?? 0)),
             'outcome' => $outcome,
             'bytes' => max(0, (int) ($context['bytes'] ?? $source->ingest_bytes ?? 0)),
-            'route' => $workers === [] ? null : implode(',', array_values($workers)),
-            'error' => $this->errorText($context['error'] ?? $source->ingest_error ?? null),
-            'duration_ms' => $durationMs,
+            'route' => $workers === [] ? null : implode(',', $workers),
+            'error' => $error === '' ? null : Str::limit($error, 1000),
+            // Not every source model casts its timestamps; a raw string from
+            // the database must not turn a history row into an exception.
+            'duration_ms' => $startedAt instanceof \DateTimeInterface
+                ? max(0, (int) \Carbon\Carbon::instance($startedAt)->diffInMilliseconds($finishedAt))
+                : null,
             'started_at' => $startedAt,
             'finished_at' => $finishedAt,
         ]);
 
-        $this->prune($row->source_type, (int) $row->source_id);
-
-        return $row;
-    }
-
-    /**
-     * @return \Illuminate\Support\Collection<int, IngestAttempt>
-     */
-    public function history($source, int $limit = 20)
-    {
-        if (!Schema::hasTable('ingest_attempt_log')) {
-            return collect();
-        }
-
-        return IngestAttempt::query()
-            ->where('source_type', $source->getTable() === 'content_sources' ? 'content' : 'episode')
-            ->where('source_id', (int) $source->getKey())
-            ->orderByDesc('id')
-            ->limit(max(1, $limit))
-            ->get();
-    }
-
-    protected function errorText($error): ?string
-    {
-        $error = trim((string) $error);
-
-        return $error === '' ? null : Str::limit($error, 1000);
-    }
-
-    /** Keep the newest rows per source so one dead link cannot grow forever. */
-    protected function prune(string $sourceType, int $sourceId): void
-    {
+        // Keep the newest rows per source so one dead link cannot grow forever.
         $keep = max(1, (int) config('media_relay.ingest.history_limit', 100));
 
         $cutoff = IngestAttempt::query()

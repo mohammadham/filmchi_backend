@@ -147,6 +147,14 @@
                         <button type="submit" id="relayRequeueSelected" class="btn btn-sm btn-primary text-light" disabled>
                             {{ __('relayRequeueSelected') }} <span id="relayRequeueCount"></span>
                         </button>
+                        <button type="submit" id="relayProbeSelected" formaction="{{ route('probeRelaySources') }}"
+                                class="btn btn-sm btn-outline-info" disabled>
+                            تست لینک انتخاب‌شده‌ها <span id="relayProbeCount"></span>
+                        </button>
+                        <button type="submit" id="relayProbeAll" formaction="{{ route('probeRelaySources') }}"
+                                class="btn btn-sm btn-outline-secondary">
+                            تست لینک همهٔ موارد این لیست
+                        </button>
                         <span class="text-muted small">{{ __('relayRequeueSelectedHint') }}</span>
                     </form>
 
@@ -161,6 +169,7 @@
                                         <th width="75px">{{ __('quality') }}</th>
                                         <th>منبع</th>
                                         <th width="135px">{{ __('relaySourceStatus') }}</th>
+                                        <th width="105px">لینک</th>
                                         <th width="145px">{{ __('relayAttempts') }}</th>
                                         <th width="130px">{{ __('relayErrors') }}</th>
                                         <th width="120px">{{ __('relayNextRetry') }}</th>
@@ -195,6 +204,7 @@
                                                 @endif
                                                 <div class="small text-muted mt-1">{{ $source->upload_status ?: $source->ingest_status }}</div>
                                             </td>
+                                            @include('partials.sourceLinkHealth', ['source' => $source])
                                             <td class="small">
                                                 <div>{{ __('relayRuntimeDownloading') }}: {{ (int) $source->ingest_attempts }}/{{ $downloadRetryMax }}</div>
                                                 <div>{{ __('relayRuntimeUploading') }}: {{ (int) $source->upload_attempts }}/{{ $uploadRetryMax }}</div>
@@ -223,8 +233,25 @@
                                                         <button type="submit" class="btn btn-sm btn-primary text-light">{{ __('relayRequeue') }}</button>
                                                     </form>
                                                 @endif
+                                                <form method="POST" action="{{ route('probeRelaySource') }}" class="mt-1">
+                                                    @csrf
+                                                    <input type="hidden" name="source_id" value="{{ $source->id }}">
+                                                    <input type="hidden" name="source_type" value="{{ $source->source_type }}">
+                                                    <button type="submit" class="btn btn-sm btn-outline-info">تست لینک</button>
+                                                </form>
                                             </td>
                                         </tr>
+                                        @php
+                                            $attempts = $attemptHistory[$source->source_type . ':' . $source->id] ?? [];
+                                        @endphp
+                                        @if($attempts)
+                                            <tr>
+                                                <td></td>
+                                                <td colspan="12" class="pt-0 pb-2">
+                                                    @include('partials.ingestAttemptHistory', ['attempts' => $attempts])
+                                                </td>
+                                            </tr>
+                                        @endif
                                     @endforeach
                                 </tbody>
                             </table>

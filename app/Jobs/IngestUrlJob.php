@@ -508,12 +508,6 @@ class IngestUrlJob implements ShouldQueue
      */
     protected function logAttempt($source, string $outcome, array $context = []): void
     {
-        // A quarantined attempt is judged on the accumulated evidence (several
-        // attempts over several Workers), not on this attempt's routes alone.
-        if ($outcome === IngestAttempt::OUTCOME_QUARANTINED && !isset($context['workers'])) {
-            $context['workers'] = (array) ($source->ingest_zero_workers ?? []);
-        }
-
         app(IngestAttemptLogger::class)->record($source, $outcome, $context + [
             'workers' => array_values($this->triedWorkers),
         ]);

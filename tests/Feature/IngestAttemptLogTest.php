@@ -247,6 +247,90 @@ class IngestAttemptLogTest extends TestCase
         $this->assertCount(2, $rows);
         $this->assertSame([2, 3], array_map(fn ($row) => (int) $row->attempt_no, $rows));
     }
+
+    public function test_the_panel_history_is_bounded_and_newest_first(): void
+    {
+        $first = $this->source();
+        $second = $this->source();
+
+        foreach (range(1, 5) as $attemptNo) {
+            IngestAttempt::create([
+                'source_type' => 'episode',
+                'source_id' => $first->id,
+                'attempt_no' => $attemptNo,
+                'outcome' => IngestAttempt::OUTCOME_FAILED,
+                'bytes' => 0,
+            ]);
+        }
+
+        IngestAttempt::create([
+            'source_type' => 'episode',
+            'source_id' => $second->id,
+            'attempt_no' => 1,
+            'outcome' => IngestAttempt::OUTCOME_REQUEUED,
+            'bytes' => 0,
+        ]);
+
+        $history = IngestAttempt::latestPerSource([
+            'episode:' . $first->id,
+            'episode:' . $second->id,
+            'content:999',
+        ], 3);
+
+        $this->assertSame(
+            [5, 4, 3],
+            array_map(fn ($row) => (int) $row->attempt_no, $history['episode:' . $first->id])
+        );
+        $this->assertCount(1, $history['episode:' . $second->id]);
+        $this->assertArrayNotHasKey('content:999', $history, 'a source with no history is not listed');
+    }
+
+    public function test_the_panel_row_shows_time_outcome_bytes_and_workers(): void
+    {
+        $attempt = IngestAttempt::create([
+            'source_type' => 'episode',
+            'source_id' => 1,
+            'attempt_no' => 3,
+            'outcome' => IngestAttempt::OUTCOME_QUARANTINED,
+            'bytes' => 1048576,
+            'route' => '11,12',
+            'error' => 'no route delivered a byte',
+            'finished_at' => now()->setDate(2026, 11, 20)->setTime(14, 5),
+        ]);
+
+        $html = view('partials.ingestAttemptHistory', ['attempts' => [$attempt]])->render();
+
+        $this->assertStringContainsString('تلاش', $html);
+        $this->assertStringContainsString('#3', $html);
+        $this->assertStringContainsString('11/20 14:05', $html);
+        $this->assertStringContainsString('قرنطینه', $html);
+        $this->assertStringContainsString('1 MB', $html);
+        $this->assertStringContainsString('ورکر 11,12', $html);
+        $this->assertStringContainsString('no route delivered a byte', $html, 'the error is visible, not only in a tooltip');
+    }
+
+    public function test_a_long_error_is_truncated_in_the_panel_row(): void
+    {
+        $attempt = IngestAttempt::create([
+            'source_type' => 'episode',
+            'source_id' => 1,
+            'attempt_no' => 2,
+            'outcome' => IngestAttempt::OUTCOME_FAILED,
+            'bytes' => 0,
+            'error' => str_repeat('connection refused ', 20) . 'TAIL-MARKER',
+            'finished_at' => now(),
+        ]);
+
+        $html = view('partials.ingestAttemptHistory', ['attempts' => [$attempt]])->render();
+
+        $this->assertSame(1, preg_match('/<span class="text-danger"[^>]*>\s*(.*?)\s*<\/span>/s', $html, $match));
+
+        $visible = trim($match[1]);
+
+        $this->assertStringContainsString('connection refused', $visible);
+        $this->assertStringNotContainsString('TAIL-MARKER', $visible, 'only the first part of a long error is rendered');
+        $this->assertLessThanOrEqual(110, mb_strlen($visible));
+    }
 }
 
 /** Always fails before a byte, on the Workers the test names. */

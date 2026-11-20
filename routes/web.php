@@ -218,6 +218,8 @@ Route::post('addToTopContent', [ContentController::class, 'addToTopContent'])->m
 Route::get('mediaRelay', [MediaRelayController::class, 'mediaRelay'])->middleware(['checkLogin'])->name('mediaRelay');
 Route::post('requeueRelaySource', [AutomationController::class, 'requeueSource'])->middleware(['checkLogin'])->name('requeueRelaySource');
 Route::post('requeueRelaySources', [AutomationController::class, 'requeueSources'])->middleware(['checkLogin'])->name('requeueRelaySources');
+Route::post('probeRelaySource', [AutomationController::class, 'probeSource'])->middleware(['checkLogin'])->name('probeRelaySource');
+Route::post('probeRelaySources', [AutomationController::class, 'probeSources'])->middleware(['checkLogin'])->name('probeRelaySources');
 Route::post('relayFileList', [MediaRelayController::class, 'relayFileList'])->middleware(['checkLogin'])->name('relayFileList');
 Route::post('uploadRelayFile', [MediaRelayController::class, 'uploadRelayFile'])->middleware(['checkLogin'])->name('uploadRelayFile');
 Route::post('relayFileFromUrl', [MediaRelayController::class, 'relayFileFromUrl'])->middleware(['checkLogin'])->name('relayFileFromUrl');

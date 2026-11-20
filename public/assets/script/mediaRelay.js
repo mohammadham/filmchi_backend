@@ -574,7 +574,9 @@ $(document).ready(function () {
         var checked = boxes.filter(":checked").length;
 
         $("#relayRequeueCount").text(checked > 0 ? "(" + checked + ")" : "");
+        $("#relayProbeCount").text(checked > 0 ? "(" + checked + ")" : "");
         $("#relayRequeueSelected").prop("disabled", checked === 0);
+        $("#relayProbeSelected").prop("disabled", checked === 0);
         $("#relaySelectAllFailed").prop("checked", boxes.length > 0 && checked === boxes.length);
     }
 
@@ -585,13 +587,21 @@ $(document).ready(function () {
 
     $(document).on("change", "input.failed-source-check", updateFailedSourceSelection);
 
+    $("#relayProbeAll").on("click", function () {
+        $("input.failed-source-check:not(:disabled)").prop("checked", true);
+        updateFailedSourceSelection();
+    });
+
     $("#relayRequeueBulkForm").on("submit", function (e) {
         if ($("input.failed-source-check:checked").length === 0) {
             e.preventDefault();
             return;
         }
 
-        var confirmText = $(this).data("confirm") || "Requeue the selected sources?";
+        var submitter = e.originalEvent && e.originalEvent.submitter;
+        var confirmText = submitter && submitter.id === "relayProbeSelected"
+            ? "وضعیت لینک موارد انتخاب‌شده بررسی شود؟"
+            : ($(this).data("confirm") || "Requeue the selected sources?");
 
         if (!window.confirm(confirmText)) {
             e.preventDefault();

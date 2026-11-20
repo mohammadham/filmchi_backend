@@ -7,6 +7,7 @@ use App\ContentSource;
 use App\Episode;
 use App\EpisodeSource;
 use App\Jobs\IngestUrlJob;
+use App\Jobs\ProbeSourceLinkJob;
 use App\Services\Relay\SourceRequeuer;
 use App\Services\Relay\UploadMetrics;
 use App\Season;
@@ -38,6 +39,9 @@ class AutomationController extends Controller
 {
     /** Qualities in the order the catalogue grows: small files first. */
     protected const QUALITY_ORDER = ['480p', '720p', '1080p', '360p', '2160p'];
+
+    /** The "type:id" rows the relay panel posts for bulk actions. */
+    protected const SOURCE_PAIR_REGEX = '/^(episode|content):[0-9]+$/';
 
     /**
      * A downloading/uploading row is updated every few percent, so a row that
@@ -369,7 +373,7 @@ class AutomationController extends Controller
     {
         $validated = $request->validate([
             'sources' => 'required|array|max:200',
-            'sources.*' => ['string', 'regex:/^(episode|content):[0-9]+$/'],
+            'sources.*' => ['string', 'regex:' . self::SOURCE_PAIR_REGEX],
         ]);
 
         $done = 0;
@@ -411,6 +415,62 @@ class AutomationController extends Controller
     protected function queueSourceAgain(string $sourceType, int $sourceId): array
     {
         return app(SourceRequeuer::class)->requeue($sourceType, $sourceId);
+    }
+
+    /**
+     * Probe the link of one source row, whatever its current status.
+     *
+     * Probing is what revives a quarantined (dead) row: the probe writes the
+     * real answer back to link_status, so the requeue buttons accept the row
+     * again once the origin answers.
+     */
+    public function probeSource(Request $request)
+    {
+        $validated = $request->validate([
+            'source_id' => 'required|integer|min:1',
+            'source_type' => 'nullable|in:episode,content',
+        ]);
+
+        $this->dispatchProbes([
+            ($validated['source_type'] ?? 'episode') . ':' . (int) $validated['source_id'],
+        ]);
+
+        return back()->with('success', 'بررسی لینک در صف قرار گرفت؛ نتیجه بعد از پایان probe در ستون «لینک» دیده می‌شود.');
+    }
+
+    /**
+     * Probe a batch of rows ("type:id" pairs) from the failed-source table.
+     */
+    public function probeSources(Request $request)
+    {
+        $validated = $request->validate([
+            'sources' => 'required|array|max:200',
+            'sources.*' => ['string', 'regex:' . self::SOURCE_PAIR_REGEX],
+        ]);
+
+        $queued = $this->dispatchProbes($validated['sources']);
+
+        return back()->with('success', $queued . ' لینک برای بررسی در صف قرار گرفت.');
+    }
+
+    /**
+     * Queue one probe per unique, well-formed row.
+     *
+     * @param  array<int,string>  $pairs
+     */
+    protected function dispatchProbes(array $pairs): int
+    {
+        $pairs = array_unique(array_filter(
+            $pairs,
+            fn ($pair) => preg_match(self::SOURCE_PAIR_REGEX, (string) $pair) === 1
+        ));
+
+        foreach ($pairs as $pair) {
+            list($sourceType, $sourceId) = explode(':', $pair, 2);
+            ProbeSourceLinkJob::dispatch($sourceType, (int) $sourceId);
+        }
+
+        return count($pairs);
     }
 
     protected function reapDeadPass(): void
