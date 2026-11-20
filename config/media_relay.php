@@ -21,6 +21,21 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Upload destination preflight
+    |--------------------------------------------------------------------------
+    | Ingestion only fetches a file when it can be stored afterwards. The relay
+    | asks Telegram Drive whether the storage chat accepts an upload (a
+    | zero-byte session that is cancelled again) and caches the answer: ready
+    | for `ttl` seconds, and a failure for the shorter `negative_ttl` so a
+    | channel that was just fixed is retried quickly.
+    */
+    'destination' => [
+        'ttl' => (int) env('RELAY_DESTINATION_TTL', 60),
+        'negative_ttl' => (int) env('RELAY_DESTINATION_NEGATIVE_TTL', 30),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | URL ingestion (pull remote links into the relay)
     |--------------------------------------------------------------------------
     | Sources added with the "ingest" option are queued: the worker downloads
@@ -215,6 +230,22 @@ return [
     'linkcheck' => [
         'timeout' => (int) env('RELAY_LINKCHECK_TIMEOUT', 15),
         'dead_after' => (int) env('RELAY_LINKCHECK_DEAD_AFTER', 3),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Quarantine of dead links
+    |--------------------------------------------------------------------------
+    | A source that fetched zero bytes over several attempts and several routes
+    | is no longer a flaky download: it is a dead link. It is marked dead
+    | (link_status) and no requeue path touches it until a probe succeeds.
+    | The defaults follow the queue's own retry budget: two attempts are enough
+    | for one attempt to be retried, and two distinct Workers are the smallest
+    | number that rules out a single bad endpoint.
+    */
+    'quarantine' => [
+        'zero_attempts' => (int) env('RELAY_QUARANTINE_ZERO_ATTEMPTS', 2),
+        'zero_workers' => (int) env('RELAY_QUARANTINE_ZERO_WORKERS', 2),
     ],
 
     /*

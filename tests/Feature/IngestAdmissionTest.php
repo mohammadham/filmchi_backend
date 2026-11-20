@@ -273,6 +273,11 @@ class AdmissionProbeJob extends IngestUrlJob
         return self::$probe;
     }
 
+    /** These tests are about the disk; the destination is covered elsewhere. */
+    protected function assertDestinationReady(): void
+    {
+    }
+
     protected function diskBudgetAllows(int $reserveBytes, bool $ceiling = true): bool
     {
         self::$reserve = $reserveBytes;

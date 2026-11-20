@@ -41,6 +41,10 @@ class SourceRequeuer
             return 'این منبع در وضعیت فعال است و دوباره صف نمی‌شود.';
         }
 
+        if ((string) ($source->link_status ?? '') === 'dead') {
+            return 'این منبع در قرنطینه است (لینک مرده)؛ تا probe موفق بعدی دوباره صف نمی‌شود.';
+        }
+
         if ($sourceType === 'episode'
             && Schema::hasColumn('episode_sources', 'is_blocked')
             && (bool) $source->is_blocked) {

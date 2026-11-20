@@ -33,6 +33,11 @@ trait CreatesRelaySourceTables
                 $blueprint->text('ingest_error')->nullable();
                 $blueprint->unsignedInteger('ingest_attempts')->default(0);
                 $blueprint->unsignedInteger('ingest_fail_count')->default(0);
+                $blueprint->unsignedSmallInteger('ingest_zero_attempts')->default(0);
+                $blueprint->text('ingest_zero_workers')->nullable();
+                $blueprint->string('link_status', 16)->nullable();
+                $blueprint->timestamp('link_checked_at')->nullable();
+                $blueprint->unsignedInteger('link_fail_count')->default(0);
                 $blueprint->timestamp('ingest_next_retry_at')->nullable();
                 $blueprint->unsignedBigInteger('ingest_bytes')->nullable();
                 $blueprint->unsignedBigInteger('ingest_speed_bps')->nullable();

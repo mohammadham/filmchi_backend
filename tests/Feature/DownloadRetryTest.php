@@ -6,6 +6,7 @@ use App\EpisodeSource;
 use App\Jobs\IngestUrlJob;
 use Illuminate\Support\Facades\DB;
 use Tests\Feature\Concerns\CreatesRelaySourceTables;
+use Tests\Feature\Concerns\ReadyDestination;
 use Tests\TestCase;
 
 /**
@@ -17,7 +18,7 @@ use Tests\TestCase;
  */
 class DownloadRetryTest extends TestCase
 {
-    use CreatesRelaySourceTables;
+    use CreatesRelaySourceTables, ReadyDestination;
 
     protected array $parts = [];
 
@@ -34,6 +35,8 @@ class DownloadRetryTest extends TestCase
             'media_relay.ingest.connections' => 1,
             'media_relay.ingest.total_connections' => 1,
         ]);
+
+        $this->stubReadyDestination();
     }
 
     protected function tearDown(): void

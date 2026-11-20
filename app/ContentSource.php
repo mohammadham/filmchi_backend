@@ -19,6 +19,8 @@ class ContentSource extends Model
         'upload_attempts' => 'integer',
         'ingest_attempts' => 'integer',
         'ingest_fail_count' => 'integer',
+        'ingest_zero_attempts' => 'integer',
+        'ingest_zero_workers' => 'array',
         'ingest_next_retry_at' => 'datetime',
         'upload_fail_count' => 'integer',
         'upload_next_retry_at' => 'datetime',

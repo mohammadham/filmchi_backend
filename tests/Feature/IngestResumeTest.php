@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Jobs\IngestUrlJob;
 use App\Services\Relay\ChunkResumeState;
 use Illuminate\Support\Facades\DB;
+use Tests\Feature\Concerns\ReadyDestination;
 use Tests\TestCase;
 
 /**
@@ -15,6 +16,7 @@ use Tests\TestCase;
  */
 class IngestResumeTest extends TestCase
 {
+    use ReadyDestination;
     /** @var string[] */
     protected array $paths = [];
 
@@ -34,6 +36,8 @@ class IngestResumeTest extends TestCase
             'media_relay.ingest.total_connections' => 4,
             'media_relay.ingest.max_workers' => 0,
         ]);
+
+        $this->stubReadyDestination();
     }
 
     protected function tearDown(): void

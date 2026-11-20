@@ -9,9 +9,12 @@ use App\EpisodeSource;
 use App\Season;
 use App\Services\Relay\ChunkResumeState;
 use App\Services\Relay\ChunkRouter;
+use App\Services\Relay\DestinationCheck;
+use App\Services\Relay\DestinationUnavailable;
 use App\Services\Relay\DiskBudget;
 use App\Services\Relay\DiskBudgetExceeded;
 use App\Services\Relay\RelaySettings;
+use App\Services\Relay\SourceQuarantine;
 use App\Services\Relay\SpeedDropDetector;
 use App\Services\Relay\UploadMetrics;
 use App\Services\Relay\WorkerRegistry;
@@ -46,6 +49,9 @@ class IngestUrlJob implements ShouldQueue
 
     /** @var array<int, int> */
     public $backoff = [300];
+
+    /** @var array<int,int> Workers that served this attempt, for zero-byte evidence. */
+    protected array $triedWorkers = [];
 
     /** @var string */
     public $sourceType;
@@ -91,6 +97,20 @@ class IngestUrlJob implements ShouldQueue
         // retries belong to the storage layer, not to a second ingest.
         if ((string) $source->ingest_status === 'completed') {
             Log::info('ingest skipped: source already completed', ['source_id' => $this->sourceId]);
+
+            return;
+        }
+
+        // A quarantined link stays out of the queue until a successful probe
+        // revives it. A job that was already queued before that must not fetch
+        // a byte, so it closes the row instead of downloading nothing again.
+        if (app(SourceQuarantine::class)->isQuarantined($source)) {
+            Log::info('ingest skipped: source quarantined', ['source_id' => $this->sourceId]);
+
+            $source->ingest_status = 'failed';
+            $source->ingest_error = 'منبع قرنطینه است و تا probe موفق بعدی دوباره صف نمی‌شود.';
+            $source->ingest_next_retry_at = null;
+            $source->save();
 
             return;
         }
@@ -144,12 +164,13 @@ class IngestUrlJob implements ShouldQueue
             )->onQueue((string) config('media_relay.upload.queue', 'uploads'));
 
             $handedOff = true;
-        } catch (DiskBudgetExceeded $e) {
+        } catch (DiskBudgetExceeded | DestinationUnavailable $e) {
             // Nothing was fetched: the files already on disk have not been
-            // uploaded yet. That is not a source failure, so no attempt is
-            // spent and the partial file stays for the next run. A release()
-            // would burn one of this job's tries on a disk condition that can
-            // outlast them, so a fresh attempt is queued after the delay.
+            // uploaded yet, or the destination cannot take them at all. That
+            // is not a source failure, so no attempt is spent and the partial
+            // file stays for the next run. A release() would burn one of this
+            // job's tries on a condition that can outlast them, so a fresh
+            // attempt is queued after the delay.
             $delay = $this->blockedRetryDelay();
 
             $source->ingest_attempts = max(0, (int) $source->ingest_attempts - 1);
@@ -179,6 +200,11 @@ class IngestUrlJob implements ShouldQueue
 
             if (!$handedOff) {
                 $source->upload_status = null;
+            }
+
+            if ($this->recordFailedAttempt($source, $part, $e->getMessage())) {
+                // The link is dead: the remaining tries would fetch nothing.
+                return;
             }
 
             $attempt = max(1, (int) $source->ingest_attempts);
@@ -235,6 +261,8 @@ class IngestUrlJob implements ShouldQueue
         $source->save();
 
         $part = storage_path('app/ingest/ingest-' . $this->sourceId . '.part');
+
+        $this->recordFailedAttempt($source, $part, $e->getMessage());
 
         if (is_file($part)) {
             @unlink($part);
@@ -349,6 +377,10 @@ class IngestUrlJob implements ShouldQueue
      */
     protected function download($source, string $part): void
     {
+        // Bytes are only worth fetching when they can be stored: prove the
+        // upload destination first. Its answer is cached for a few seconds.
+        $this->assertDestinationReady();
+
         $probe = $this->probeSource();
         $maxBytes = (int) config('media_relay.upload.max_size', 2048) * 1048576;
 
@@ -427,6 +459,16 @@ class IngestUrlJob implements ShouldQueue
     }
 
     /**
+     * The destination has to be ready before the source is fetched: the relay
+     * enabled, Telegram Drive configured, and the storage chat writable. Kept
+     * in one method so tests can stand in for the service.
+     */
+    protected function assertDestinationReady(): void
+    {
+        app(DestinationCheck::class)->assertReady();
+    }
+
+    /**
      * Admission for one file.
      *
      * The reservation is this file's own Content-Length minus the bytes the
@@ -438,6 +480,51 @@ class IngestUrlJob implements ShouldQueue
      * A median file size cannot answer this: one 2 GB episode does not fit in
      * the 900 MB that are actually left.
      */
+    /** Remember a Worker that served this attempt (a proxy route id). */
+    protected function noteWorker($workerId): void
+    {
+        $workerId = (int) $workerId;
+
+        if ($workerId > 0) {
+            $this->triedWorkers[$workerId] = $workerId;
+        }
+    }
+
+    /**
+     * A failed attempt that wrote nothing is evidence about the route, not the
+     * file. The evidence is kept on the row (attempts plus the distinct
+     * Workers), and only a repeated pattern over several routes quarantines the
+     * link. An attempt that did write bytes clears the evidence: the link
+     * clearly works, so a later failure starts from zero again.
+     */
+    protected function recordFailedAttempt($source, string $part, ?string $lastError = null): bool
+    {
+        $quarantine = app(SourceQuarantine::class);
+
+        // Progress reported during the attempt plus the bytes actually allocated
+        // on disk. The .part may be pre-sized, so its length is not evidence; a
+        // platform that cannot report allocated blocks contributes zero, and a
+        // resumed file keeps its earlier evidence through the progress value.
+        $written = max(
+            (int) ($source->ingest_bytes ?? 0),
+            is_file($part) ? DiskBudget::writtenBytes($part) : 0
+        );
+
+        if ($written > 0) {
+            $quarantine->clearEvidence($source);
+
+            return false;
+        }
+
+        $quarantine->noteZeroByteAttempt($source, array_values($this->triedWorkers), $lastError);
+
+        if (!$quarantine->shouldQuarantine($source)) {
+            return false;
+        }
+
+        return $quarantine->markDead($source, $lastError);
+    }
+
     protected function assertDiskBudget(int $contentLength, string $part): void
     {
         $written = DiskBudget::writtenBytes($part);
@@ -524,6 +611,7 @@ class IngestUrlJob implements ShouldQueue
 
             $probe['proxied'] = (bool) $route['proxied'];
             $probe['worker_id'] = $route['worker_id'];
+            $this->noteWorker($route['worker_id']);
 
             if (!$route['proxied'] || $probe['ranges'] || $probe['status'] !== 200) {
                 return $probe;
@@ -1553,6 +1641,8 @@ class IngestUrlJob implements ShouldQueue
      */
     protected function downloadChunk(array $route, $out, int $start, int $length, string $range): array
     {
+        $this->noteWorker($route['worker_id'] ?? null);
+
         $written = 0;
         $httpStatus = 0;
         $upstreamStatus = null;

@@ -284,6 +284,64 @@ class TelegramDriveClient
     }
 
     /**
+     * Ask the service whether the storage chat can take an upload.
+     *
+     * Returns null when it can, or the service's own (Persian) explanation
+     * when it cannot. The probe opens a zero-byte resumable session and
+     * cancels it again, so it exercises exactly the preflight the real upload
+     * uses without moving a byte or leaving a file behind.
+     */
+    public function destinationUnavailable(string $storageChat = ''): ?string
+    {
+        if (!$this->isConfigured()) {
+            return 'مقصد آپلود آماده نیست: سرویس Telegram Drive پیکربندی نشده است (TGDRIVE_BASE_URL).';
+        }
+
+        $options = ['json' => [
+            'name' => 'flixy-destination-probe.txt',
+            'size' => 0,
+            'mime' => 'text/plain',
+        ]];
+
+        if ($storageChat !== '') {
+            $options['headers'] = ['X-Storage-Chat' => $storageChat];
+        }
+
+        $response = $this->request('POST', 'api/v1/files/upload/session', $options);
+        $data = json_decode((string) $response->getBody(), true);
+        $data = is_array($data) ? $data : [];
+
+        if ($response->getStatusCode() >= 400) {
+            $status = $response->getStatusCode();
+            $detail = isset($data['detail']) ? trim((string) $data['detail']) : '';
+
+            // 409 is the service's own Persian refusal (no writable storage
+            // chat), so it is shown exactly as the panel shows it there.
+            if ($status === 409 && $detail !== '') {
+                return $detail;
+            }
+
+            return sprintf(
+                'مقصد آپلود آماده نیست: سرویس Telegram Drive پاسخ %d داد%s',
+                $status,
+                $detail !== '' ? ' — ' . mb_substr($detail, 0, 120) : '.'
+            );
+        }
+
+        $sessionId = (string) ($data['session_id'] ?? '');
+
+        if ($sessionId !== '') {
+            try {
+                $this->request('DELETE', 'api/v1/files/upload/session/' . rawurlencode($sessionId));
+            } catch (\Throwable $e) {
+                // An empty leftover session is harmless; the probe answer stands.
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * Wait until a freshly uploaded file is fully stored on Telegram.
      *
      * The upload request returns with the job queued; for multi-gigabyte

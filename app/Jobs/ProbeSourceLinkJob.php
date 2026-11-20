@@ -9,6 +9,7 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use App\Services\Relay\SourceQuarantine;
 use App\Services\Relay\WorkerRegistry;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
@@ -70,6 +71,10 @@ class ProbeSourceLinkJob implements ShouldQueue
             $source->link_fail_count = 0;
             $source->link_checked_at = $checkedAt;
             $source->save();
+
+            // The link answers again: old zero-byte evidence is stale, so a
+            // future failure starts from a clean slate.
+            app(SourceQuarantine::class)->clearEvidence($source);
 
             return;
         }
