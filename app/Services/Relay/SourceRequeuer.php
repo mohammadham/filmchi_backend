@@ -4,6 +4,8 @@ namespace App\Services\Relay;
 
 use App\Content;
 use App\ContentSource;
+use App\IngestAttempt;
+use App\Services\Relay\IngestAttemptLogger;
 use App\Episode;
 use App\EpisodeSource;
 use App\Jobs\IngestUrlJob;
@@ -95,6 +97,8 @@ class SourceRequeuer
             }
         }
 
+        $previousAttempts = (int) $source->ingest_attempts;
+
         $source->ingest_status = 'queued';
         $source->ingest_progress = 0;
         $source->ingest_error = null;
@@ -104,6 +108,13 @@ class SourceRequeuer
         $source->upload_attempts = 0;
         $source->upload_next_retry_at = null;
         $source->save();
+
+        // The counters are deliberately fresh; the history keeps what the row
+        // already spent, so this reset is visible instead of silent.
+        app(IngestAttemptLogger::class)->record($source, IngestAttempt::OUTCOME_REQUEUED, [
+            'attempt_no' => $previousAttempts,
+            'error' => sprintf('requeued after %d ingest attempt(s)', $previousAttempts),
+        ]);
 
         IngestUrlJob::dispatch(
             $sourceType,

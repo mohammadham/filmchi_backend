@@ -131,6 +131,9 @@ return [
         // it waits behind the work that was already queued.
         'retry_max_attempts' => (int) env('RELAY_INGEST_RETRY_MAX_ATTEMPTS', 3),
         'retry_delay_seconds' => (int) env('RELAY_INGEST_RETRY_DELAY_SECONDS', 300),
+        // Rows kept per source in ingest_attempt_log. A requeue resets the
+        // counters on the source row; this history is what survives.
+        'history_limit' => (int) env('RELAY_INGEST_HISTORY_LIMIT', 100),
     ],
 
     /*

@@ -7,12 +7,14 @@ use App\ContentSource;
 use App\Episode;
 use App\EpisodeSource;
 use App\Season;
+use App\IngestAttempt;
 use App\Services\Relay\ChunkResumeState;
 use App\Services\Relay\ChunkRouter;
 use App\Services\Relay\DestinationCheck;
 use App\Services\Relay\DestinationUnavailable;
 use App\Services\Relay\DiskBudget;
 use App\Services\Relay\DiskBudgetExceeded;
+use App\Services\Relay\IngestAttemptLogger;
 use App\Services\Relay\RelaySettings;
 use App\Services\Relay\SourceQuarantine;
 use App\Services\Relay\SpeedDropDetector;
@@ -164,6 +166,8 @@ class IngestUrlJob implements ShouldQueue
             )->onQueue((string) config('media_relay.upload.queue', 'uploads'));
 
             $handedOff = true;
+
+            $this->logAttempt($source, IngestAttempt::OUTCOME_DOWNLOADED);
         } catch (DiskBudgetExceeded | DestinationUnavailable $e) {
             // Nothing was fetched: the files already on disk have not been
             // uploaded yet, or the destination cannot take them at all. That
@@ -172,8 +176,9 @@ class IngestUrlJob implements ShouldQueue
             // job's tries on a condition that can outlast them, so a fresh
             // attempt is queued after the delay.
             $delay = $this->blockedRetryDelay();
+            $attemptNo = max(1, (int) $source->ingest_attempts);
 
-            $source->ingest_attempts = max(0, (int) $source->ingest_attempts - 1);
+            $source->ingest_attempts = max(0, $attemptNo - 1);
             $source->ingest_error = Str::limit($e->getMessage(), 500);
             $source->ingest_connections = 0;
             $source->ingest_speed_bps = 0;
@@ -181,6 +186,11 @@ class IngestUrlJob implements ShouldQueue
             $source->ingest_status = 'retrying';
             $source->ingest_next_retry_at = now()->addSeconds($delay);
             $source->save();
+
+            $this->logAttempt($source, IngestAttempt::OUTCOME_DEFERRED, [
+                'attempt_no' => $attemptNo,
+                'error' => $e->getMessage(),
+            ]);
 
             static::dispatch($this->sourceType, (int) $this->sourceId, $this->url, $this->name)
                 ->delay(now()->addSeconds($delay));
@@ -204,6 +214,8 @@ class IngestUrlJob implements ShouldQueue
 
             if ($this->recordFailedAttempt($source, $part, $e->getMessage())) {
                 // The link is dead: the remaining tries would fetch nothing.
+                $this->logAttempt($source, IngestAttempt::OUTCOME_QUARANTINED, ['error' => $source->ingest_error]);
+
                 return;
             }
 
@@ -220,6 +232,8 @@ class IngestUrlJob implements ShouldQueue
                 $source->ingest_next_retry_at = now()->addSeconds($delay);
                 $source->save();
 
+                $this->logAttempt($source, IngestAttempt::OUTCOME_RETRYING);
+
                 $this->release($delay);
 
                 return;
@@ -228,6 +242,8 @@ class IngestUrlJob implements ShouldQueue
             $source->ingest_status = 'failed';
             $source->ingest_next_retry_at = null;
             $source->save();
+
+            $this->logAttempt($source, IngestAttempt::OUTCOME_FAILED);
         } finally {
             // Once handed off, the upload job owns this file until it either
             // stores it or exhausts its retries. While the queue still intends
@@ -262,7 +278,13 @@ class IngestUrlJob implements ShouldQueue
 
         $part = storage_path('app/ingest/ingest-' . $this->sourceId . '.part');
 
-        $this->recordFailedAttempt($source, $part, $e->getMessage());
+        $quarantined = $this->recordFailedAttempt($source, $part, $e->getMessage());
+
+        $this->logAttempt(
+            $source,
+            $quarantined ? IngestAttempt::OUTCOME_QUARANTINED : IngestAttempt::OUTCOME_FAILED,
+            ['error' => $source->ingest_error ?? $e->getMessage()]
+        );
 
         if (is_file($part)) {
             @unlink($part);
@@ -480,6 +502,23 @@ class IngestUrlJob implements ShouldQueue
      * A median file size cannot answer this: one 2 GB episode does not fit in
      * the 900 MB that are actually left.
      */
+    /**
+     * Append this attempt to the permanent history. The row's own counters are
+     * reset by a requeue; this table is what survives that reset.
+     */
+    protected function logAttempt($source, string $outcome, array $context = []): void
+    {
+        // A quarantined attempt is judged on the accumulated evidence (several
+        // attempts over several Workers), not on this attempt's routes alone.
+        if ($outcome === IngestAttempt::OUTCOME_QUARANTINED && !isset($context['workers'])) {
+            $context['workers'] = (array) ($source->ingest_zero_workers ?? []);
+        }
+
+        app(IngestAttemptLogger::class)->record($source, $outcome, $context + [
+            'workers' => array_values($this->triedWorkers),
+        ]);
+    }
+
     /** Remember a Worker that served this attempt (a proxy route id). */
     protected function noteWorker($workerId): void
     {

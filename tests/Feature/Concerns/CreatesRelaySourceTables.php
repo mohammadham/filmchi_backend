@@ -57,6 +57,27 @@ trait CreatesRelaySourceTables
 
             $this->createdSourceTables[] = $table;
         }
+
+        // Attempt history: the real table ships with a migration, tests that
+        // create the source tables themselves need it as well.
+        if (!Schema::hasTable('ingest_attempt_log')) {
+            Schema::create('ingest_attempt_log', function ($blueprint) {
+                $blueprint->bigIncrements('id');
+                $blueprint->string('source_type', 16);
+                $blueprint->unsignedBigInteger('source_id');
+                $blueprint->unsignedSmallInteger('attempt_no')->default(0);
+                $blueprint->string('outcome', 24);
+                $blueprint->unsignedBigInteger('bytes')->default(0);
+                $blueprint->string('route', 191)->nullable();
+                $blueprint->text('error')->nullable();
+                $blueprint->unsignedInteger('duration_ms')->nullable();
+                $blueprint->timestamp('started_at')->nullable();
+                $blueprint->timestamp('finished_at')->nullable();
+                $blueprint->timestamps();
+            });
+
+            $this->createdSourceTables[] = 'ingest_attempt_log';
+        }
     }
 
     protected function dropSourceTables(): void
