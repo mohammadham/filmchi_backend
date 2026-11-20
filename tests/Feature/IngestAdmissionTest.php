@@ -43,6 +43,7 @@ class IngestAdmissionTest extends TestCase
 
         AdmissionProbeJob::$probe = ['size' => 0, 'ranges' => false, 'status' => 200];
         AdmissionProbeJob::$reserve = null;
+        AdmissionProbeJob::$ceiling = null;
         AdmissionProbeJob::$allow = false;
     }
 
@@ -135,6 +136,23 @@ class IngestAdmissionTest extends TestCase
             3 * 1048576 - DiskBudget::writtenBytes($part),
             AdmissionProbeJob::$reserve
         );
+
+        // A file with bytes on disk is a retry, not new work: the ceiling must
+        // not be allowed to freeze it.
+        if (DiskBudget::writtenBytes($part) > 0) {
+            $this->assertFalse(AdmissionProbeJob::$ceiling);
+        }
+    }
+
+    public function test_a_source_starting_from_nothing_is_gated_by_the_ceiling(): void
+    {
+        $source = $this->source();
+
+        AdmissionProbeJob::$probe = ['size' => 3 * 1048576, 'ranges' => false, 'status' => 200];
+
+        $this->jobFor($source)->handle();
+
+        $this->assertTrue(AdmissionProbeJob::$ceiling);
     }
 
     public function test_a_file_that_does_not_fit_is_deferred_without_spending_a_try(): void
@@ -247,14 +265,18 @@ class AdmissionProbeJob extends IngestUrlJob
 
     public static bool $allow = false;
 
+    /** Whether the job let the ceiling gate this admission. */
+    public static ?bool $ceiling = null;
+
     protected function probeSource(): array
     {
         return self::$probe;
     }
 
-    protected function diskBudgetAllows(int $reserveBytes): bool
+    protected function diskBudgetAllows(int $reserveBytes, bool $ceiling = true): bool
     {
         self::$reserve = $reserveBytes;
+        self::$ceiling = $ceiling;
 
         return self::$allow;
     }

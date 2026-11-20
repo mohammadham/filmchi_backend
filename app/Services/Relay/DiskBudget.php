@@ -134,14 +134,22 @@ class DiskBudget
      *
      *  - the floor: never take free space below min_free_mb;
      *  - the percentage: never spend more than disk_percent of what is free;
-     *  - the ceiling: never let the in-flight backlog pass max_inflight_mb.
+     *  - the ceiling: never start new work that would push the in-flight
+     *    backlog past max_inflight_mb.
      *
      * The percentage used to be measured against a budget that then had the
      * parts on disk subtracted again. Those parts are already missing from
      * freeBytes(), so that subtraction counted them twice and a host with
      * plenty of room could sit at zero downloads.
+     *
+     * $ceiling can be dropped for work that is already on disk. A file that
+     * has been started is part of the backlog whether or not the ceiling is
+     * respected; refusing its retry because the backlog is already above the
+     * ceiling freezes every part at once, with nothing uploading and nothing
+     * deleting them. Measured on the live host this stranded 4.5 GB in 54
+     * half-downloaded files while the panel showed zero downloads.
      */
-    public static function roomBytes(): int
+    public static function roomBytes(bool $ceiling = true): int
     {
         $free = self::freeBytes();
         $percent = self::percent();
@@ -152,10 +160,12 @@ class DiskBudget
             $room = min($room, (int) floor($free * $percent / 100));
         }
 
-        $ceiling = self::maxInflightBytes();
+        if ($ceiling) {
+            $cap = self::maxInflightBytes();
 
-        if ($ceiling > 0) {
-            $room = min($room, max(0, $ceiling - self::ingestBytes()));
+            if ($cap > 0) {
+                $room = min($room, max(0, $cap - self::ingestBytes()));
+            }
         }
 
         return max(0, $room);
@@ -167,13 +177,13 @@ class DiskBudget
      * Expressed as a total (what is on disk plus what may still be added) so
      * that canAdmit() and slots() keep comparing like with like.
      */
-    public static function budgetBytes(): int
+    public static function budgetBytes(bool $ceiling = true): int
     {
         if (self::percent() <= 0) {
             return 0;
         }
 
-        return self::ingestBytes() + self::roomBytes();
+        return self::ingestBytes() + self::roomBytes($ceiling);
     }
 
     /**
@@ -253,16 +263,23 @@ class DiskBudget
      * file's Content-Length minus whatever its .part file already holds), and
      * $inFlight is what the files on disk already occupy. A zero percentage
      * disables the budget entirely.
+     *
+     * $ceiling is false for a file that already has bytes on disk: it has to
+     * be allowed to finish and free itself. See roomBytes().
      */
-    public static function canAdmit(int $reserveBytes, ?int $budget = null, ?int $inFlight = null): bool
-    {
+    public static function canAdmit(
+        int $reserveBytes,
+        ?int $budget = null,
+        ?int $inFlight = null,
+        bool $ceiling = true
+    ): bool {
         if (self::percent() <= 0) {
             return true;
         }
 
         return max(0, $inFlight ?? self::ingestBytes())
             + max(0, $reserveBytes)
-            <= max(0, $budget ?? self::budgetBytes());
+            <= max(0, $budget ?? self::budgetBytes($ceiling));
     }
 
     /**
@@ -299,7 +316,10 @@ class DiskBudget
             return $max;
         }
 
-        return self::slots(self::budgetBytes(), self::ingestBytes(), self::typicalBytes(), $max);
+        // Without the ceiling on purpose: the pool exists to finish what is
+        // already on disk as much as to start new files, and a zero here stops
+        // every worker, so nothing would ever upload and drain the backlog.
+        return self::slots(self::budgetBytes(false), self::ingestBytes(), self::typicalBytes(), $max);
     }
 
     /** @return array{free:int,percent:int,budget:int,ingest:int,downloads:int} */
@@ -308,7 +328,9 @@ class DiskBudget
         return [
             'free' => self::freeBytes(),
             'percent' => self::percent(),
-            'budget' => self::budgetBytes(),
+            // The budget the download count is derived from, so the panel
+            // cannot show "budget used up" next to a positive slot count.
+            'budget' => self::budgetBytes(false),
             'ingest' => self::ingestBytes(),
             'downloads' => self::desiredDownloads($max),
         ];

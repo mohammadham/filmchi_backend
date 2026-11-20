@@ -440,11 +440,18 @@ class IngestUrlJob implements ShouldQueue
      */
     protected function assertDiskBudget(int $contentLength, string $part): void
     {
+        $written = DiskBudget::writtenBytes($part);
+
         $reserve = $contentLength > 0
-            ? max(0, $contentLength - DiskBudget::writtenBytes($part))
+            ? max(0, $contentLength - $written)
             : DiskBudget::typicalBytes();
 
-        if ($this->diskBudgetAllows($reserve)) {
+        // A file with bytes on disk is already part of the backlog and has to
+        // be allowed to finish, even when that backlog is above the ceiling.
+        // Otherwise every started part freezes at once and nothing drains.
+        $ceiling = $written <= 0;
+
+        if ($this->diskBudgetAllows($reserve, $ceiling)) {
             // Admission succeeded, so the refusals before it are stale: the
             // next block must start again from the base delay.
             Cache::forget($this->blockCounterKey());
@@ -462,9 +469,9 @@ class IngestUrlJob implements ShouldQueue
     }
 
     /** Kept separate so admission can be asserted without filling a disk. */
-    protected function diskBudgetAllows(int $reserveBytes): bool
+    protected function diskBudgetAllows(int $reserveBytes, bool $ceiling = true): bool
     {
-        return DiskBudget::canAdmit($reserveBytes);
+        return DiskBudget::canAdmit($reserveBytes, null, null, $ceiling);
     }
 
     /**

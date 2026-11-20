@@ -200,6 +200,41 @@ class DiskBudgetTest extends TestCase
         $this->assertFalse(DiskBudget::canAdmit($room + 1));
     }
 
+    public function test_a_backlog_above_the_ceiling_can_still_finish(): void
+    {
+        config([
+            'media_relay.ingest.disk_percent' => 95,
+            'media_relay.ingest.min_free_mb' => 0,
+            'media_relay.ingest.max_inflight_mb' => 1,
+        ]);
+
+        $dir = storage_path('app/ingest');
+
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0775, true);
+        }
+
+        $part = $dir . '/ingest-9999998.part';
+        file_put_contents($part, str_repeat('x', 2 * 1048576));
+
+        try {
+            // New work is refused: the backlog is already past the ceiling.
+            $this->assertSame(0, DiskBudget::roomBytes());
+            $this->assertFalse(DiskBudget::canAdmit(1048576));
+
+            // Those same bytes must still be allowed to finish. Freezing them
+            // is what left 54 half-downloaded parts on the live host with
+            // nothing uploading and nothing deleting them.
+            $this->assertGreaterThan(0, DiskBudget::roomBytes(false));
+            $this->assertTrue(DiskBudget::canAdmit(1048576, null, null, false));
+
+            // And the pool keeps a worker, or nothing would ever drain it.
+            $this->assertGreaterThan(0, DiskBudget::desiredDownloads(2));
+        } finally {
+            @unlink($part);
+        }
+    }
+
     public function test_parts_already_on_disk_are_not_subtracted_twice(): void
     {
         // percent() is clamped to 95, so ask for the largest share it allows.
