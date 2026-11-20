@@ -21,6 +21,7 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Throwable;
@@ -149,7 +150,7 @@ class IngestUrlJob implements ShouldQueue
             // spent and the partial file stays for the next run. A release()
             // would burn one of this job's tries on a disk condition that can
             // outlast them, so a fresh attempt is queued after the delay.
-            $delay = max(30, $this->configuredRetryDelay());
+            $delay = $this->blockedRetryDelay();
 
             $source->ingest_attempts = max(0, (int) $source->ingest_attempts - 1);
             $source->ingest_error = Str::limit($e->getMessage(), 500);
@@ -250,6 +251,33 @@ class IngestUrlJob implements ShouldQueue
     protected function configuredRetryDelay(): int
     {
         return max(1, (int) config('media_relay.ingest.retry_delay_seconds', 300));
+    }
+
+    /** Counts consecutive admissions this source was refused for lack of room. */
+    protected function blockCounterKey(): string
+    {
+        return 'relay:ingest:blocked:' . $this->sourceType . ':' . (int) $this->sourceId;
+    }
+
+    /**
+     * How long to wait before asking the budget again after a refusal.
+     *
+     * A fixed delay re-queued every blocked source every five minutes: a few
+     * hundred jobs an hour that can achieve nothing, competing with the upload
+     * jobs that would actually free the space. The wait doubles per refusal up
+     * to six hours, so a source stays in the panel's list without the churn.
+     */
+    protected function blockedRetryDelay(): int
+    {
+        $key = $this->blockCounterKey();
+        $blocks = (int) Cache::get($key, 0) + 1;
+
+        Cache::put($key, $blocks, now()->addDay());
+
+        $base = max(30, $this->configuredRetryDelay());
+        $factor = 2 ** min(6, max(0, $blocks - 1));
+
+        return (int) min(6 * 3600, $base * $factor);
     }
 
     protected function source()
@@ -401,19 +429,26 @@ class IngestUrlJob implements ShouldQueue
     /**
      * Admission for one file.
      *
-     * The reservation is this file's own Content-Length minus the bytes its
-     * .part file already holds (a retry only needs the missing tail), measured
-     * against what is left of the ingest budget after the files currently on
-     * disk. A median file size cannot answer this: one 2 GB episode does not
-     * fit in the 900 MB that are actually left.
+     * The reservation is this file's own Content-Length minus the bytes the
+     * .part file has actually written (a retry only needs the missing tail),
+     * measured against what is left of the ingest budget after the files on
+     * disk. The pre-sized length is never mistaken for progress: on a platform
+     * that cannot report allocated blocks nothing is subtracted.
+     *
+     * A median file size cannot answer this: one 2 GB episode does not fit in
+     * the 900 MB that are actually left.
      */
     protected function assertDiskBudget(int $contentLength, string $part): void
     {
         $reserve = $contentLength > 0
-            ? max(0, $contentLength - DiskBudget::fileBytes($part))
+            ? max(0, $contentLength - DiskBudget::writtenBytes($part))
             : DiskBudget::typicalBytes();
 
         if ($this->diskBudgetAllows($reserve)) {
+            // Admission succeeded, so the refusals before it are stale: the
+            // next block must start again from the base delay.
+            Cache::forget($this->blockCounterKey());
+
             return;
         }
 

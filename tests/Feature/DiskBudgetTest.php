@@ -78,6 +78,27 @@ class DiskBudgetTest extends TestCase
         $this->assertLessThanOrEqual(1048576 + 65536, $bytes);
     }
 
+    public function test_a_pre_sized_part_has_written_nothing(): void
+    {
+        // ftruncate() gives the file a 64 MB length without handing out a
+        // byte of data. A reservation must not read that length as progress.
+        $sparse = $this->tempFile(64 * 1048576);
+
+        $this->assertSame(0, DiskBudget::writtenBytes($sparse));
+    }
+
+    public function test_written_bytes_count_real_content(): void
+    {
+        $path = $this->tempFile(0, str_repeat('x', 1048576));
+        $probe = stat($path);
+
+        if (!is_array($probe) || (int) ($probe['blocks'] ?? -1) <= 0) {
+            $this->markTestSkipped('this platform does not report allocated blocks');
+        }
+
+        $this->assertGreaterThanOrEqual(1048576, DiskBudget::writtenBytes($path));
+    }
+
     public function test_a_missing_file_costs_nothing(): void
     {
         $this->assertSame(0, DiskBudget::fileBytes(sys_get_temp_dir() . '/flixy-absent-' . uniqid()));
@@ -88,21 +109,21 @@ class DiskBudgetTest extends TestCase
         $budget = 900 * 1048576;
 
         // A 2 GB episode does not fit in 900 MB, however typical it is.
-        $this->assertFalse(DiskBudget::fits(2 * 1048576 * 1024, $budget, 0));
-        $this->assertTrue(DiskBudget::fits(899 * 1048576, $budget, 0));
+        $this->assertFalse(DiskBudget::canAdmit(2 * 1048576 * 1024, $budget, 0));
+        $this->assertTrue(DiskBudget::canAdmit(899 * 1048576, $budget, 0));
     }
 
     public function test_bytes_already_in_flight_are_claimed_first(): void
     {
         $budget = 8192;
 
-        $this->assertTrue(DiskBudget::fits(4096, $budget, 4096));
-        $this->assertFalse(DiskBudget::fits(4097, $budget, 4096));
+        $this->assertTrue(DiskBudget::canAdmit(4096, $budget, 4096));
+        $this->assertFalse(DiskBudget::canAdmit(4097, $budget, 4096));
 
         // Nothing left: only a request that needs no new bytes is admitted.
-        $this->assertTrue(DiskBudget::fits(0, $budget, $budget));
-        $this->assertFalse(DiskBudget::fits(1, $budget, $budget));
-        $this->assertFalse(DiskBudget::fits(1, $budget, $budget + 1));
+        $this->assertTrue(DiskBudget::canAdmit(0, $budget, $budget));
+        $this->assertFalse(DiskBudget::canAdmit(1, $budget, $budget));
+        $this->assertFalse(DiskBudget::canAdmit(1, $budget, $budget + 1));
     }
 
     public function test_no_download_slot_is_granted_when_the_budget_is_used_up(): void
@@ -144,5 +165,69 @@ class DiskBudgetTest extends TestCase
         config(['media_relay.ingest.disk_percent' => 50]);
 
         $this->assertSame(0, DiskBudget::desiredDownloads(0));
+    }
+
+    public function test_the_free_space_floor_blocks_every_download(): void
+    {
+        // A reserve larger than any real disk leaves no room, whatever the
+        // percentage says. This is the floor a percentage alone cannot give:
+        // it does not shrink with the disk.
+        config([
+            'media_relay.ingest.disk_percent' => 50,
+            'media_relay.ingest.min_free_mb' => 1048576,
+            'media_relay.ingest.max_inflight_mb' => 0,
+        ]);
+
+        $this->assertSame(0, DiskBudget::roomBytes());
+        $this->assertFalse(DiskBudget::canAdmit(1));
+        $this->assertSame(0, DiskBudget::desiredDownloads(4));
+    }
+
+    public function test_the_in_flight_ceiling_bounds_the_backlog(): void
+    {
+        config([
+            'media_relay.ingest.disk_percent' => 100,
+            'media_relay.ingest.min_free_mb' => 0,
+            'media_relay.ingest.max_inflight_mb' => 1,
+        ]);
+
+        $room = DiskBudget::roomBytes();
+
+        $this->assertGreaterThan(0, $room);
+        $this->assertLessThanOrEqual(1048576, $room);
+
+        // Free space is not permission to hold more than the ceiling.
+        $this->assertFalse(DiskBudget::canAdmit($room + 1));
+    }
+
+    public function test_parts_already_on_disk_are_not_subtracted_twice(): void
+    {
+        // percent() is clamped to 95, so ask for the largest share it allows.
+        config([
+            'media_relay.ingest.disk_percent' => 95,
+            'media_relay.ingest.min_free_mb' => 0,
+            'media_relay.ingest.max_inflight_mb' => 0,
+        ]);
+
+        $dir = storage_path('app/ingest');
+
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0775, true);
+        }
+
+        $part = $dir . '/ingest-9999999.part';
+        file_put_contents($part, str_repeat('x', 128 * 1048576));
+
+        try {
+            $free = DiskBudget::freeBytes();
+            $room = DiskBudget::roomBytes();
+
+            // freeBytes() already excludes the part. Taking it off the budget
+            // again is what showed "0 downloads" on a host with 13 GB free.
+            $this->assertGreaterThan((int) ($free * 0.95) - 32 * 1048576, $room);
+            $this->assertLessThanOrEqual($free, $room);
+        } finally {
+            @unlink($part);
+        }
     }
 }

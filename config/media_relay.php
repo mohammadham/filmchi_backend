@@ -53,11 +53,22 @@ return [
         // concurrent job opens its own connection budget, so the total socket
         // count is roughly connections × concurrency.
         'concurrency' => (int) env('RELAY_INGEST_CONCURRENCY', 1),
-        // Use this percentage of the currently free disk as the budget for
-        // files being downloaded or waiting to upload. A file is admitted only
-        // when its own Content-Length (minus what its .part file already
-        // holds) still fits after the bytes already on disk are counted. 0
-        // disables the disk budget and keeps the fixed concurrency above.
+        // Free space that ingest may never spend. A percentage alone cannot
+        // answer this: it shrinks with the disk, so the closer the host gets to
+        // full the less it holds back. Telegram Drive already rejects uploads
+        // below 15% free, which turns a nearly full disk into a deadlock (no
+        // upload -> .part files never leave -> disk stays full), so the floor
+        // has to sit above that watermark plus room for MySQL, Redis and
+        // Docker. 0 drops the floor.
+        'min_free_mb' => (int) env('RELAY_INGEST_MIN_FREE_MB', 8192),
+        // Hard ceiling on the bytes held by .part files that are downloading
+        // or waiting to upload. The floor bounds what is left, this bounds the
+        // backlog itself. 0 = no ceiling.
+        'max_inflight_mb' => (int) env('RELAY_INGEST_MAX_INFLIGHT_MB', 4096),
+        // Secondary cap: never spend more than this share of the free space.
+        // It used to be the whole budget, which both double-counted the parts
+        // already on disk and let the allowance shrink as the disk filled. 0
+        // still disables the disk budget entirely.
         'disk_percent' => (int) env('RELAY_INGEST_DISK_PERCENT', 50),
         // A retried download keeps its .part file so the next attempt can
         // resume it. When that retry never comes back the file is dead weight,

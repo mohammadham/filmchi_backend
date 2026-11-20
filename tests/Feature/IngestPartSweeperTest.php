@@ -21,7 +21,7 @@ class IngestPartSweeperTest extends TestCase
     use CreatesRelaySourceTables;
 
     /** High ids so the cases cannot collide with rows already in the DB. */
-    protected array $ids = [990001, 990002, 990003, 990004, 990005, 990006, 990007, 990008, 990009];
+    protected array $ids = [990001, 990002, 990003, 990004, 990005, 990006, 990007, 990008, 990009, 990010];
 
     protected string $dir;
 
@@ -105,10 +105,26 @@ class IngestPartSweeperTest extends TestCase
         $this->assertFileDoesNotExist($part);
     }
 
-    public function test_a_retrying_source_with_a_scheduled_retry_keeps_its_part(): void
+    public function test_a_scheduled_retry_does_not_pin_an_untouched_part(): void
     {
+        // A retry keeps its .part only while it is really resuming it: a due
+        // retry writes at once and refreshes the mtime. A file that has not
+        // been touched for the whole stale window belongs to a source that
+        // keeps being refused admission, and keeping it is what filled the
+        // disk.
         $this->sourceRow(990002, 'retrying', 3600);
         $part = $this->part(990002, 4096, 24 * 3600);
+
+        $result = $this->sweep(12);
+
+        $this->assertSame(1, $result['deleted']);
+        $this->assertFileDoesNotExist($part);
+    }
+
+    public function test_a_fresh_part_with_a_scheduled_retry_is_kept(): void
+    {
+        $this->sourceRow(990009, 'retrying', 300);
+        $part = $this->part(990009, 4096, 60);
 
         $result = $this->sweep(12);
 
@@ -126,6 +142,19 @@ class IngestPartSweeperTest extends TestCase
 
         $this->assertSame(0, $result['deleted']);
         $this->assertFileExists($part);
+    }
+
+    public function test_a_completed_source_part_is_a_crash_artifact_and_goes(): void
+    {
+        // The upload job unlinks the part right after marking the source
+        // completed, so a part that outlives that is dead weight.
+        $this->sourceRow(990010, 'completed');
+        $part = $this->part(990010, 4096, 24 * 3600);
+
+        $result = $this->sweep(12);
+
+        $this->assertSame(1, $result['deleted']);
+        $this->assertFileDoesNotExist($part);
     }
 
     public function test_a_recent_part_is_kept_even_when_its_source_row_is_gone(): void

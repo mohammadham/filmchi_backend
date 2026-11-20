@@ -12,9 +12,10 @@ use Illuminate\Support\Facades\Schema;
  * Every download writes a .part file, and an upload keeps that same file on
  * disk until Telegram Drive has stored it. The budget therefore covers both
  * phases: a new download may only start while the bytes it is actually going
- * to write still fit inside the configured percentage of the disk that is
- * free right now, minus the bytes already held by files that are downloading
- * or waiting to upload.
+ * to write still fit in the room left by three brakes — the free-space floor,
+ * the percentage of free space, and the ceiling on the in-flight backlog.
+ * Those bytes are already missing from freeBytes(), so nothing is subtracted
+ * twice.
  *
  * Two rules keep this honest:
  *
@@ -47,17 +48,6 @@ class DiskBudget
         return max(0, (int) $free);
     }
 
-    public static function totalBytes(): int
-    {
-        $total = @disk_total_space(storage_path('app/ingest'));
-
-        if ($total === false) {
-            $total = @disk_total_space(storage_path());
-        }
-
-        return max(0, (int) $total);
-    }
-
     /**
      * Bytes a file really occupies on disk.
      *
@@ -85,6 +75,28 @@ class DiskBudget
         return max(0, (int) ($stat['size'] ?? 0));
     }
 
+    /**
+     * Bytes actually written into a file: the same allocated blocks, but zero
+     * when the platform cannot report them.
+     *
+     * This is the number a reservation may subtract. A .part file is
+     * pre-sized with ftruncate() to the whole remote file, so its length says
+     * nothing about how much has been fetched; treating that length as
+     * progress would reserve nothing at all for a file that is still empty.
+     */
+    public static function writtenBytes(string $path): int
+    {
+        $stat = @stat($path);
+
+        if (!is_array($stat)) {
+            return 0;
+        }
+
+        $blocks = (int) ($stat['blocks'] ?? -1);
+
+        return $blocks >= 0 ? $blocks * 512 : 0;
+    }
+
     /** Bytes currently held by downloaded or pending-upload .part files. */
     public static function ingestBytes(): int
     {
@@ -97,16 +109,71 @@ class DiskBudget
         return $bytes;
     }
 
-    /** The disk budget available for new ingest files, in bytes. */
-    public static function budgetBytes(): int
+    /** Free space that ingest is never allowed to spend, in bytes. */
+    public static function minFreeBytes(): int
     {
+        $mb = (int) config('media_relay.ingest.min_free_mb', 8192);
+
+        return max(0, $mb) * 1048576;
+    }
+
+    /** Ceiling for the bytes held by .part files in flight. 0 = no ceiling. */
+    public static function maxInflightBytes(): int
+    {
+        $mb = (int) config('media_relay.ingest.max_inflight_mb', 4096);
+
+        return max(0, $mb) * 1048576;
+    }
+
+    /**
+     * Room for more ingest bytes, in bytes.
+     *
+     * Three independent brakes, all expressed as "how much more may be
+     * written" so they can be compared and not mixed with the bytes already
+     * on disk:
+     *
+     *  - the floor: never take free space below min_free_mb;
+     *  - the percentage: never spend more than disk_percent of what is free;
+     *  - the ceiling: never let the in-flight backlog pass max_inflight_mb.
+     *
+     * The percentage used to be measured against a budget that then had the
+     * parts on disk subtracted again. Those parts are already missing from
+     * freeBytes(), so that subtraction counted them twice and a host with
+     * plenty of room could sit at zero downloads.
+     */
+    public static function roomBytes(): int
+    {
+        $free = self::freeBytes();
         $percent = self::percent();
 
-        if ($percent <= 0) {
+        $room = max(0, $free - self::minFreeBytes());
+
+        if ($percent > 0) {
+            $room = min($room, (int) floor($free * $percent / 100));
+        }
+
+        $ceiling = self::maxInflightBytes();
+
+        if ($ceiling > 0) {
+            $room = min($room, max(0, $ceiling - self::ingestBytes()));
+        }
+
+        return max(0, $room);
+    }
+
+    /**
+     * Total bytes the in-flight files may hold.
+     *
+     * Expressed as a total (what is on disk plus what may still be added) so
+     * that canAdmit() and slots() keep comparing like with like.
+     */
+    public static function budgetBytes(): int
+    {
+        if (self::percent() <= 0) {
             return 0;
         }
 
-        return (int) floor(self::freeBytes() * $percent / 100);
+        return self::ingestBytes() + self::roomBytes();
     }
 
     /**
@@ -157,10 +224,10 @@ class DiskBudget
 
             if (empty($sizes)) {
                 foreach (glob(storage_path('app/ingest/*.part')) ?: [] as $file) {
-                    $size = @filesize($file);
+                    $size = self::fileBytes($file);
 
-                    if ($size !== false && $size > 0) {
-                        $sizes[] = (int) $size;
+                    if ($size > 0) {
+                        $sizes[] = $size;
                     }
                 }
             }
@@ -193,17 +260,9 @@ class DiskBudget
             return true;
         }
 
-        return self::fits(
-            $reserveBytes,
-            $budget ?? self::budgetBytes(),
-            $inFlight ?? self::ingestBytes()
-        );
-    }
-
-    /** The admission rule itself, kept pure so it can be asserted directly. */
-    public static function fits(int $reserveBytes, int $budget, int $inFlight): bool
-    {
-        return max(0, $inFlight) + max(0, $reserveBytes) <= max(0, $budget);
+        return max(0, $inFlight ?? self::ingestBytes())
+            + max(0, $reserveBytes)
+            <= max(0, $budget ?? self::budgetBytes());
     }
 
     /**
@@ -243,17 +302,14 @@ class DiskBudget
         return self::slots(self::budgetBytes(), self::ingestBytes(), self::typicalBytes(), $max);
     }
 
-    /** @return array{free:int,total:int,percent:int,budget:int,ingest:int,remaining:int,typical:int,downloads:int} */
+    /** @return array{free:int,percent:int,budget:int,ingest:int,downloads:int} */
     public static function status(int $max): array
     {
         return [
             'free' => self::freeBytes(),
-            'total' => self::totalBytes(),
             'percent' => self::percent(),
             'budget' => self::budgetBytes(),
             'ingest' => self::ingestBytes(),
-            'remaining' => self::remainingBytes(),
-            'typical' => self::typicalBytes(),
             'downloads' => self::desiredDownloads($max),
         ];
     }

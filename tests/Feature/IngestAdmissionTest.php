@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\EpisodeSource;
 use App\Jobs\IngestUrlJob;
+use App\Services\Relay\DiskBudget;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Tests\Feature\Concerns\CreatesRelaySourceTables;
@@ -120,14 +121,20 @@ class IngestAdmissionTest extends TestCase
     public function test_the_reservation_is_the_files_content_length_minus_what_is_already_on_disk(): void
     {
         $source = $this->source();
-        $this->partFile((int) $source->id, 1048576);
+        $part = $this->partFile((int) $source->id, 1048576);
 
         // 3 MB remote file, 1 MB already flushed to the .part file.
         AdmissionProbeJob::$probe = ['size' => 3 * 1048576, 'ranges' => false, 'status' => 200];
 
         $this->jobFor($source)->handle();
 
-        $this->assertSame(2 * 1048576, AdmissionProbeJob::$reserve);
+        // Only bytes that are really written count as progress. Where the
+        // platform cannot report allocated blocks (Windows) nothing is
+        // subtracted, which over-reserves instead of under-reserving.
+        $this->assertSame(
+            3 * 1048576 - DiskBudget::writtenBytes($part),
+            AdmissionProbeJob::$reserve
+        );
     }
 
     public function test_a_file_that_does_not_fit_is_deferred_without_spending_a_try(): void
@@ -157,6 +164,40 @@ class IngestAdmissionTest extends TestCase
         Queue::assertPushed(AdmissionProbeJob::class, function ($queued) use ($source) {
             return (int) $queued->sourceId === (int) $source->id && $queued->delay !== null;
         });
+    }
+
+    public function test_a_source_blocked_twice_waits_longer_the_second_time(): void
+    {
+        $source = $this->source();
+        $this->partFile((int) $source->id, 1048576);
+
+        AdmissionProbeJob::$probe = ['size' => 8 * 1048576, 'ranges' => false, 'status' => 200];
+
+        $this->jobFor($source)->handle();
+        $first = $this->lastDelaySeconds();
+
+        $this->jobFor($source)->handle();
+        $second = $this->lastDelaySeconds();
+
+        // The fixed five-minute delay re-queued every blocked source 288 times
+        // a day for nothing. The wait has to grow.
+        $this->assertSame(300, $first);
+        $this->assertGreaterThan($first * 1.5, $second);
+        $this->assertLessThanOrEqual(6 * 3600, $second);
+    }
+
+    /** Delay of the most recently queued attempt, in seconds. */
+    protected function lastDelaySeconds(): int
+    {
+        $job = Queue::pushed(AdmissionProbeJob::class)->last();
+
+        if (!$job || $job->delay === null) {
+            return 0;
+        }
+
+        return $job->delay instanceof \DateTimeInterface
+            ? $job->delay->getTimestamp() - now()->getTimestamp()
+            : (int) $job->delay;
     }
 
     public function test_a_source_without_a_content_length_reserves_the_typical_file(): void

@@ -17,13 +17,21 @@ use Throwable;
  * eventually the disk that also holds MySQL and Redis.
  *
  * A part is deleted only when nothing can still write to it: its source is not
- * queued, downloading, uploading or completed, no retry is scheduled inside
- * the stale window, and the file itself has not been touched for that window.
+ * queued, downloading or uploading, and the file itself has not been touched
+ * for the stale window. A completed source is not active: its bytes are on
+ * Telegram Drive and the upload job unlinks the part immediately, so one that
+ * survives is a crash artifact.
+ *
+ * A scheduled retry is deliberately not a reason to keep the file. A retry
+ * that is really due writes within seconds and refreshes the file's mtime; a
+ * retry that keeps sliding forward without writing is exactly the admission
+ * loop that lets dead parts live forever. Being blocked on disk space is not
+ * progress either: the source can download again once there is room.
  */
 class IngestPartSweeper
 {
     /** Statuses that mean a job may still read or write this file. */
-    public const ACTIVE_STATUSES = ['queued', 'downloading', 'uploading', 'completed'];
+    public const ACTIVE_STATUSES = ['queued', 'downloading', 'uploading'];
 
     protected string $dir;
 
@@ -59,7 +67,7 @@ class IngestPartSweeper
                 continue;
             }
 
-            if (!$this->isAbandoned((int) $match[1], $cutoff)) {
+            if (!$this->isAbandoned((int) $match[1])) {
                 $result['kept']++;
 
                 continue;
@@ -99,10 +107,13 @@ class IngestPartSweeper
     }
 
     /**
-     * True when every source row that owns this file has stopped moving and
-     * has no retry left to run.
+     * True when every source row that owns this file has stopped moving.
+     *
+     * Only a live job counts as movement. A retry timestamp is not enough:
+     * the file is already older than the stale window, so whatever is
+     * scheduled has not written a byte for that long.
      */
-    protected function isAbandoned(int $id, int $cutoff): bool
+    protected function isAbandoned(int $id): bool
     {
         $rows = $this->rows($id);
 
@@ -115,18 +126,6 @@ class IngestPartSweeper
         foreach ($rows as $row) {
             if (in_array((string) ($row->ingest_status ?? ''), self::ACTIVE_STATUSES, true)) {
                 return false;
-            }
-
-            $retryAt = $row->ingest_next_retry_at ?? null;
-
-            if ($retryAt !== null) {
-                $timestamp = strtotime((string) $retryAt);
-
-                // A retry that is due, or was due inside the stale window, is
-                // still going to resume this file.
-                if ($timestamp !== false && $timestamp > $cutoff) {
-                    return false;
-                }
             }
         }
 
@@ -148,7 +147,7 @@ class IngestPartSweeper
 
                 $row = DB::table($table)
                     ->where('id', $id)
-                    ->first(['id', 'ingest_status', 'ingest_next_retry_at']);
+                    ->first(['id', 'ingest_status']);
             } catch (Throwable $e) {
                 continue;
             }
