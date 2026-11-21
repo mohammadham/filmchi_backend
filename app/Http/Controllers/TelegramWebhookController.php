@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers;
 
+use App\Jobs\ImportBotFileJob;
+use App\Services\Bot\TelegramBotClient;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -15,11 +17,16 @@ use Illuminate\Support\Facades\Log;
  * else gets a 200 with no side effect, so a stranger learns nothing and a
  * disallowed user cannot even make the bot retry.
  *
- * Nothing heavy happens here: the update id is recorded for dedup and the
- * caller returns immediately; the conversation/jobs pick it up later.
+ * Nothing heavy happens here: the update id is recorded for dedup, an allowed
+ * /ping is answered so the bot is verifiable without the queue, and the caller
+ * returns immediately; the conversation/jobs pick the rest up later.
  */
 class TelegramWebhookController extends Controller
 {
+    public function __construct(protected TelegramBotClient $bot)
+    {
+    }
+
     public function handle(Request $request, string $secret)
     {
         $expected = (string) config('media_relay.bot.webhook_secret');
@@ -58,14 +65,45 @@ class TelegramWebhookController extends Controller
             return response()->json(['ok' => true]);
         }
 
-        // update_id is the primary key: a retried delivery is a no-op.
-        DB::table('bot_updates')->insertOrIgnore([
+        // update_id is the primary key: a retried delivery is a no-op, and
+        // only the delivery that actually recorded the row queues the import.
+        $recorded = DB::table('bot_updates')->insertOrIgnore([
             'update_id' => $updateId,
             'kind' => array_key_exists('callback_query', $update) ? 'callback_query' : 'message',
+            'payload' => json_encode($update, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
             'received_at' => now(),
         ]);
 
+        if ($this->isPing($message)) {
+            $this->answerPing((int) ($message['chat']['id'] ?? 0));
+        }
+
+        if ($recorded > 0 && is_array($message['document'] ?? null)) {
+            ImportBotFileJob::dispatch($updateId);
+        }
+
         return response()->json(['ok' => true]);
+    }
+
+    /**
+     * `/ping` and `/ping@BotName` (Telegram appends the username in groups).
+     * A callback query has no text, so it never matches.
+     *
+     * @param  array  $message  message
+     */
+    protected function isPing(array $message): bool
+    {
+        $text = trim((string) ($message['text'] ?? ''));
+
+        return $text !== '' && preg_match('#^/ping(@\w+)?(\s|$)#i', $text) === 1;
+    }
+
+    /** A failed reply must not turn a recorded update into a Telegram retry. */
+    protected function answerPing(int $chatId): void
+    {
+        if ($chatId > 0) {
+            $this->bot->trySendMessage($chatId, 'pong');
+        }
     }
 
     /**

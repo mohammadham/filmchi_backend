@@ -2,8 +2,11 @@
 
 namespace Tests\Feature;
 
+use App\Jobs\ImportBotFileJob;
 use App\Services\Relay\RelaySettings;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Queue;
 use Tests\TestCase;
 
 /**
@@ -34,7 +37,7 @@ class TelegramWebhookTest extends TestCase
         return $this->postJson('telegram/webhook/' . $secret, $update, $headers);
     }
 
-    protected function update(int $updateId, int $userId = 111, string $chatType = 'private'): array
+    protected function update(int $updateId, int $userId = 111, string $chatType = 'private', string $text = '/start'): array
     {
         return [
             'update_id' => $updateId,
@@ -43,7 +46,7 @@ class TelegramWebhookTest extends TestCase
                 'from' => ['id' => $userId, 'is_bot' => false, 'first_name' => 'علی'],
                 'chat' => ['id' => $userId, 'type' => $chatType],
                 'date' => time(),
-                'text' => '/start',
+                'text' => $text,
             ],
         ];
     }
@@ -85,6 +88,7 @@ class TelegramWebhookTest extends TestCase
 
         $this->assertSame(1, DB::table('bot_updates')->count());
         $this->assertSame('message', DB::table('bot_updates')->where('update_id', 10)->value('kind'));
+        $this->assertNotNull(DB::table('bot_updates')->where('update_id', 10)->value('payload'), 'the update is kept for the job');
 
         $callback = [
             'update_id' => 11,
@@ -111,6 +115,88 @@ class TelegramWebhookTest extends TestCase
         $this->postUpdate($this->update(21, 111, 'supergroup'))->assertOk(); // not private
 
         $this->assertSame(0, DB::table('bot_updates')->count());
+    }
+
+    public function test_a_document_update_stores_its_payload_and_queues_the_import(): void
+    {
+        Queue::fake();
+
+        $this->postUpdate($this->documentUpdate(40))->assertOk();
+
+        Queue::assertPushed(ImportBotFileJob::class, fn ($job) => $job->updateId === 40);
+
+        $payload = json_decode((string) DB::table('bot_updates')->where('update_id', 40)->value('payload'), true);
+        $this->assertSame('uq-40', $payload['message']['document']['file_unique_id']);
+        $this->assertSame(2048, $payload['message']['document']['file_size']);
+    }
+
+    public function test_a_retried_document_delivery_is_not_queued_twice(): void
+    {
+        Queue::fake();
+
+        $this->postUpdate($this->documentUpdate(41))->assertOk();
+        $this->postUpdate($this->documentUpdate(41))->assertOk();
+
+        Queue::assertPushed(ImportBotFileJob::class, 1);
+    }
+
+    protected function documentUpdate(int $updateId, int $userId = 111): array
+    {
+        $update = $this->update($updateId, $userId);
+
+        unset($update['message']['text']);
+
+        $update['message']['document'] = [
+            'file_id' => 'AAA' . $updateId,
+            'file_unique_id' => 'uq-' . $updateId,
+            'file_name' => 'movie.mkv',
+            'file_size' => 2048,
+            'mime_type' => 'video/x-matroska',
+        ];
+
+        return $update;
+    }
+
+    public function test_an_allowed_ping_is_answered(): void
+    {
+        Http::fake(['api.telegram.org/*' => Http::response([
+            'ok' => true,
+            'result' => ['message_id' => 55],
+        ])]);
+
+        $this->postUpdate($this->update(30, 111, 'private', '/ping'))->assertOk();
+
+        Http::assertSent(function ($request) {
+            return str_ends_with($request->url(), '/sendMessage')
+                && (int) $request['chat_id'] === 111
+                && $request['text'] === 'pong';
+        });
+        Http::assertSentCount(1);
+        $this->assertSame(1, DB::table('bot_updates')->count());
+    }
+
+    public function test_only_an_allowed_ping_is_answered(): void
+    {
+        Http::fake();
+
+        $this->postUpdate($this->update(31, 999, 'private', '/ping'))->assertOk();  // outsider
+        $this->postUpdate($this->update(33, 111, 'private', 'سلام'))->assertOk();   // plain text
+
+        Http::assertNothingSent();
+        $this->assertSame(1, DB::table('bot_updates')->count(), 'only the allowed text update was recorded');
+    }
+
+    public function test_a_failed_ping_reply_does_not_break_the_webhook(): void
+    {
+        Http::fake(['api.telegram.org/*' => Http::response([
+            'ok' => false,
+            'description' => 'Bad Request: chat not found',
+        ], 400)]);
+
+        $this->postUpdate($this->update(32, 111, 'private', '/ping'))->assertOk();
+
+        // recorded once, so Telegram's retry of the same update is still a no-op
+        $this->assertSame(1, DB::table('bot_updates')->count());
     }
 
     public function test_an_update_without_an_id_is_rejected(): void
