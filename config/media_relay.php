@@ -435,6 +435,10 @@ return [
         'quality'        => (string) env('RELAY_BOT_QUALITY', '1080'),
         // Files one allowed user may submit per day (0 = unlimited).
         'daily_limit'    => (int) env('RELAY_BOT_DAILY_LIMIT', 20),
+        // copyMessage is metadata + a server-side copy: seconds, not minutes.
+        'copy_timeout'   => (int) env('RELAY_BOT_COPY_TIMEOUT', 60),
+        // Bot imports get their own lane so a big file never blocks the panel.
+        'queue'          => env('RELAY_BOT_QUEUE', 'bot'),
     ],
 
 ];
