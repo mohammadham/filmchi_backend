@@ -4,16 +4,12 @@ namespace Tests\Feature;
 
 use App\Services\Bot\BotManifestSender;
 use App\Services\Relay\StoredMessageImporter;
-use App\Services\Relay\TelegramDriveClient;
 use App\Services\Relay\TelegramDriveRefusal;
-use GuzzleHttp\Client as HttpClient;
-use GuzzleHttp\Handler\MockHandler;
-use GuzzleHttp\HandlerStack;
-use GuzzleHttp\Middleware;
 use GuzzleHttp\Psr7\Response;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
+use Tests\Support\DriveMock;
 use Tests\TestCase;
 
 /**
@@ -66,7 +62,7 @@ class StoredMessageImporterTest extends TestCase
 
     public function test_the_adopt_path_is_used_when_it_works(): void
     {
-        $drive = new ImporterMockClient([$this->adoptOk()]);
+        $drive = new DriveMock([$this->adoptOk()]);
         $senderCalls = 0;
 
         $result = (new StoredMessageImporter($drive))->import(
@@ -81,9 +77,9 @@ class StoredMessageImporterTest extends TestCase
 
         $this->assertSame('adopt', $result['path']);
         $this->assertSame('f_adopted', $result['file_id']);
-        $this->assertSame(1, $drive->calls);
+        $this->assertCount(1, $drive->history);
         $this->assertSame(0, $senderCalls, 'a working adopt must not send a manifest');
-        $this->assertStringContainsString('/api/v1/files/adopt', $drive->history[0]);
+        $this->assertStringContainsString('/api/v1/files/adopt', $drive->history[0]['path']);
     }
 
     public function test_the_manifest_backup_runs_for_the_documented_refusals(): void
@@ -91,11 +87,10 @@ class StoredMessageImporterTest extends TestCase
         foreach ([404, 503, 509] as $status) {
             Cache::flush();
 
-            $drive = new ImporterMockClient([
+            $drive = new DriveMock([
                 new Response($status, [], (string) json_encode(['detail' => 'adopt unavailable'])),
                 new Response(200, [], (string) json_encode(['access_token' => 'jwt-9', 'expires_in' => 60])),
                 new Response(200, [], (string) json_encode(['ok' => true, 'inserted' => 1, 'skipped' => 0, 'file_ids' => ['f_restored']])),
-                new Response(200, [], (string) json_encode(['id' => 'f_restored', 'status' => 'ready', 'size' => 2048])),
             ]);
 
             $manifestJson = null;
@@ -111,13 +106,12 @@ class StoredMessageImporterTest extends TestCase
             );
 
             $this->assertSame('manifest', $result['path'], "HTTP {$status} must fall back");
-            $this->assertSame('ready', $result['status']);
             $this->assertSame($status, $result['adopt_refusal']['status']);
             $this->assertSame(555, $result['manifest_message_id']);
-            $this->assertSame(4, $drive->calls, 'adopt → login → restore → wait for ready');
-            $this->assertStringContainsString('/api/v1/auth/login', $drive->history[1]);
-            $this->assertStringContainsString('/api/v1/channels/7/restore', $drive->history[2]);
-            $this->assertStringContainsString('message_id=555', $drive->history[2]);
+            $this->assertCount(3, $drive->history, 'adopt → login → restore, with nothing to poll');
+            $this->assertStringContainsString('/api/v1/auth/login', $drive->history[1]['path']);
+            $this->assertStringContainsString('/api/v1/channels/7/restore', $drive->history[2]['path']);
+            $this->assertStringContainsString('message_id=555', $drive->history[2]['path']);
 
             $manifest = json_decode((string) $manifestJson, true);
 
@@ -134,7 +128,7 @@ class StoredMessageImporterTest extends TestCase
 
     public function test_a_pinned_chat_refusal_is_not_swallowed(): void
     {
-        $drive = new ImporterMockClient([
+        $drive = new DriveMock([
             new Response(409, [], (string) json_encode(['detail' => 'storage_chat is pinned to the API key'])),
         ]);
         $senderCalls = 0;
@@ -157,12 +151,12 @@ class StoredMessageImporterTest extends TestCase
         }
 
         $this->assertSame(0, $senderCalls);
-        $this->assertSame(1, $drive->calls);
+        $this->assertCount(1, $drive->history);
     }
 
     public function test_a_fallback_without_a_registered_channel_keeps_the_adopt_refusal(): void
     {
-        $drive = new ImporterMockClient([
+        $drive = new DriveMock([
             new Response(404, [], (string) json_encode(['detail' => 'message not found in the storage chat'])),
         ]);
 
@@ -174,7 +168,7 @@ class StoredMessageImporterTest extends TestCase
 
     public function test_a_fallback_without_a_size_is_refused(): void
     {
-        $drive = new ImporterMockClient([
+        $drive = new DriveMock([
             new Response(404, [], (string) json_encode(['detail' => 'message not found in the storage chat'])),
         ]);
 
@@ -189,7 +183,7 @@ class StoredMessageImporterTest extends TestCase
         });
     }
 
-    public function test_the_bot_sends_the_manifest_then_the_importer_waits_for_ready(): void
+    public function test_the_bot_sends_the_manifest_and_restore_completes_the_import(): void
     {
         // The real sender (not a closure) talks to api.telegram.org while the
         // drive client keeps its mocked transport: this pins the whole hand-off.
@@ -197,11 +191,10 @@ class StoredMessageImporterTest extends TestCase
             'api.telegram.org/*' => Http::response(['ok' => true, 'result' => ['message_id' => 555]], 200),
         ]);
 
-        $drive = new ImporterMockClient([
+        $drive = new DriveMock([
             new Response(404, [], (string) json_encode(['detail' => 'message not found in the storage chat'])),
             new Response(200, [], (string) json_encode(['access_token' => 'jwt-9', 'expires_in' => 60])),
             new Response(200, [], (string) json_encode(['ok' => true, 'inserted' => 1, 'skipped' => 0, 'file_ids' => ['f_x']])),
-            new Response(200, [], (string) json_encode(['id' => 'f_x', 'status' => 'ready', 'size' => 2048])),
         ]);
 
         $result = (new StoredMessageImporter($drive))->import(
@@ -211,46 +204,10 @@ class StoredMessageImporterTest extends TestCase
         );
 
         $this->assertSame('manifest', $result['path']);
-        $this->assertSame('ready', $result['status']);
         $this->assertSame(555, $result['manifest_message_id']);
-        $this->assertSame(4, $drive->calls);
-        $this->assertStringContainsString('/api/v1/channels/7/restore', $drive->history[2]);
-        $this->assertStringContainsString('message_id=555', $drive->history[2]);
-        $this->assertStringContainsString('/api/v1/files/', $drive->history[3]);
+        $this->assertCount(3, $drive->history, 'adopt → login → restore, with nothing to poll');
+        $this->assertStringContainsString('/api/v1/channels/7/restore', $drive->history[2]['path']);
+        $this->assertStringContainsString('message_id=555', $drive->history[2]['path']);
         Http::assertSentCount(1);
-    }
-}
-
-/** The real client over a mocked transport; records every request path. */
-class ImporterMockClient extends TelegramDriveClient
-{
-    /** @var array<int, string> */
-    public array $history = [];
-
-    public int $calls = 0;
-
-    public function __construct(array $responses)
-    {
-        parent::__construct([
-            'base_url' => 'http://tgdrive.test',
-            'api_key' => 'td_test_key',
-            'username' => 'admin',
-            'password' => 'secret',
-        ]);
-
-        $stack = HandlerStack::create(new MockHandler($responses));
-
-        $stack->push(Middleware::mapRequest(function ($request) {
-            $this->calls++;
-            $this->history[] = (string) $request->getUri();
-
-            return $request;
-        }));
-
-        $this->http = new HttpClient([
-            'handler' => $stack,
-            'base_uri' => 'http://tgdrive.test/',
-            'http_errors' => false,
-        ]);
     }
 }

@@ -126,14 +126,13 @@ class StoredMessageImporter
             );
         }
 
-        // restore merges pointers and returns before anything is polled; wait
-        // for the row to be ready so the caller never presigns a queued file.
-        $file = $this->drive->waitForReady($fileId);
-
+        // No poll: the service stores the manifest's status verbatim and adds
+        // the parts in the same call (channels.py restore), so the row is
+        // usable the moment restore returns. Waiting would only pin a queue
+        // worker for ready_timeout on a file that is already there.
         return [
             'path' => 'manifest',
             'file_id' => $fileId,
-            'status' => (string) ($file['status'] ?? 'ready'),
             'manifest_message_id' => $manifestMessageId,
             'restore' => $restored,
             'adopt_refusal' => ['status' => $refusal->status()],

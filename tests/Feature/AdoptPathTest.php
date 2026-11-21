@@ -2,14 +2,10 @@
 
 namespace Tests\Feature;
 
-use App\Services\Relay\TelegramDriveClient;
-use GuzzleHttp\Client as HttpClient;
-use GuzzleHttp\Handler\MockHandler;
-use GuzzleHttp\HandlerStack;
-use GuzzleHttp\Middleware;
 use GuzzleHttp\Psr7\Response;
 use Illuminate\Support\Facades\Cache;
 use RuntimeException;
+use Tests\Support\DriveMock;
 use Tests\TestCase;
 
 /**
@@ -37,7 +33,7 @@ class AdoptPathTest extends TestCase
 
     public function test_adopt_registers_the_stored_message(): void
     {
-        $drive = new AdoptMockClient([
+        $drive = new DriveMock([
             new Response(200, [], (string) json_encode([
                 'ok' => true,
                 'file_id' => 'f_abc123',
@@ -65,7 +61,7 @@ class AdoptPathTest extends TestCase
 
     public function test_adopt_surfaces_a_pinned_chat_refusal(): void
     {
-        $drive = new AdoptMockClient([
+        $drive = new DriveMock([
             new Response(409, [], (string) json_encode(['detail' => 'storage_chat is pinned to the API key'])),
         ]);
 
@@ -77,7 +73,7 @@ class AdoptPathTest extends TestCase
 
     public function test_adopt_surfaces_a_size_mismatch(): void
     {
-        $drive = new AdoptMockClient([
+        $drive = new DriveMock([
             new Response(400, [], (string) json_encode(['detail' => 'size mismatch: the stored message has 8 bytes, the request said 5'])),
         ]);
 
@@ -91,7 +87,7 @@ class AdoptPathTest extends TestCase
     {
         // The only mocked answer is the adopt itself: a wait would ask for
         // /files/{id} and run out of responses (then burn ready_timeout live).
-        $drive = new AdoptMockClient([
+        $drive = new DriveMock([
             new Response(200, [], (string) json_encode([
                 'ok' => true,
                 'file_id' => 'f_existing',
@@ -111,7 +107,7 @@ class AdoptPathTest extends TestCase
 
     public function test_a_fresh_queued_adopt_still_waits_for_ready(): void
     {
-        $drive = new AdoptMockClient([
+        $drive = new DriveMock([
             new Response(200, [], (string) json_encode([
                 'ok' => true,
                 'file_id' => 'f_new',
@@ -134,7 +130,7 @@ class AdoptPathTest extends TestCase
             'ok' => true, 'inserted' => 1, 'skipped' => 0, 'file_ids' => ['f_x'],
         ]));
 
-        $drive = new AdoptMockClient([
+        $drive = new DriveMock([
             new Response(200, [], (string) json_encode(['access_token' => 'jwt-1', 'expires_in' => 60])),
             $restored(),
             $restored(),
@@ -154,7 +150,7 @@ class AdoptPathTest extends TestCase
 
     public function test_restore_without_panel_credentials_explains_itself(): void
     {
-        $drive = new AdoptMockClient([], ['password' => '']);
+        $drive = new DriveMock([], ['password' => '']);
 
         try {
             $drive->restoreFromManifest(3, 99001);
@@ -169,7 +165,7 @@ class AdoptPathTest extends TestCase
 
     public function test_a_manifest_carries_pointers_only(): void
     {
-        $drive = new AdoptMockClient([]);
+        $drive = new DriveMock([]);
 
         $manifest = $drive->channelManifest([
             ['message_id' => 42117, 'name' => 'movie.mkv', 'size' => 2048, 'mime' => 'video/x-matroska'],
@@ -195,7 +191,7 @@ class AdoptPathTest extends TestCase
 
     public function test_a_manifest_normalizes_the_channel_like_adopt(): void
     {
-        $drive = new AdoptMockClient([]);
+        $drive = new DriveMock([]);
 
         $manifest = $drive->channelManifest([
             ['message_id' => 42117, 'name' => 'movie.mkv', 'size' => 2048, 'storage_chat' => 'store'],
@@ -214,7 +210,7 @@ class AdoptPathTest extends TestCase
 
     public function test_a_manifest_entry_without_a_message_is_rejected(): void
     {
-        $drive = new AdoptMockClient([]);
+        $drive = new DriveMock([]);
 
         $this->expectException(RuntimeException::class);
         $this->expectExceptionMessage('positive message_id');
@@ -224,7 +220,7 @@ class AdoptPathTest extends TestCase
 
     public function test_restore_posts_with_the_panel_jwt_and_manifest_id(): void
     {
-        $drive = new AdoptMockClient([
+        $drive = new DriveMock([
             new Response(200, [], (string) json_encode(['access_token' => 'jwt-777', 'expires_in' => 60])),
             new Response(200, [], (string) json_encode(['ok' => true, 'inserted' => 1, 'skipped' => 0, 'file_ids' => ['f_abc']])),
         ]);
@@ -238,54 +234,5 @@ class AdoptPathTest extends TestCase
         $this->assertStringContainsString('/api/v1/channels/3/restore', $drive->history[1]['path']);
         $this->assertStringContainsString('message_id=99001', $drive->history[1]['path']);
         $this->assertSame('Bearer jwt-777', $drive->history[1]['authorization']);
-    }
-}
-
-/**
- * The real client with its HTTP layer mocked: records method/path/headers and
- * the JSON body of every request.
- */
-class AdoptMockClient extends TelegramDriveClient
-{
-    /** @var array<int, array{method:string,path:string,authorization:string,api_key:string}> */
-    public array $history = [];
-
-    /** @var array<int, array<string, mixed>> */
-    public array $sent = [];
-
-    public function __construct(array $responses, array $config = [])
-    {
-        parent::__construct($config + [
-            'base_url' => 'http://tgdrive.test',
-            'api_key' => 'td_test_key',
-            'username' => 'admin',
-            'password' => 'secret',
-        ]);
-
-        $stack = HandlerStack::create(new MockHandler($responses));
-
-        $stack->push(Middleware::mapRequest(function ($request) {
-            $body = (string) $request->getBody();
-            $decoded = json_decode($body, true);
-
-            $this->history[] = [
-                'method' => $request->getMethod(),
-                'path' => (string) $request->getUri(),
-                'authorization' => $request->getHeaderLine('Authorization'),
-                'api_key' => $request->getHeaderLine('X-API-Key'),
-            ];
-
-            if (is_array($decoded)) {
-                $this->sent[] = $decoded;
-            }
-
-            return $request;
-        }));
-
-        $this->http = new HttpClient([
-            'handler' => $stack,
-            'base_uri' => 'http://tgdrive.test/',
-            'http_errors' => false,
-        ]);
     }
 }
