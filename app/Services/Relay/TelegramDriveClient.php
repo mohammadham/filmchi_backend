@@ -61,6 +61,14 @@ class TelegramDriveClient
         return 'relay:tgdrive:token:' . md5($this->baseUrl() . '|' . ($this->config['username'] ?? ''));
     }
 
+    /** The cached bearer token, when one is still fresh. */
+    protected function cachedToken(): ?string
+    {
+        $cached = Cache::get($this->tokenCacheKey());
+
+        return !empty($cached) ? (string) $cached : null;
+    }
+
     /**
      * Return the current bearer token, logging in when the cache is cold.
      */
@@ -70,16 +78,9 @@ class TelegramDriveClient
             return null;
         }
 
-        $key = $this->tokenCacheKey();
+        $cached = $force ? null : $this->cachedToken();
 
-        if (!$force) {
-            $cached = Cache::get($key);
-            if (!empty($cached)) {
-                return (string) $cached;
-            }
-        }
-
-        return $this->login();
+        return $cached ?? $this->login();
     }
 
     public function login(): string
@@ -215,9 +216,9 @@ class TelegramDriveClient
      * storage_chat is only a wish — the service answers 409 when the API key is
      * pinned to another channel (the destination is never taken from us).
      *
-     * A deduplicated answer names a row that already existed, so it is returned
-     * as-is: polling it could never make it ready and would only cost the whole
-     * ready_timeout.
+     * The answer is final either way: a fresh adopt writes a ready row
+     * synchronously and a deduplicated one names a row that already existed, so
+     * nothing here polls.
      */
     public function adopt(int $messageId, array $meta = []): array
     {
@@ -234,20 +235,8 @@ class TelegramDriveClient
             'adopt'
         );
 
-        $fileId = (string) ($result['file_id'] ?? '');
-
-        if ($fileId === '') {
+        if ((string) ($result['file_id'] ?? '') === '') {
             throw new RuntimeException('Telegram Drive did not return a file id for the adopted message.');
-        }
-
-        if (!empty($result['deduplicated'])) {
-            return $result;
-        }
-
-        // A fresh adopt writes a ready row synchronously; anything else means
-        // the service went async, and the caller must not presign early.
-        if (($result['status'] ?? '') !== 'ready') {
-            return $this->waitForReady($fileId);
         }
 
         return $result;
@@ -256,9 +245,9 @@ class TelegramDriveClient
     /**
      * A panel (admin JWT) token for the endpoints an API key cannot open.
      *
-     * Uses the token cache like every other call, so a batch of restores logs
-     * in once. A static API key is not a panel session and cannot stand in here,
-     * so missing credentials fail with a clear message instead of a 401 decode.
+     * Reuses the cached token, so a batch of restores logs in once. A static
+     * API key is not a panel session and cannot stand in here, so missing
+     * credentials fail with a clear message instead of a 401 decode.
      */
     protected function panelToken(): string
     {
@@ -272,13 +261,7 @@ class TelegramDriveClient
             );
         }
 
-        $cached = Cache::get($this->tokenCacheKey());
-
-        if (!empty($cached)) {
-            return (string) $cached;
-        }
-
-        return $this->login();
+        return $this->cachedToken() ?? $this->login();
     }
 
     /**
@@ -364,8 +347,13 @@ class TelegramDriveClient
      *
      * The endpoint is panel-authenticated (admin JWT), not API-key, so it needs
      * panel credentials even when a static key is configured — but it reuses the
-     * cached token, so a batch of restores logs in once. Rows that already exist
-     * are skipped, so a retry is harmless.
+     * cached token, so a batch of restores logs in once.
+     *
+     * A cached panel token can already be dead (expired, or the panel rotated
+     * its secret). request() cannot help here: its 401 path only renews a JWT
+     * when no API key is configured, while this endpoint ignores the API key.
+     * So a 401 means one fresh login and the same request again — rows that
+     * already exist are skipped, so repeating it is harmless.
      */
     public function restoreFromManifest(int $channelId, int $manifestMessageId): array
     {
@@ -373,9 +361,18 @@ class TelegramDriveClient
             throw new RuntimeException('restore needs the channel id and the manifest message id.');
         }
 
-        $jwt = $this->panelToken();
+        $response = $this->postRestore($channelId, $manifestMessageId, $this->panelToken());
 
-        $response = $this->request(
+        if ($response->getStatusCode() === 401) {
+            $response = $this->postRestore($channelId, $manifestMessageId, $this->login());
+        }
+
+        return $this->decode($response, 'channel restore');
+    }
+
+    protected function postRestore(int $channelId, int $manifestMessageId, string $jwt)
+    {
+        return $this->request(
             'POST',
             'api/v1/channels/' . rawurlencode((string) $channelId) . '/restore',
             [
@@ -384,8 +381,6 @@ class TelegramDriveClient
             ],
             false
         );
-
-        return $this->decode($response, 'channel restore');
     }
 
     /**

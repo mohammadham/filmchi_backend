@@ -12,7 +12,7 @@ use Tests\TestCase;
 /**
  * P1 of the bot plan: the webhook is inert until switched on, refuses a wrong
  * secret in the path or in Telegram's header, and only records updates from a
- * numeric id on the allowlist inside a private chat â€” once per update_id.
+ * numeric id on the allowlist inside a private chat — once per update_id.
  */
 class TelegramWebhookTest extends TestCase
 {
@@ -28,6 +28,8 @@ class TelegramWebhookTest extends TestCase
         ]);
 
         DB::table('bot_updates')->delete();
+        DB::table('bot_submissions')->where('telegram_user_id', 111)->delete();
+        DB::table('bot_sessions')->where('telegram_user_id', 111)->delete();
     }
 
     protected function postUpdate(array $update, string $secret = 's3cret', ?string $header = 's3cret')
@@ -43,7 +45,7 @@ class TelegramWebhookTest extends TestCase
             'update_id' => $updateId,
             'message' => [
                 'message_id' => $updateId,
-                'from' => ['id' => $userId, 'is_bot' => false, 'first_name' => 'Ø¹Ù„ÛŒ'],
+                'from' => ['id' => $userId, 'is_bot' => false, 'first_name' => 'علی'],
                 'chat' => ['id' => $userId, 'type' => $chatType],
                 'date' => time(),
                 'text' => $text,
@@ -88,7 +90,6 @@ class TelegramWebhookTest extends TestCase
 
         $this->assertSame(1, DB::table('bot_updates')->count());
         $this->assertSame('message', DB::table('bot_updates')->where('update_id', 10)->value('kind'));
-        $this->assertNotNull(DB::table('bot_updates')->where('update_id', 10)->value('payload'), 'the update is kept for the job');
 
         $callback = [
             'update_id' => 11,
@@ -117,27 +118,164 @@ class TelegramWebhookTest extends TestCase
         $this->assertSame(0, DB::table('bot_updates')->count());
     }
 
-    public function test_a_document_update_stores_its_payload_and_queues_the_import(): void
+    public function test_a_document_update_is_stored_and_opens_the_conversation(): void
     {
         Queue::fake();
 
         $this->postUpdate($this->documentUpdate(40))->assertOk();
 
-        Queue::assertPushed(ImportBotFileJob::class, fn ($job) => $job->updateId === 40);
+        Queue::assertNothingPushed();
 
-        $payload = json_decode((string) DB::table('bot_updates')->where('update_id', 40)->value('payload'), true);
-        $this->assertSame('uq-40', $payload['message']['document']['file_unique_id']);
-        $this->assertSame(2048, $payload['message']['document']['file_size']);
+        $session = json_decode((string) DB::table('bot_sessions')->value('payload'), true);
+        $this->assertSame('uq-40', $session['file_unique_id']);
+        $this->assertSame(2048, $session['size']);
+        $this->assertSame('quality', $this->sessionState());
     }
 
-    public function test_a_retried_document_delivery_is_not_queued_twice(): void
+    public function test_a_retried_document_delivery_does_not_restart_the_conversation(): void
     {
         Queue::fake();
 
         $this->postUpdate($this->documentUpdate(41))->assertOk();
         $this->postUpdate($this->documentUpdate(41))->assertOk();
 
+        $this->assertSame(1, DB::table('bot_sessions')->count());
+        Queue::assertNothingPushed();
+    }
+
+    public function test_the_conversation_asks_quality_then_series_and_queues_the_import(): void
+    {
+        Queue::fake();
+        Http::fake();
+
+        $this->postDocument(50);
+
+        Queue::assertNothingPushed();
+        $this->assertSame('quality', $this->sessionState());
+        Http::assertSent(fn ($request) => str_contains((string) $request['text'], '1080'));
+
+        $this->answer(51, '720');
+
+        $this->assertSame('series', $this->sessionState());
+        Http::assertSent(fn ($request) => str_contains((string) $request['text'], 'سریال'));
+
+        $this->answer(52, 'بله');
+
+        $row = DB::table('bot_submissions')->where('message_id', 50)->first();
+
+        $this->assertNotNull($row, 'only the last answer writes the submission');
+        $this->assertSame('720', $row->quality);
+        $this->assertSame(1, (int) $row->is_series);
+        $this->assertSame('queued', $row->status);
+        $this->assertSame('movie.mkv', $row->name);
+        $this->assertSame(2048, (int) $row->size);
+
+        Queue::assertPushedOn('bot', ImportBotFileJob::class);
         Queue::assertPushed(ImportBotFileJob::class, 1);
+        $this->assertSame(0, DB::table('bot_sessions')->count(), 'the session ends with the last answer');
+    }
+
+    public function test_an_invalid_quality_answer_is_asked_again(): void
+    {
+        Queue::fake();
+        Http::fake();
+
+        $this->postDocument(53);
+        $this->answer(54, 'خیلی خوب');
+
+        $this->assertSame('quality', $this->sessionState());
+        $this->assertSame(0, DB::table('bot_submissions')->count());
+        Http::assertSent(fn ($request) => str_contains((string) $request['text'], '1080، 720 یا 480'));
+
+        $this->answer(55, '1080');
+        $this->answer(56, 'خیر');
+
+        $this->assertSame('1080', DB::table('bot_submissions')->where('message_id', 53)->value('quality'));
+        Queue::assertPushed(ImportBotFileJob::class, 1);
+    }
+
+    public function test_an_outsider_gets_no_session_even_with_a_document(): void
+    {
+        Queue::fake();
+
+        $this->postDocument(57, 999);
+
+        Queue::assertNothingPushed();
+        $this->assertSame(0, DB::table('bot_sessions')->count());
+        $this->assertSame(0, DB::table('bot_submissions')->count());
+    }
+
+    public function test_the_same_message_delivered_again_is_one_submission(): void
+    {
+        Queue::fake();
+        Http::fake();
+
+        $this->postDocument(60);
+        $this->answer(61, '1080');
+        $this->answer(62, 'خیر');
+
+        // Same chat/message under a new update id: the conversation re-asks,
+        // but (chat_id, message_id) refuses the second row and the second job.
+        $again = $this->documentUpdate(60);
+        $again['update_id'] = 63;
+        $this->postUpdate($again)->assertOk();
+        $this->answer(64, '1080');
+        $this->answer(65, 'خیر');
+
+        $this->assertSame(1, DB::table('bot_submissions')->where('message_id', 60)->count());
+        Queue::assertPushed(ImportBotFileJob::class, 1);
+        Http::assertSent(fn ($request) => str_contains((string) $request['text'], 'قبلاً ثبت شده'));
+    }
+
+    public function test_the_daily_limit_is_checked_at_the_last_answer(): void
+    {
+        Queue::fake();
+        Http::fake();
+
+        config(['media_relay.bot.daily_limit' => 1]);
+
+        $this->postDocument(70);
+        $this->answer(71, '1080');
+        $this->answer(72, 'خیر');
+
+        $this->postDocument(73);
+        $this->answer(74, '1080');
+        $this->answer(75, 'خیر');
+
+        $this->assertSame(1, DB::table('bot_submissions')->count(), 'a refused file never becomes a row');
+        Queue::assertPushed(ImportBotFileJob::class, 1);
+        Http::assertSent(fn ($request) => str_contains((string) $request['text'], 'سقف ورود روزانه'));
+    }
+
+    public function test_a_zero_daily_limit_means_unlimited(): void
+    {
+        Queue::fake();
+
+        config(['media_relay.bot.daily_limit' => 0]);
+
+        foreach ([80, 84] as $updateId) {
+            $this->postDocument($updateId);
+            $this->answer($updateId + 1, '1080');
+            $this->answer($updateId + 2, 'بله');
+        }
+
+        $this->assertSame(2, DB::table('bot_submissions')->count());
+        Queue::assertPushed(ImportBotFileJob::class, 2);
+    }
+
+    protected function postDocument(int $updateId, int $userId = 111): void
+    {
+        $this->postUpdate($this->documentUpdate($updateId, $userId))->assertOk();
+    }
+
+    protected function answer(int $updateId, string $text, int $userId = 111): void
+    {
+        $this->postUpdate($this->update($updateId, $userId, 'private', $text))->assertOk();
+    }
+
+    protected function sessionState(): ?string
+    {
+        return DB::table('bot_sessions')->where('chat_id', 111)->value('state');
     }
 
     protected function documentUpdate(int $updateId, int $userId = 111): array
@@ -207,7 +345,7 @@ class TelegramWebhookTest extends TestCase
         Http::fake();
 
         $this->postUpdate($this->update(31, 999, 'private', '/ping'))->assertOk();  // outsider
-        $this->postUpdate($this->update(33, 111, 'private', 'Ø³Ù„Ø§Ù…'))->assertOk();   // plain text
+        $this->postUpdate($this->update(33, 111, 'private', 'سلام'))->assertOk();   // plain text
 
         Http::assertNothingSent();
         $this->assertSame(1, DB::table('bot_updates')->count(), 'only the allowed text update was recorded');

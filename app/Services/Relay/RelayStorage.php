@@ -7,7 +7,6 @@ use App\RelayFile;
 use App\RelayLink;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Str;
 use RuntimeException;
 
 /**
@@ -139,12 +138,7 @@ class RelayStorage
                     'upload_duration_ms' => null,
                     'upload_speed_bps' => null,
                 ];
-                $link = new RelayLink();
-                $link->relay_file_id = $existing->id;
-                $link->token = Str::random(40);
-                $link->mode = RelayLink::MODE_STREAM;
-                $link->label = $name;
-                $link->save();
+                $link = RelayLink::issueFor($existing, $name);
 
                 RelayEvent::create([
                     'relay_file_id' => $existing->id,
@@ -196,12 +190,7 @@ class RelayStorage
             // moment a poster frame can be extracted cheaply.
             Thumbnail::make($path, (string) ($file->mime ?? $mime ?? ''), $file);
 
-            $link = new RelayLink();
-            $link->relay_file_id = $file->id;
-            $link->token = Str::random(40);
-            $link->mode = RelayLink::MODE_STREAM;
-            $link->label = $name;
-            $link->save();
+            $link = RelayLink::issueFor($file, $name);
 
             RelayEvent::create([
                 'relay_file_id' => $file->id,

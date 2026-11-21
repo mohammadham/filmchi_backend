@@ -2,10 +2,7 @@
 
 namespace App\Jobs;
 
-use App\MediaGallery;
-use App\RelayEvent;
 use App\RelayFile;
-use App\RelayLink;
 use App\Services\Relay\RelayManager;
 use App\Services\Relay\RelaySettings;
 use App\Services\Relay\UploadMetrics;
@@ -147,23 +144,7 @@ class IngestRelayUrlJob implements ShouldQueue
 
             Thumbnail::make($part, (string) $file->mime, $file);
 
-            $link = new RelayLink();
-            $link->relay_file_id = $file->id;
-            $link->token = Str::random(40);
-            $link->mode = RelayLink::MODE_STREAM;
-            $link->label = $file->name;
-            $link->save();
-
-            MediaGallery::registerRelayFile($file, $link->streamUrl(), $file->name);
-
-            RelayEvent::create([
-                'relay_file_id' => $file->id,
-                'event' => 'uploaded',
-                'served_by' => 'telegram',
-                'bytes' => (int) $file->size,
-                'message' => 'Stored on Telegram Drive (from link).',
-                'created_at' => now(),
-            ]);
+            $file->publish('Stored on Telegram Drive (from link).');
         } catch (Throwable $e) {
             Log::warning('Relay URL ingest failed', [
                 'relay_file_id' => $file->id,

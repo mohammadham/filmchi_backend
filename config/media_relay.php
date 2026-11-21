@@ -437,8 +437,17 @@ return [
         'daily_limit'    => (int) env('RELAY_BOT_DAILY_LIMIT', 20),
         // copyMessage is metadata + a server-side copy: seconds, not minutes.
         'copy_timeout'   => (int) env('RELAY_BOT_COPY_TIMEOUT', 60),
+        // A webhook reply must stay inside Telegram's delivery budget.
+        'reply_timeout'  => (int) env('RELAY_BOT_REPLY_TIMEOUT', 5),
         // Bot imports get their own lane so a big file never blocks the panel.
         'queue'          => env('RELAY_BOT_QUEUE', 'bot'),
+        // Supervised workers on that lane; clamped to 1..2 by the supervisor.
+        'concurrency'    => (int) env('RELAY_BOT_CONCURRENCY', 1),
+        // A worker can die between the dispatch and the row update. The
+        // supervisor re-queues rows left untouched for stale_seconds, at most
+        // every requeue_seconds, so no submission stays stuck at "queued".
+        'stale_seconds'   => (int) env('RELAY_BOT_STALE_SECONDS', 600),
+        'requeue_seconds' => (int) env('RELAY_BOT_REQUEUE_SECONDS', 300),
     ],
 
 ];

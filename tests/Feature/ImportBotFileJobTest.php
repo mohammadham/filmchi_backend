@@ -17,14 +17,11 @@ use Tests\TestCase;
 
 /**
  * P2 of the bot plan, end to end on a fake Telegram Drive backend: the job
- * reads the stored update, copies the document into the storage channel,
- * imports it, writes the submission and answers the user.
+ * reads the submission row, copies the document into the storage channel,
+ * imports it, writes the result and answers the user.
  */
 class ImportBotFileJobTest extends TestCase
 {
-    /** @var array<int, int> */
-    protected array $updateIds = [];
-
     protected function setUp(): void
     {
         parent::setUp();
@@ -53,10 +50,6 @@ class ImportBotFileJobTest extends TestCase
 
     protected function clean(): void
     {
-        if ($this->updateIds) {
-            DB::table('bot_updates')->whereIn('update_id', $this->updateIds)->delete();
-        }
-
         DB::table('bot_submissions')->where('file_unique_id', 'like', 'bot-test-%')->delete();
 
         $ids = RelayFile::where('tg_unique_id', 'like', 'bot-test-%')->pluck('id');
@@ -65,8 +58,6 @@ class ImportBotFileJobTest extends TestCase
             RelayLink::whereIn('relay_file_id', $ids)->delete();
             RelayFile::whereIn('id', $ids)->delete();
         }
-
-        $this->updateIds = [];
     }
 
     /**
@@ -96,47 +87,54 @@ class ImportBotFileJobTest extends TestCase
         ]));
     }
 
-    protected function queueUpdate(array $message, int $updateId): int
+    /**
+     * The row the webhook would have written; its id is what the job is given.
+     */
+    protected function queueDocument(string $uniqueId = 'bot-test-u1', int $messageId = 77, array $overrides = []): int
     {
-        DB::table('bot_updates')->insert([
-            'update_id' => $updateId,
-            'kind' => 'message',
-            'payload' => json_encode([
-                'update_id' => $updateId,
-                'message' => $message + [
-                    'from' => ['id' => 111, 'is_bot' => false, 'first_name' => 'علی'],
-                    'chat' => ['id' => 111, 'type' => 'private'],
-                    'date' => time(),
-                ],
-            ]),
-            'received_at' => now(),
-        ]);
+        $document = $overrides + [
+            'file_id' => 'AAA' . $uniqueId,
+            'file_unique_id' => $uniqueId,
+            'file_name' => 'movie.mkv',
+            'file_size' => 2048,
+            'mime_type' => 'video/x-matroska',
+        ];
 
-        $this->updateIds[] = $updateId;
-
-        return $updateId;
-    }
-
-    protected function queueDocument(int $updateId, string $uniqueId = 'bot-test-u1', int $messageId = 77, array $overrides = []): int
-    {
-        return $this->queueUpdate([
+        return (int) DB::table('bot_submissions')->insertGetId([
+            'telegram_user_id' => 111,
+            'chat_id' => 111,
             'message_id' => $messageId,
-            'document' => $overrides + [
-                'file_id' => 'AAA' . $uniqueId,
-                'file_unique_id' => $uniqueId,
-                'file_name' => 'movie.mkv',
-                'file_size' => 2048,
-                'mime_type' => 'video/x-matroska',
-            ],
-        ], $updateId);
+            'file_unique_id' => (string) $document['file_unique_id'],
+            'name' => (string) $document['file_name'],
+            'size' => (int) $document['file_size'],
+            'mime' => (string) $document['mime_type'],
+            'status' => 'queued',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
     }
 
-    protected function runJob(int $updateId, BotFileImporter $importer): ImportBotFileJob
+    protected function runJob(int $submissionId, BotFileImporter $importer): ImportBotFileJob
     {
-        $job = new ImportBotFileJob($updateId);
+        $job = new ImportBotFileJob($submissionId);
         $job->handle($importer, new TelegramBotClient('123:abc'));
 
         return $job;
+    }
+
+    /** How many terminal failure texts reached the chat. */
+    protected function failureMessages(): int
+    {
+        $sent = 0;
+
+        foreach (Http::recorded() as [$request]) {
+            if (str_ends_with($request->url(), '/sendMessage')
+                && str_contains((string) $request['text'], '❌ ذخیره نشد')) {
+                $sent++;
+            }
+        }
+
+        return $sent;
     }
 
     protected function submittedCopy(): int
@@ -157,7 +155,7 @@ class ImportBotFileJobTest extends TestCase
         $this->fakeTelegram();
 
         $drive = new DriveMock([$this->adoptAnswer()]);
-        $this->runJob($this->queueDocument(910001), new BotFileImporter($drive));
+        $this->runJob($this->queueDocument(), new BotFileImporter($drive));
 
         $submission = DB::table('bot_submissions')->where('file_unique_id', 'bot-test-u1')->first();
         $file = RelayFile::where('tg_unique_id', 'bot-test-u1')->first();
@@ -196,8 +194,8 @@ class ImportBotFileJobTest extends TestCase
         $drive = new DriveMock([$this->adoptAnswer()]);
         $importer = new BotFileImporter($drive);
 
-        $this->runJob($this->queueDocument(910002, 'bot-test-u1', 77), $importer);
-        $this->runJob($this->queueDocument(910003, 'bot-test-u1', 88), $importer);
+        $this->runJob($this->queueDocument('bot-test-u1', 77), $importer);
+        $this->runJob($this->queueDocument('bot-test-u1', 88), $importer);
 
         Http::assertSent(function ($request) {
             return str_ends_with($request->url(), '/sendMessage')
@@ -205,16 +203,15 @@ class ImportBotFileJobTest extends TestCase
         });
     }
 
-    public function test_a_text_update_is_ignored(): void
+    public function test_a_submission_id_without_a_row_is_a_quiet_no_op(): void
     {
         $this->fakeTelegram();
 
         $drive = new DriveMock([]);
-        $this->runJob($this->queueUpdate(['message_id' => 90, 'text' => 'سلام'], 910004), new BotFileImporter($drive));
+        $this->runJob(999999, new BotFileImporter($drive));
 
         Http::assertNothingSent();
         $this->assertCount(0, $drive->history);
-        $this->assertSame(0, DB::table('bot_submissions')->where('message_id', 90)->count());
     }
 
     public function test_a_completed_submission_is_never_imported_again(): void
@@ -223,25 +220,26 @@ class ImportBotFileJobTest extends TestCase
 
         $drive = new DriveMock([$this->adoptAnswer()]);
         $importer = new BotFileImporter($drive);
-        $updateId = $this->queueDocument(910005);
+        $submissionId = $this->queueDocument();
 
-        $this->runJob($updateId, $importer);
-        $this->runJob($updateId, $importer);
+        $this->runJob($submissionId, $importer);
+        $this->runJob($submissionId, $importer);
 
         $this->assertCount(1, $drive->history, 'the second run must not reach Telegram Drive');
         $this->assertSame(1, $this->submittedCopy());
     }
 
-    public function test_a_terminal_failure_is_reported_to_the_user(): void
+    public function test_a_terminal_failure_is_reported_to_the_user_once(): void
     {
         $this->fakeTelegram();
 
         $drive = new DriveMock([
             new Response(400, [], (string) json_encode(['detail' => 'size mismatch'])),
+            new Response(400, [], (string) json_encode(['detail' => 'size mismatch'])),
         ]);
 
-        $updateId = $this->queueDocument(910006);
-        $job = new ImportBotFileJob($updateId);
+        $submissionId = $this->queueDocument();
+        $job = new ImportBotFileJob($submissionId);
 
         try {
             $job->handle(new BotFileImporter($drive), new TelegramBotClient('123:abc'));
@@ -253,16 +251,70 @@ class ImportBotFileJobTest extends TestCase
         $row = DB::table('bot_submissions')->where('file_unique_id', 'bot-test-u1')->first();
         $this->assertSame('retrying', $row->status, 'attempt 1 of 3 is a retry, not a terminal failure');
         $this->assertStringContainsString('size mismatch', (string) $row->error);
+        $this->assertSame(0, $this->failureMessages(), 'a retry says nothing to the user');
+
+        // The last attempt: the worker calls failed() right after this throw,
+        // so the text must not be sent from the catch as well.
+        $job->job = new class
+        {
+            public function attempts(): int
+            {
+                return 3;
+            }
+        };
+
+        try {
+            $job->handle(new BotFileImporter($drive), new TelegramBotClient('123:abc'));
+            $this->fail('the terminal attempt must still be rethrown');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('size mismatch', $e->getMessage());
+        }
+
+        $this->assertSame('failed', DB::table('bot_submissions')->where('id', $row->id)->value('status'));
+        $this->assertSame(0, $this->failureMessages(), 'the throwing attempt leaves the message to failed()');
 
         $job->failed(new RuntimeException('timed out'));
 
-        $row = DB::table('bot_submissions')->where('id', $row->id)->first();
-        $this->assertSame('failed', $row->status);
+        $this->assertSame('failed', DB::table('bot_submissions')->where('id', $row->id)->value('status'));
+        $this->assertSame(1, $this->failureMessages(), 'the user gets exactly one ❌ ذخیره نشد');
+    }
 
-        Http::assertSent(function ($request) {
-            return str_ends_with($request->url(), '/sendMessage')
-                && str_contains((string) $request['text'], '❌');
-        });
+    public function test_a_retry_reuses_the_copy_the_first_attempt_made(): void
+    {
+        $this->fakeTelegram();
+
+        $submissionId = $this->queueDocument('bot-test-u1', 77);
+
+        // Attempt 1 got as far as copyMessage and then died before the adopt.
+        DB::table('bot_submissions')->where('message_id', 77)->update(['copy_message_id' => 5001]);
+
+        $drive = new DriveMock([$this->adoptAnswer()]);
+        $this->runJob($submissionId, new BotFileImporter($drive));
+
+        $this->assertSame(0, $this->submittedCopy(), 'a retry must never copy the document twice');
+        $this->assertSame(5001, $drive->sent[0]['message_id'], 'the adopt uses the copy from attempt 1');
+        $this->assertSame('done', DB::table('bot_submissions')->where('message_id', 77)->value('status'));
+    }
+
+    public function test_the_copy_is_remembered_even_when_the_import_fails(): void
+    {
+        $this->fakeTelegram();
+
+        $drive = new DriveMock([
+            new Response(400, [], (string) json_encode(['detail' => 'size mismatch'])),
+        ]);
+
+        try {
+            $this->runJob($this->queueDocument(), new BotFileImporter($drive));
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('size mismatch', $e->getMessage());
+        }
+
+        $this->assertSame(
+            5001,
+            (int) DB::table('bot_submissions')->where('file_unique_id', 'bot-test-u1')->value('copy_message_id'),
+            'the copy is the retry checkpoint, so it must survive a failed adopt'
+        );
     }
 
     public function test_bot_imports_use_their_own_queue(): void

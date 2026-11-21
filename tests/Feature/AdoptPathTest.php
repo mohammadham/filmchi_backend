@@ -83,45 +83,26 @@ class AdoptPathTest extends TestCase
         $drive->adopt(42117, ['size' => 5]);
     }
 
-    public function test_a_deduplicated_answer_returns_without_waiting_for_ready(): void
+    public function test_adopt_hands_back_the_answer_without_polling(): void
     {
-        // The only mocked answer is the adopt itself: a wait would ask for
+        // The only mocked response is the adopt itself: polling would ask for
         // /files/{id} and run out of responses (then burn ready_timeout live).
         $drive = new DriveMock([
             new Response(200, [], (string) json_encode([
                 'ok' => true,
-                'file_id' => 'f_existing',
+                'file_id' => 'f_new',
                 'name' => 'movie.mkv',
                 'size' => 2048,
-                'status' => 'queued',
-                'deduplicated' => true,
-            ])),
-        ]);
-
-        $result = $drive->adopt(42117);
-
-        $this->assertSame('f_existing', $result['file_id']);
-        $this->assertSame('queued', $result['status'], 'a dedup answer is handed back as-is');
-        $this->assertCount(1, $drive->history, 'no poll after a dedup answer');
-    }
-
-    public function test_a_fresh_queued_adopt_still_waits_for_ready(): void
-    {
-        $drive = new DriveMock([
-            new Response(200, [], (string) json_encode([
-                'ok' => true,
-                'file_id' => 'f_new',
-                'status' => 'queued',
+                'status' => 'ready',
                 'deduplicated' => false,
             ])),
-            new Response(200, [], (string) json_encode(['id' => 'f_new', 'status' => 'ready'])),
         ]);
 
         $result = $drive->adopt(42117);
 
+        $this->assertSame('f_new', $result['file_id']);
         $this->assertSame('ready', $result['status']);
-        $this->assertCount(2, $drive->history);
-        $this->assertStringContainsString('/api/v1/files/f_new', $drive->history[1]['path']);
+        $this->assertCount(1, $drive->history, 'adopt writes a ready row synchronously, so nothing polls');
     }
 
     public function test_restore_reuses_the_cached_panel_token(): void
@@ -146,6 +127,35 @@ class AdoptPathTest extends TestCase
         $this->assertCount(3, $paths);
         $this->assertSame('Bearer jwt-1', $drive->history[2]['authorization']);
         $this->assertStringContainsString('message_id=99002', $paths[2]);
+    }
+
+    public function test_a_dead_cached_panel_token_is_renewed_and_the_restore_repeated(): void
+    {
+        // A token another request left behind; the panel now refuses it.
+        $cacheKey = 'relay:tgdrive:token:' . md5('http://tgdrive.test|admin');
+        Cache::put($cacheKey, 'jwt-dead', 600);
+
+        $drive = new DriveMock([
+            new Response(401, [], (string) json_encode(['detail' => 'Not authenticated'])),
+            new Response(200, [], (string) json_encode(['access_token' => 'jwt-2', 'expires_in' => 60])),
+            new Response(200, [], (string) json_encode([
+                'ok' => true, 'inserted' => 1, 'skipped' => 0, 'file_ids' => ['f_x'],
+            ])),
+        ]);
+
+        $result = $drive->restoreFromManifest(3, 99001);
+
+        $this->assertSame(['f_x'], $result['file_ids']);
+
+        $paths = array_column($drive->history, 'path');
+        $logins = array_values(array_filter($paths, static fn (string $p): bool => str_contains($p, '/auth/login')));
+
+        $this->assertCount(1, $logins, 'one fresh login after the dead cached token');
+        $this->assertCount(3, $paths);
+        $this->assertSame('Bearer jwt-dead', $drive->history[0]['authorization']);
+        $this->assertSame('Bearer jwt-2', $drive->history[2]['authorization']);
+        $this->assertStringContainsString('message_id=99001', $paths[2], 'the same request is repeated');
+        $this->assertSame('jwt-2', Cache::get($cacheKey), 'the renewed token replaces the dead one');
     }
 
     public function test_restore_without_panel_credentials_explains_itself(): void

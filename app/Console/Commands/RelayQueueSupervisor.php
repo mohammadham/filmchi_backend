@@ -2,12 +2,14 @@
 
 namespace App\Console\Commands;
 
+use App\Jobs\ImportBotFileJob;
 use App\Services\Relay\DiskBudget;
 use App\Services\Relay\IngestPartSweeper;
 use App\Services\Relay\RelaySettings;
 use App\Services\Relay\WorkerRegistry;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Throwable;
 
 /**
@@ -17,6 +19,10 @@ use Throwable;
  * large, so a single pool would let both slots end up in the upload phase and
  * leave the download list empty. The download queue (`default`) and upload
  * queue (`uploads`) therefore get their own supervised child counts.
+ *
+ * Bot imports (`bot`) get a third lane for the same reason: a 2 GB copyMessage
+ * import must not sit in front of a panel download, and without its own role
+ * nothing would ever consume that queue.
  */
 class RelayQueueSupervisor extends Command
 {
@@ -44,15 +50,19 @@ class RelayQueueSupervisor extends Command
     /** @var int */
     protected $lastSweepAt = 0;
 
+    /** @var int */
+    protected $lastBotRequeueAt = 0;
+
     public function handle(WorkerRegistry $workers): int
     {
         $this->installSignalHandlers();
 
         $this->info(sprintf(
-            'relay queue supervisor started (downloads=%d, uploads=%d, probes=%d)',
+            'relay queue supervisor started (downloads=%d, uploads=%d, probes=%d, bots=%d)',
             $this->desiredRoleConcurrency('download'),
             $this->desiredRoleConcurrency('upload'),
-            $this->desiredRoleConcurrency('probe')
+            $this->desiredRoleConcurrency('probe'),
+            $this->desiredRoleConcurrency('bot')
         ));
 
         while (!$this->stopping) {
@@ -61,6 +71,7 @@ class RelayQueueSupervisor extends Command
             $this->reconcileRole('download');
             $this->reconcileRole('upload');
             $this->reconcileRole('probe');
+            $this->reconcileRole('bot');
 
             // Re-probe failed/auto-disabled Workers on their own backoff
             // schedule. This is deliberately independent of the healthy-pool
@@ -83,6 +94,7 @@ class RelayQueueSupervisor extends Command
             }
 
             $this->sweepDeferredParts();
+            $this->requeueStaleBotImports();
 
             $this->heartbeat();
 
@@ -141,19 +153,23 @@ class RelayQueueSupervisor extends Command
         $download = $this->countRole('download');
         $upload = $this->countRole('upload');
         $probe = $this->countRole('probe');
+        $bot = $this->countRole('bot');
+
+        $roles = ['download' => $download, 'upload' => $upload, 'probe' => $probe, 'bot' => $bot];
 
         try {
-            Cache::put(self::STATUS_KEY, [
-                'workers' => $download + $upload + $probe,
-                'desired' => $this->desiredRoleConcurrency('download') + $this->desiredRoleConcurrency('upload') + $this->desiredRoleConcurrency('probe'),
-                'download_workers' => $download,
-                'upload_workers' => $upload,
-                'probe_workers' => $probe,
-                'download_desired' => $this->desiredRoleConcurrency('download'),
-                'upload_desired' => $this->desiredRoleConcurrency('upload'),
-                'probe_desired' => $this->desiredRoleConcurrency('probe'),
-                'updated_at' => now()->toIso8601String(),
-            ], now()->addMinutes(10));
+            $status = ['updated_at' => now()->toIso8601String()];
+
+            foreach ($roles as $role => $live) {
+                $status[$role . '_workers'] = $live;
+                $status[$role . '_desired'] = $this->desiredRoleConcurrency($role);
+            }
+
+            $status['workers'] = array_sum($roles);
+            $status['desired'] = $status['download_desired'] + $status['upload_desired']
+                + $status['probe_desired'] + $status['bot_desired'];
+
+            Cache::put(self::STATUS_KEY, $status, now()->addMinutes(10));
         } catch (Throwable $e) {
             // The panel will show "no heartbeat" rather than failing a job.
         }
@@ -198,6 +214,48 @@ class RelayQueueSupervisor extends Command
         }
     }
 
+    /**
+     * A worker can die between the dispatch and the row update (OOM, deploy,
+     * killed container) and nothing would pick that submission up again: the
+     * Telegram retry of the same update_id is a no-op by dedup. Rows untouched
+     * for longer than the job's own retry budget are queued once more; a job
+     * that is only waiting out its backoff has a fresh updated_at.
+     */
+    protected function requeueStaleBotImports(): void
+    {
+        $every = (int) config('media_relay.bot.requeue_seconds', 300);
+
+        if ($every <= 0 || time() - $this->lastBotRequeueAt < $every) {
+            return;
+        }
+
+        $this->lastBotRequeueAt = time();
+
+        try {
+            $stale = DB::table('bot_submissions')
+                ->whereIn('status', ['queued', 'retrying'])
+                ->where('updated_at', '<', now()->subSeconds(max(60, (int) config('media_relay.bot.stale_seconds', 600))))
+                ->orderBy('id')
+                ->limit(50)
+                ->pluck('id');
+        } catch (Throwable $e) {
+            // A transient DB hiccup must not stop the pool; retry next tick.
+            $this->lastBotRequeueAt = 0;
+
+            return;
+        }
+
+        foreach ($stale as $id) {
+            ImportBotFileJob::dispatch((int) $id);
+        }
+
+        // A direct instance has no console: the sweep still has to work there
+        // (tests, and any embedder that reconciles without a terminal).
+        if ($stale->isNotEmpty() && $this->output !== null) {
+            $this->info(sprintf('requeued %d stale bot import(s)', $stale->count()));
+        }
+    }
+
     protected function desiredRoleConcurrency(string $role): int
     {
         try {
@@ -214,6 +272,12 @@ class RelayQueueSupervisor extends Command
             return max(1, min(2, (int) config('media_relay.workers.probe_concurrency', 1)));
         }
 
+        if ($role === 'bot') {
+            // A bot import is one Telegram copyMessage plus a zero-byte adopt,
+            // so two workers already cover a burst; more would only add logins.
+            return max(1, min(2, (int) config('media_relay.bot.concurrency', 1)));
+        }
+
         $max = max(1, min(4, (int) config('media_relay.ingest.concurrency', 1)));
 
         // May be zero: a full ingest budget stops the download pool instead of
@@ -225,15 +289,12 @@ class RelayQueueSupervisor extends Command
     {
         $this->spawned++;
 
-        $queue = match ($role) {
-            'upload' => (string) config('media_relay.upload.queue', 'uploads'),
-            'probe' => (string) config('media_relay.workers.probe_queue', 'probes'),
-            default => (string) ($this->option('queue') ?: config('media_relay.queue.name', 'default')),
-        };
+        $queue = $this->workerQueue($role);
         $connection = (string) (config('media_relay.queue.connection') ?: config('queue.default', 'redis'));
         $prefix = match ($role) {
             'upload' => 'upload',
             'probe' => 'probe',
+            'bot' => 'bot',
             default => 'ingest',
         };
         $name = $prefix . '-' . getmypid() . '-' . $this->spawned;
@@ -283,6 +344,17 @@ class RelayQueueSupervisor extends Command
         $this->info(sprintf('started %s queue worker %s (total=%d)', $role, $name, count($this->children)));
 
         return true;
+    }
+
+    /** The queue a role's workers consume; ImportBotFileJob dispatches to the same name. */
+    protected function workerQueue(string $role): string
+    {
+        return match ($role) {
+            'upload' => (string) config('media_relay.upload.queue', 'uploads'),
+            'probe' => (string) config('media_relay.workers.probe_queue', 'probes'),
+            'bot' => (string) config('media_relay.bot.queue', 'bot'),
+            default => (string) ($this->option('queue') ?: config('media_relay.queue.name', 'default')),
+        };
     }
 
     protected function reapChildren(): void
@@ -400,6 +472,7 @@ class RelayQueueSupervisor extends Command
                 'download_workers' => 0,
                 'upload_workers' => 0,
                 'probe_workers' => 0,
+                'bot_workers' => 0,
                 'updated_at' => now()->toIso8601String(),
             ], now()->addMinutes(10));
         } catch (Throwable $e) {

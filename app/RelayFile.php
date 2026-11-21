@@ -46,6 +46,28 @@ class RelayFile extends Model
         return $this->hasMany(RelayEvent::class, 'relay_file_id');
     }
 
+    /**
+     * Make a stored file public: its stream link, the optional library entry
+     * and the "uploaded" event every ingest path records.
+     */
+    public function publish(string $eventMessage): RelayLink
+    {
+        $link = RelayLink::issueFor($this);
+
+        MediaGallery::registerRelayFile($this, $link->streamUrl(), $this->name);
+
+        RelayEvent::create([
+            'relay_file_id' => $this->id,
+            'event' => 'uploaded',
+            'served_by' => 'telegram',
+            'bytes' => (int) $this->size,
+            'message' => $eventMessage,
+            'created_at' => now(),
+        ]);
+
+        return $link;
+    }
+
     public function getIsCachedAttribute()
     {
         return $this->cache_state === self::WARM && !empty($this->nine_share_url);

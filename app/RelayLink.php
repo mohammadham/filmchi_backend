@@ -4,6 +4,7 @@ namespace App;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Str;
 
 class RelayLink extends Model
 {
@@ -23,6 +24,22 @@ class RelayLink extends Model
     public function file()
     {
         return $this->belongsTo(RelayFile::class, 'relay_file_id');
+    }
+
+    /**
+     * The stream link every ingest path hands out: a random token on this
+     * site's own domain, labelled with the file name.
+     */
+    public static function issueFor(RelayFile $file, ?string $label = null): self
+    {
+        $link = new self();
+        $link->relay_file_id = $file->id;
+        $link->token = Str::random(40);
+        $link->mode = self::MODE_STREAM;
+        $link->label = $label ?: $file->name;
+        $link->save();
+
+        return $link;
     }
 
     /**

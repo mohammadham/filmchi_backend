@@ -2,16 +2,12 @@
 
 namespace App\Services\Bot;
 
-use App\MediaGallery;
-use App\RelayEvent;
 use App\RelayFile;
 use App\RelayLink;
 use App\Services\Relay\StoredMessageImporter;
 use App\Services\Relay\TelegramDriveClient;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Schema;
-use Illuminate\Support\Str;
 use RuntimeException;
 
 /**
@@ -38,6 +34,12 @@ class BotFileImporter
     /** @var callable|null */
     protected $manifestSender;
 
+    /** @var int|null the storage-channel copy a previous attempt already made */
+    protected ?int $resumeCopyId = null;
+
+    /** @var callable|null */
+    protected $copiedHook;
+
     public function __construct(
         TelegramDriveClient $drive,
         ?StoredMessageImporter $importer = null,
@@ -46,6 +48,29 @@ class BotFileImporter
         $this->drive = $drive;
         $this->importer = $importer ?: new StoredMessageImporter($drive);
         $this->manifestSender = $manifestSender;
+    }
+
+    /**
+     * Reuse the copy a previous attempt already made. The copy is the expensive
+     * side effect of this flow, so a retry must never create a second one.
+     */
+    public function resumeFrom(int $copyMessageId): static
+    {
+        $this->resumeCopyId = $copyMessageId > 0 ? $copyMessageId : null;
+
+        return $this;
+    }
+
+    /**
+     * Called as soon as copyMessage returns. The copy exists in the channel at
+     * that moment, so whoever owns the submission row can persist it before the
+     * adopt (which may fail) runs.
+     */
+    public function onCopied(callable $hook): static
+    {
+        $this->copiedHook = $hook;
+
+        return $this;
     }
 
     /**
@@ -82,7 +107,11 @@ class BotFileImporter
             return $this->deduped($existing);
         }
 
-        $copiedMessageId = $this->copyMessage($chat, $chatId, $messageId);
+        $copiedMessageId = $this->resumeCopyId ?? $this->copyMessage($chat, $chatId, $messageId);
+
+        if ($this->resumeCopyId === null && $this->copiedHook !== null) {
+            ($this->copiedHook)($copiedMessageId);
+        }
 
         $message = [
             'message_id' => $copiedMessageId,
@@ -180,22 +209,7 @@ class BotFileImporter
             return null;
         }
 
-        $link = $this->linkFor($relay);
-
-        // media_gallery is a legacy table some installs simply do not have; a
-        // missing library entry is not a reason to drop a stored file.
-        if (Schema::hasTable('media_gallery')) {
-            MediaGallery::registerRelayFile($relay, $link->streamUrl(), $relay->name);
-        }
-
-        RelayEvent::create([
-            'relay_file_id' => $relay->id,
-            'event' => 'uploaded',
-            'served_by' => 'telegram',
-            'bytes' => (int) $relay->size,
-            'message' => 'Stored on Telegram Drive (from the bot).',
-            'created_at' => now(),
-        ]);
+        $relay->publish('Stored on Telegram Drive (from the bot).');
 
         return $relay;
     }
@@ -206,20 +220,7 @@ class BotFileImporter
      */
     protected function linkFor(RelayFile $file): RelayLink
     {
-        $link = RelayLink::where('relay_file_id', $file->id)->first();
-
-        if ($link !== null) {
-            return $link;
-        }
-
-        $link = new RelayLink();
-        $link->relay_file_id = $file->id;
-        $link->token = Str::random(40);
-        $link->mode = RelayLink::MODE_STREAM;
-        $link->label = $file->name;
-        $link->save();
-
-        return $link;
+        return RelayLink::where('relay_file_id', $file->id)->first() ?? RelayLink::issueFor($file);
     }
 
     /**

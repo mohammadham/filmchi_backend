@@ -4,6 +4,7 @@ namespace App;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Schema;
 
 class MediaGallery extends Model
 {
@@ -53,8 +54,14 @@ class MediaGallery extends Model
      * Create (or refresh) the library entry for a freshly uploaded relay file
      * so it can be picked as a source inside Content.
      */
-    public static function registerRelayFile(RelayFile $file, string $url, ?string $title = null): self
+    public static function registerRelayFile(RelayFile $file, string $url, ?string $title = null): ?self
     {
+        // Some installs never had this legacy table; a missing library entry
+        // must not fail a file that is already stored.
+        if (!Schema::hasTable('media_gallery')) {
+            return null;
+        }
+
         $media = self::where('file', $url)->first() ?: new self();
 
         $media->title = $title ?: ($media->title ?: $file->name);
