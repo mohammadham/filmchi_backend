@@ -193,6 +193,25 @@ class AdoptPathTest extends TestCase
         $this->assertGreaterThan(0, $file['ready_at']);
     }
 
+    public function test_a_manifest_normalizes_the_channel_like_adopt(): void
+    {
+        $drive = new AdoptMockClient([]);
+
+        $manifest = $drive->channelManifest([
+            ['message_id' => 42117, 'name' => 'movie.mkv', 'size' => 2048, 'storage_chat' => 'store'],
+        ], 'store');
+
+        // a restored row must carry the spelling adopt stores, or the panel
+        // lists the same channel twice
+        $this->assertSame('@store', $manifest['channel']['chat']);
+        $this->assertSame('@store', $manifest['files'][0]['storage_chat']);
+
+        $numeric = $drive->channelManifest([['message_id' => 42118, 'size' => 10]], '-1001234567890');
+
+        $this->assertSame('-1001234567890', $numeric['channel']['chat']);
+        $this->assertSame('-1001234567890', $numeric['files'][0]['storage_chat']);
+    }
+
     public function test_a_manifest_entry_without_a_message_is_rejected(): void
     {
         $drive = new AdoptMockClient([]);

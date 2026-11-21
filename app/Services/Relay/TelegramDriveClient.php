@@ -297,6 +297,7 @@ class TelegramDriveClient
     public function channelManifest(array $files, string $chat): array
     {
         $rows = [];
+        $chat = $this->channelName($chat);
 
         foreach ($files as $file) {
             $messageId = (int) ($file['message_id'] ?? 0);
@@ -316,7 +317,7 @@ class TelegramDriveClient
                 'source' => (string) ($file['source'] ?? 'bot'),
                 'status' => 'ready',
                 'parts' => 1,
-                'storage_chat' => (string) ($file['storage_chat'] ?? $chat),
+                'storage_chat' => $this->channelName((string) ($file['storage_chat'] ?? $chat)),
                 'message_ids' => [$messageId],
                 // restore_channel writes these straight into the row; without
                 // them a restored file is ready but has no ready_at
@@ -337,6 +338,24 @@ class TelegramDriveClient
             'channel' => ['chat' => $chat],
             'files' => $rows,
         ];
+    }
+
+    /**
+     * The channel spelling adopt stores: ``@username`` or a numeric id.
+     *
+     * A bare name is the same channel as ``@name`` — adopt normalizes it the
+     * same way — so a restored row lands next to the adopted ones instead of
+     * growing a second spelling the panel would list separately.
+     */
+    protected function channelName(string $chat): string
+    {
+        $chat = trim($chat);
+
+        if ($chat === '' || in_array(strtolower($chat), ['me', 'self'], true) || preg_match('/^-?\d+$/', $chat) === 1) {
+            return $chat;
+        }
+
+        return str_starts_with($chat, '@') ? $chat : '@' . $chat;
     }
 
     /**
