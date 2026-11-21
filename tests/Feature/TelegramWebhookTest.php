@@ -12,7 +12,7 @@ use Tests\TestCase;
 /**
  * P1 of the bot plan: the webhook is inert until switched on, refuses a wrong
  * secret in the path or in Telegram's header, and only records updates from a
- * numeric id on the allowlist inside a private chat — once per update_id.
+ * numeric id on the allowlist inside a private chat â€” once per update_id.
  */
 class TelegramWebhookTest extends TestCase
 {
@@ -43,7 +43,7 @@ class TelegramWebhookTest extends TestCase
             'update_id' => $updateId,
             'message' => [
                 'message_id' => $updateId,
-                'from' => ['id' => $userId, 'is_bot' => false, 'first_name' => 'علی'],
+                'from' => ['id' => $userId, 'is_bot' => false, 'first_name' => 'Ø¹Ù„ÛŒ'],
                 'chat' => ['id' => $userId, 'type' => $chatType],
                 'date' => time(),
                 'text' => $text,
@@ -175,12 +175,39 @@ class TelegramWebhookTest extends TestCase
         $this->assertSame(1, DB::table('bot_updates')->count());
     }
 
+    public function test_the_start_button_gets_a_welcome_reply(): void
+    {
+        Http::fake(['api.telegram.org/*' => Http::response([
+            'ok' => true,
+            'result' => ['message_id' => 70],
+        ])]);
+
+        $this->postUpdate($this->update(120, 111, 'private', '/start'))->assertOk();
+
+        Http::assertSent(function ($request) {
+            return str_ends_with($request->url(), '/sendMessage')
+                && (int) $request['chat_id'] === 111
+                && str_contains((string) $request['text'], 'سند');
+        });
+    }
+
+    public function test_a_longer_command_is_not_mistaken_for_a_greeting(): void
+    {
+        Http::fake();
+
+        $this->postUpdate($this->update(121, 111, 'private', '/startle'))->assertOk();
+        $this->postUpdate($this->update(122, 111, 'private', '/pingpong'))->assertOk();
+
+        Http::assertNothingSent();
+        $this->assertSame(2, DB::table('bot_updates')->count(), 'both updates are recorded, neither replied');
+    }
+
     public function test_only_an_allowed_ping_is_answered(): void
     {
         Http::fake();
 
         $this->postUpdate($this->update(31, 999, 'private', '/ping'))->assertOk();  // outsider
-        $this->postUpdate($this->update(33, 111, 'private', 'سلام'))->assertOk();   // plain text
+        $this->postUpdate($this->update(33, 111, 'private', 'Ø³Ù„Ø§Ù…'))->assertOk();   // plain text
 
         Http::assertNothingSent();
         $this->assertSame(1, DB::table('bot_updates')->count(), 'only the allowed text update was recorded');

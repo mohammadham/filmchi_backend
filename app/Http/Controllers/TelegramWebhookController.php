@@ -18,7 +18,7 @@ use Illuminate\Support\Facades\Log;
  * disallowed user cannot even make the bot retry.
  *
  * Nothing heavy happens here: the update id is recorded for dedup, an allowed
- * /ping is answered so the bot is verifiable without the queue, and the caller
+ * /ping or /start is answered so the bot is verifiable without the queue, and the caller
  * returns immediately; the conversation/jobs pick the rest up later.
  */
 class TelegramWebhookController extends Controller
@@ -74,8 +74,10 @@ class TelegramWebhookController extends Controller
             'received_at' => now(),
         ]);
 
-        if ($this->isPing($message)) {
-            $this->answerPing((int) ($message['chat']['id'] ?? 0));
+        $greeting = $this->greeting($message);
+
+        if ($greeting !== null) {
+            $this->answerGreeting($greeting, (int) ($message['chat']['id'] ?? 0));
         }
 
         if ($recorded > 0 && is_array($message['document'] ?? null)) {
@@ -86,24 +88,34 @@ class TelegramWebhookController extends Controller
     }
 
     /**
-     * `/ping` and `/ping@BotName` (Telegram appends the username in groups).
-     * A callback query has no text, so it never matches.
+     * `/ping` and `/start`, with Telegram's optional `@BotName` suffix (and an
+     * argument) in groups. `/start` matters as much as `/ping`: it is the
+     * button every user presses first, and a silent bot looks broken.
      *
      * @param  array  $message  message
+     * @return string|null  the command name, or null when this is not one
      */
-    protected function isPing(array $message): bool
+    protected function greeting(array $message): ?string
     {
         $text = trim((string) ($message['text'] ?? ''));
 
-        return $text !== '' && preg_match('#^/ping(@\w+)?(\s|$)#i', $text) === 1;
+        if ($text !== '' && preg_match('#^/(ping|start)(@\w+)?(\s|$)#i', $text, $match) === 1) {
+            return strtolower($match[1]);
+        }
+
+        return null;
     }
 
     /** A failed reply must not turn a recorded update into a Telegram retry. */
-    protected function answerPing(int $chatId): void
+    protected function answerGreeting(string $command, int $chatId): void
     {
-        if ($chatId > 0) {
-            $this->bot->trySendMessage($chatId, 'pong');
+        if ($chatId <= 0) {
+            return;
         }
+
+        $this->bot->trySendMessage($chatId, $command === 'start'
+            ? 'سلام! سند یا ویدیو را بفرست تا ذخیره‌اش کنم.'
+            : 'pong');
     }
 
     /**
