@@ -208,29 +208,31 @@ class TelegramDriveClient
      * Path B: register a message that already sits in the storage channel.
      *
      * The bot copied the user's document there with Telegram's copyMessage, so
-     * no byte ever reaches this server. The service reads size/name back from
-     * the stored document and returns the ready file record.
+     * no byte ever reaches this server. The service reads the document back and
+     * writes a ready row.
      *
-     * $meta accepts name, size, mime, folder_path, storage_chat and uploader.
-     * storage_chat is only a wish: the service rejects it with 409 when the API
-     * key is pinned to another channel (the destination is never taken from us).
+     * $meta labels the row (name, size, folder_path, storage_chat, uploader);
+     * storage_chat is only a wish — the service answers 409 when the API key is
+     * pinned to another channel (the destination is never taken from us).
+     *
+     * A deduplicated answer names a row that already existed, so it is returned
+     * as-is: polling it could never make it ready and would only cost the whole
+     * ready_timeout.
      */
     public function adopt(int $messageId, array $meta = []): array
     {
-        if ($messageId <= 0) {
-            throw new RuntimeException('adopt needs the message_id of the stored copy.');
-        }
-
         $payload = ['message_id' => $messageId];
 
-        foreach (['name', 'size', 'mime', 'folder_path', 'storage_chat', 'uploader'] as $field) {
-            if (isset($meta[$field]) && $meta[$field] !== '' && $meta[$field] !== null) {
+        foreach (['name', 'size', 'folder_path', 'storage_chat', 'uploader'] as $field) {
+            if (($meta[$field] ?? '') !== '') {
                 $payload[$field] = $meta[$field];
             }
         }
 
-        $response = $this->request('POST', 'api/v1/files/adopt', ['json' => $payload]);
-        $result = $this->decode($response, 'adopt');
+        $result = $this->decode(
+            $this->request('POST', 'api/v1/files/adopt', ['json' => $payload]),
+            'adopt'
+        );
 
         $fileId = (string) ($result['file_id'] ?? '');
 
@@ -238,15 +240,45 @@ class TelegramDriveClient
             throw new RuntimeException('Telegram Drive did not return a file id for the adopted message.');
         }
 
-        $result['file_id'] = $fileId;
-        $result['deduplicated'] = (bool) ($result['deduplicated'] ?? false);
+        if (!empty($result['deduplicated'])) {
+            return $result;
+        }
 
+        // A fresh adopt writes a ready row synchronously; anything else means
+        // the service went async, and the caller must not presign early.
         if (($result['status'] ?? '') !== 'ready') {
-            // Adopt writes a ready row; anything else is worth waiting on.
             return $this->waitForReady($fileId);
         }
 
         return $result;
+    }
+
+    /**
+     * A panel (admin JWT) token for the endpoints an API key cannot open.
+     *
+     * Uses the token cache like every other call, so a batch of restores logs
+     * in once. A static API key is not a panel session and cannot stand in here,
+     * so missing credentials fail with a clear message instead of a 401 decode.
+     */
+    protected function panelToken(): string
+    {
+        $username = trim((string) ($this->config['username'] ?? ''));
+        $password = trim((string) ($this->config['password'] ?? ''));
+
+        if ($username === '' || $password === '') {
+            throw new RuntimeException(
+                'مسیر پشتیبان (restore) به اعتبارنامهٔ پنل Telegram Drive نیاز دارد: '
+                . 'TGDRIVE_USERNAME و TGDRIVE_PASSWORD تنظیم نشده‌اند و کلید API برای این مسیر کافی نیست.'
+            );
+        }
+
+        $cached = Cache::get($this->tokenCacheKey());
+
+        if (!empty($cached)) {
+            return (string) $cached;
+        }
+
+        return $this->login();
     }
 
     /**
@@ -265,7 +297,6 @@ class TelegramDriveClient
     public function channelManifest(array $files, string $chat): array
     {
         $rows = [];
-        $bytes = 0;
 
         foreach ($files as $file) {
             $messageId = (int) ($file['message_id'] ?? 0);
@@ -275,7 +306,6 @@ class TelegramDriveClient
             }
 
             $size = (int) ($file['size'] ?? 0);
-            $bytes += $size;
 
             $rows[] = [
                 'id' => (string) ($file['id'] ?? $this->newFileId()),
@@ -300,12 +330,11 @@ class TelegramDriveClient
             ];
         }
 
-        // Only the keys restore_channel actually reads (kind, channel.chat for
-        // logging, and the file rows) — no unused envelope fields.
+        // Only what restore_channel reads: the kind and the file rows (channel
+        // just labels the manifest) — no derived envelope fields.
         return [
             'kind' => 'channel-backup',
             'channel' => ['chat' => $chat],
-            'counts' => ['files' => count($rows), 'bytes' => $bytes],
             'files' => $rows,
         ];
     }
@@ -314,9 +343,10 @@ class TelegramDriveClient
      * Path B″ step 2: ask the service to merge a manifest the bot already sent
      * into the channel (sendDocument → message id).
      *
-     * The endpoint is panel-authenticated (admin JWT), not API-key, so this
-     * forces a login even when a static key is configured. Rows that already
-     * exist are skipped, so a retry is harmless.
+     * The endpoint is panel-authenticated (admin JWT), not API-key, so it needs
+     * panel credentials even when a static key is configured — but it reuses the
+     * cached token, so a batch of restores logs in once. Rows that already exist
+     * are skipped, so a retry is harmless.
      */
     public function restoreFromManifest(int $channelId, int $manifestMessageId): array
     {
@@ -324,7 +354,7 @@ class TelegramDriveClient
             throw new RuntimeException('restore needs the channel id and the manifest message id.');
         }
 
-        $jwt = $this->login();
+        $jwt = $this->panelToken();
 
         $response = $this->request(
             'POST',

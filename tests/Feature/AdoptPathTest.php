@@ -87,6 +87,86 @@ class AdoptPathTest extends TestCase
         $drive->adopt(42117, ['size' => 5]);
     }
 
+    public function test_a_deduplicated_answer_returns_without_waiting_for_ready(): void
+    {
+        // The only mocked answer is the adopt itself: a wait would ask for
+        // /files/{id} and run out of responses (then burn ready_timeout live).
+        $drive = new AdoptMockClient([
+            new Response(200, [], (string) json_encode([
+                'ok' => true,
+                'file_id' => 'f_existing',
+                'name' => 'movie.mkv',
+                'size' => 2048,
+                'status' => 'queued',
+                'deduplicated' => true,
+            ])),
+        ]);
+
+        $result = $drive->adopt(42117);
+
+        $this->assertSame('f_existing', $result['file_id']);
+        $this->assertSame('queued', $result['status'], 'a dedup answer is handed back as-is');
+        $this->assertCount(1, $drive->history, 'no poll after a dedup answer');
+    }
+
+    public function test_a_fresh_queued_adopt_still_waits_for_ready(): void
+    {
+        $drive = new AdoptMockClient([
+            new Response(200, [], (string) json_encode([
+                'ok' => true,
+                'file_id' => 'f_new',
+                'status' => 'queued',
+                'deduplicated' => false,
+            ])),
+            new Response(200, [], (string) json_encode(['id' => 'f_new', 'status' => 'ready'])),
+        ]);
+
+        $result = $drive->adopt(42117);
+
+        $this->assertSame('ready', $result['status']);
+        $this->assertCount(2, $drive->history);
+        $this->assertStringContainsString('/api/v1/files/f_new', $drive->history[1]['path']);
+    }
+
+    public function test_restore_reuses_the_cached_panel_token(): void
+    {
+        $restored = static fn () => new Response(200, [], (string) json_encode([
+            'ok' => true, 'inserted' => 1, 'skipped' => 0, 'file_ids' => ['f_x'],
+        ]));
+
+        $drive = new AdoptMockClient([
+            new Response(200, [], (string) json_encode(['access_token' => 'jwt-1', 'expires_in' => 60])),
+            $restored(),
+            $restored(),
+        ]);
+
+        $drive->restoreFromManifest(3, 99001);
+        $drive->restoreFromManifest(3, 99002);
+
+        $paths = array_column($drive->history, 'path');
+        $logins = array_values(array_filter($paths, static fn (string $p): bool => str_contains($p, '/auth/login')));
+
+        $this->assertCount(1, $logins, 'the second restore must use the cached token');
+        $this->assertCount(3, $paths);
+        $this->assertSame('Bearer jwt-1', $drive->history[2]['authorization']);
+        $this->assertStringContainsString('message_id=99002', $paths[2]);
+    }
+
+    public function test_restore_without_panel_credentials_explains_itself(): void
+    {
+        $drive = new AdoptMockClient([], ['password' => '']);
+
+        try {
+            $drive->restoreFromManifest(3, 99001);
+            $this->fail('a restore without panel credentials must not reach the service');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('اعتبارنامهٔ پنل', $e->getMessage());
+            $this->assertStringContainsString('TGDRIVE_PASSWORD', $e->getMessage());
+        }
+
+        $this->assertCount(0, $drive->history, 'no request is made without credentials');
+    }
+
     public function test_a_manifest_carries_pointers_only(): void
     {
         $drive = new AdoptMockClient([]);
@@ -96,8 +176,7 @@ class AdoptPathTest extends TestCase
         ], '@store');
 
         $this->assertSame('channel-backup', $manifest['kind']);
-        $this->assertSame(1, $manifest['counts']['files']);
-        $this->assertSame(2048, $manifest['counts']['bytes']);
+        $this->assertSame('@store', $manifest['channel']['chat']);
 
         $file = $manifest['files'][0];
         $this->assertStringStartsWith('f_', $file['id']);
@@ -107,6 +186,11 @@ class AdoptPathTest extends TestCase
         $this->assertSame('ready', $file['status']);
         $this->assertSame('@store', $file['storage_chat']);
         $this->assertSame('bot', $file['source']);
+        // restore writes these straight into the row; without them a restored
+        // file is ready but has no created_at/ready_at
+        $this->assertIsInt($file['created_at']);
+        $this->assertIsInt($file['ready_at']);
+        $this->assertGreaterThan(0, $file['ready_at']);
     }
 
     public function test_a_manifest_entry_without_a_message_is_rejected(): void
@@ -150,9 +234,9 @@ class AdoptMockClient extends TelegramDriveClient
     /** @var array<int, array<string, mixed>> */
     public array $sent = [];
 
-    public function __construct(array $responses)
+    public function __construct(array $responses, array $config = [])
     {
-        parent::__construct([
+        parent::__construct($config + [
             'base_url' => 'http://tgdrive.test',
             'api_key' => 'td_test_key',
             'username' => 'admin',

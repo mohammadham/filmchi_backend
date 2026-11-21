@@ -124,8 +124,6 @@ class StoredMessageImporterTest extends TestCase
             $this->assertIsArray($manifest);
             $this->assertSame('channel-backup', $manifest['kind']);
             $this->assertSame('@store', $manifest['channel']['chat']);
-            $this->assertSame(1, $manifest['counts']['files']);
-            $this->assertSame(2048, $manifest['counts']['bytes']);
             $this->assertSame([42117], $manifest['files'][0]['message_ids']);
             $this->assertSame(42117, $manifest['files'][0]['file_parts'][0]['message_id']);
             $this->assertSame(2048, $manifest['files'][0]['file_parts'][0]['size']);
