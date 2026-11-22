@@ -202,9 +202,12 @@ php artisan relay:queue-supervisor --queue=default --poll=3
 
 With `QUEUE_CONNECTION=sync` there is no worker at all and the import runs inside
 the webhook request; set `redis` or `database` for anything real. That case is
-not silent: each inline dispatch logs `bot import runs inline`, and the bot
-card's health call reports `queue_sync`, so the warning shows up in the panel
-too. The supervisor also re-queues submissions left `queued`/`retrying` for
+not silent: the webhook's inline dispatch logs `bot import runs inline`, cooled
+down by the cache key `relay:bot:inline-warning` to one line an hour so a busy
+bot cannot bury the rest of the log in the same sentence. The throttle is only
+on the log: the bot card's health call derives `queue_sync` from the config on
+every check, so the panel still warns even when the line is suppressed. The
+supervisor also re-queues submissions left `queued`/`retrying` for
 `RELAY_BOT_STALE_SECONDS`, so a worker that dies does not strand a file.
 
 **5. Smoke test.** Send `/ping` from an allowed account (expect `pong`), then a

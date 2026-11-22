@@ -7,6 +7,7 @@ use App\RelayFile;
 use App\RelayLink;
 use App\Services\Bot\TelegramBotClient;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -342,18 +343,32 @@ class TelegramWebhookController extends Controller
         }
     }
 
+    /** Throttle key: the sync-queue warning is written at most once an hour. */
+    protected const INLINE_WARNING_CACHE_KEY = 'relay:bot:inline-warning';
+
     /**
      * QUEUE_CONNECTION=sync runs the import inside this webhook request: no
      * worker, no retry, and Telegram waits for the whole copy/adopt before the
      * update is acknowledged. A redis/database queue is the supported setup, so
      * the misconfiguration gets said out loud instead of looking like a normal
      * import (the panel's bot card shows the same flag).
+     *
+     * The statement does not change between uploads, so the log line is cooled
+     * down to one an hour: without that, every accepted document wrote the same
+     * warning and buried everything else in the log. The panel flag is not
+     * affected - it is computed from the config on every health check.
      */
     protected function warnIfQueueIsSync(): void
     {
         $connection = (string) config('queue.default');
 
         if ($connection !== 'sync') {
+            return;
+        }
+
+        // Cache::add is atomic: of every request in the window exactly one
+        // writes the line, so concurrent webhooks cannot double-log it either.
+        if (!Cache::add(self::INLINE_WARNING_CACHE_KEY, true, now()->addHour())) {
             return;
         }
 

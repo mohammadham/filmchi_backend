@@ -198,7 +198,7 @@ class TelegramWebhookTest extends TestCase
         Queue::assertPushed(ImportBotFileJob::class, 1);
     }
 
-    public function test_a_sync_queue_warns_that_the_import_runs_inline(): void
+    public function test_a_sync_queue_warns_once_an_hour_that_the_import_runs_inline(): void
     {
         Queue::fake();
         Http::fake();
@@ -206,16 +206,20 @@ class TelegramWebhookTest extends TestCase
 
         Log::spy();
 
-        $this->postDocument(70);
-        $this->answer(71, '1080');
-        $this->answer(72, 'خیر');
+        $inline = function (string $message, array $context = []): bool {
+            return str_contains($message, 'runs inline') && ($context['connection'] ?? '') === 'sync';
+        };
 
-        Queue::assertPushed(ImportBotFileJob::class, 1);
+        // two uploads in the same window: the same statement, written once
+        $this->importDocument(80);
+        $this->importDocument(83);
+        Queue::assertPushed(ImportBotFileJob::class, 2);
+        Log::shouldHaveReceived('warning')->withArgs($inline)->once();
 
-        Log::shouldHaveReceived('warning')->withArgs(function (string $message, array $context = []): bool {
-            return str_contains($message, 'runs inline')
-                && ($context['connection'] ?? '') === 'sync';
-        })->once();
+        // the window passes: the next import says it again
+        $this->travel(61)->minutes();
+        $this->importDocument(86);
+        Log::shouldHaveReceived('warning')->withArgs($inline)->twice();
     }
 
     public function test_a_real_queue_does_not_raise_the_inline_warning(): void
@@ -226,9 +230,7 @@ class TelegramWebhookTest extends TestCase
 
         Log::spy();
 
-        $this->postDocument(73);
-        $this->answer(74, '1080');
-        $this->answer(75, 'خیر');
+        $this->importDocument(70);
 
         Queue::assertPushed(ImportBotFileJob::class, 1);
 
@@ -489,6 +491,14 @@ class TelegramWebhookTest extends TestCase
             RelayLink::whereIn('relay_file_id', $ids)->delete();
             RelayFile::whereIn('id', $ids)->delete();
         }
+    }
+
+    /** One document through the whole question flow, which queues one import. */
+    protected function importDocument(int $updateId): void
+    {
+        $this->postDocument($updateId);
+        $this->answer($updateId + 1, '1080');
+        $this->answer($updateId + 2, 'خیر');
     }
 
     protected function postDocument(int $updateId, int $userId = 111): void
