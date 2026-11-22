@@ -308,6 +308,14 @@ $(document).ready(function () {
         return formData;
     }
 
+    // Bot API errors and webhook URLs are upstream text: escape them before
+    // they are written with .html() into the admin page.
+    function botEscape(value) {
+        return $("<div>")
+            .text(value === null || value === undefined ? "" : String(value))
+            .html();
+    }
+
     function botResult(text, ok) {
         $("#botActionResult")
             .removeClass("text-success text-danger")
@@ -373,21 +381,29 @@ $(document).ready(function () {
                 .text(`Health: ${response.ok ? "online" : "offline"}`);
 
             let lines = [
-                `Bot: ${response.ok ? "online" : "offline"} — ${response.message}`,
-                `Webhook: ${response.webhook_url || "not set"}${response.webhook_ok ? " (matches)" : ""}`,
-                `Pending updates: ${response.pending_updates}`,
+                `Bot: ${response.ok ? "online" : "offline"} — ${botEscape(response.message)}`,
+                `Webhook: ${botEscape(response.webhook_url || "not set")}${response.webhook_ok ? " (matches)" : ""}`,
+                `Pending updates: ${parseInt(response.pending_updates, 10) || 0}`,
             ];
             if (response.last_error) {
-                lines.push(`Last error: ${response.last_error}`);
+                lines.push(`Last error: ${botEscape(response.last_error)}`);
             }
-            botResult(lines.join("<br>"), response.ok && response.webhook_ok);
+            if (response.queue_sync) {
+                lines.unshift(
+                    "⚠️ Queue: sync — the import runs inside the webhook request, with no worker and no retry. Set QUEUE_CONNECTION=redis and start relay:queue-supervisor."
+                );
+            }
+            botResult(
+                lines.join("<br>"),
+                response.ok && response.webhook_ok && !response.queue_sync
+            );
         });
     });
 
     $(document).on("click", "#setBotWebhookBtn", function (e) {
         e.preventDefault();
         botPost("setBotWebhook", $(this), function (response) {
-            botResult(response.message, response.status);
+            botResult(botEscape(response.message), response.status);
             if (response.status) {
                 $("#botHealthBtn").trigger("click");
             }
@@ -397,7 +413,7 @@ $(document).ready(function () {
     $(document).on("click", "#deleteBotWebhookBtn", function (e) {
         e.preventDefault();
         botPost("deleteBotWebhook", $(this), function (response) {
-            botResult(response.message, response.status);
+            botResult(botEscape(response.message), response.status);
             if (response.status) {
                 $("#botHealthBtn").trigger("click");
             }

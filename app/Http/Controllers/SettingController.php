@@ -421,6 +421,9 @@ class SettingController extends Controller
             'enabled' => (bool) config('media_relay.bot.enabled'),
             'token_set' => (string) config('media_relay.bot.token') !== '',
             'secret_set' => $secret !== '',
+            // sync has no worker: the import runs inside the webhook request.
+            'queue_connection' => (string) config('queue.default'),
+            'queue_sync' => (string) config('queue.default') === 'sync',
             'ok' => $health['ok'],
             'message' => $health['message'],
             // The secret is the path segment of this URL: the panel says whether
