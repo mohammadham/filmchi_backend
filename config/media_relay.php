@@ -448,6 +448,12 @@ return [
         // every requeue_seconds, so no submission stays stuck at "queued".
         'stale_seconds'   => (int) env('RELAY_BOT_STALE_SECONDS', 600),
         'requeue_seconds' => (int) env('RELAY_BOT_REQUEUE_SECONDS', 300),
+        // Telegram retries a webhook delivery for up to 24 hours, so a dedup row
+        // is only useful inside that window. Older rows are pruned (never below
+        // one day, so a retry can never slip past a pruned id).
+        'update_retention_days' => (int) env('RELAY_BOT_UPDATE_RETENTION_DAYS', 2),
+        // How often the supervisor prunes bot_updates, in seconds (0 = never).
+        'prune_seconds'         => (int) env('RELAY_BOT_PRUNE_SECONDS', 3600),
     ],
 
 ];

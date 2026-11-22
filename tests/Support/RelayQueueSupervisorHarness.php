@@ -33,6 +33,11 @@ class RelayQueueSupervisorHarness extends RelayQueueSupervisor
         $this->requeueStaleBotImports();
     }
 
+    public function pruneUpdates(): void
+    {
+        $this->pruneBotUpdates();
+    }
+
     public function publishHeartbeat(): void
     {
         $this->heartbeat();

@@ -60,6 +60,9 @@ class RelayQueueSupervisor extends Command
     /** @var int */
     protected $lastBotRequeueAt = 0;
 
+    /** @var int last time bot_updates was pruned (unix seconds) */
+    protected $lastBotPruneAt = 0;
+
     public function handle(WorkerRegistry $workers): int
     {
         $this->installSignalHandlers();
@@ -98,6 +101,7 @@ class RelayQueueSupervisor extends Command
 
             $this->sweepDeferredParts();
             $this->requeueStaleBotImports();
+            $this->pruneBotUpdates();
 
             $this->heartbeat();
 
@@ -257,6 +261,55 @@ class RelayQueueSupervisor extends Command
         // (tests, and any embedder that reconciles without a terminal).
         if ($stale->isNotEmpty() && $this->output !== null) {
             $this->info(sprintf('requeued %d stale bot import(s)', $stale->count()));
+        }
+    }
+
+    /**
+     * Drop dedup rows Telegram can no longer retry.
+     *
+     * Telegram gives up on a delivery after 24 hours, so a row older than that
+     * cannot dedupe anything a second time. The retention is clamped to at least
+     * one day for exactly that reason: pruning a row inside the retry window
+     * would let a retried update start a second flow. Old rows go in batches so
+     * a long-abandoned install does not lock the table in one huge delete.
+     */
+    protected function pruneBotUpdates(): void
+    {
+        $every = (int) config('media_relay.bot.prune_seconds', 3600);
+
+        if ($every <= 0 || time() - $this->lastBotPruneAt < $every) {
+            return;
+        }
+
+        $this->lastBotPruneAt = time();
+
+        $cutoff = now()->subDays(max(1, (int) config('media_relay.bot.update_retention_days', 2)));
+        $deleted = 0;
+
+        try {
+            do {
+                // Ids first: a DELETE ... LIMIT is not portable, and this keeps
+                // each statement short whatever the backlog is.
+                $ids = DB::table('bot_updates')
+                    ->where('received_at', '<', $cutoff)
+                    ->orderBy('update_id')
+                    ->limit(1000)
+                    ->pluck('update_id');
+
+                if ($ids->isEmpty()) {
+                    break;
+                }
+
+                $deleted += DB::table('bot_updates')->whereIn('update_id', $ids->all())->delete();
+            } while ($ids->count() >= 1000);
+        } catch (Throwable $e) {
+            // A transient DB hiccup must not stop the pool; the next interval
+            // retries with the same cutoff.
+            return;
+        }
+
+        if ($deleted > 0 && $this->output !== null) {
+            $this->info(sprintf('pruned %d old bot update(s)', $deleted));
         }
     }
 
