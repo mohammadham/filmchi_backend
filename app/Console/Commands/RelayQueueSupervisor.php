@@ -157,25 +157,21 @@ class RelayQueueSupervisor extends Command
      */
     protected function heartbeat(): void
     {
-        $roles = [];
-
-        foreach (self::ROLES as $role) {
-            $roles[$role] = $this->countRole($role);
-        }
-
         try {
             $status = ['updated_at' => now()->toIso8601String()];
+            $live = 0;
+            $desired = 0;
 
-            foreach ($roles as $role => $live) {
-                $status[$role . '_workers'] = $live;
-                $status[$role . '_desired'] = $this->desiredRoleConcurrency($role);
+            foreach (self::ROLES as $role) {
+                $status[$role . '_workers'] = $workers = $this->countRole($role);
+                $status[$role . '_desired'] = $target = $this->desiredRoleConcurrency($role);
+
+                $live += $workers;
+                $desired += $target;
             }
 
-            $status['workers'] = array_sum($roles);
-            $status['desired'] = array_sum(array_map(
-                fn (string $role): int => $status[$role . '_desired'],
-                self::ROLES
-            ));
+            $status['workers'] = $live;
+            $status['desired'] = $desired;
 
             Cache::put(self::STATUS_KEY, $status, now()->addMinutes(10));
         } catch (Throwable $e) {
@@ -417,9 +413,9 @@ class RelayQueueSupervisor extends Command
     /** `--queue` when the command really runs; the configured name otherwise. */
     protected function downloadQueue(): string
     {
-        $option = $this->input === null ? null : $this->option('queue');
-
-        return (string) ($option ?: config('media_relay.queue.name', 'default'));
+        return $this->input === null
+            ? (string) config('media_relay.queue.name', 'default')
+            : (string) $this->option('queue');
     }
 
     protected function reapChildren(): void
@@ -531,15 +527,14 @@ class RelayQueueSupervisor extends Command
         $this->children = [];
 
         try {
-            Cache::put(self::STATUS_KEY, [
-                'workers' => 0,
-                'desired' => 0,
-                'download_workers' => 0,
-                'upload_workers' => 0,
-                'probe_workers' => 0,
-                'bot_workers' => 0,
-                'updated_at' => now()->toIso8601String(),
-            ], now()->addMinutes(10));
+            $stopped = ['workers' => 0, 'desired' => 0, 'updated_at' => now()->toIso8601String()];
+
+            foreach (self::ROLES as $role) {
+                $stopped[$role . '_workers'] = 0;
+                $stopped[$role . '_desired'] = 0;
+            }
+
+            Cache::put(self::STATUS_KEY, $stopped, now()->addMinutes(10));
         } catch (Throwable $e) {
             // Ignore: the container is already shutting down.
         }

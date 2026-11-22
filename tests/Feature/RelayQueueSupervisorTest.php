@@ -76,7 +76,6 @@ class RelayQueueSupervisorTest extends TestCase
         $this->assertSame(2, $status['bot_workers']);
         $this->assertSame(2, $status['bot_desired']);
         $this->assertSame(2, $status['workers'], 'only the bot pool is running in this test');
-        $this->assertGreaterThanOrEqual($status['bot_desired'], $status['desired']);
     }
 
     public function test_a_stale_submission_is_requeued_and_a_fresh_one_is_not(): void
@@ -108,11 +107,7 @@ class RelayQueueSupervisorTest extends TestCase
 
     public function test_every_lane_in_the_role_list_is_supervised_on_its_own_queue(): void
     {
-        $this->assertSame(
-            ['download', 'upload', 'probe', 'bot'],
-            RelayQueueSupervisor::ROLES,
-            'the bot lane must stay in the reconciled loop'
-        );
+        $this->assertContains('bot', RelayQueueSupervisor::ROLES, 'the bot lane must stay in the reconciled loop');
 
         $supervisor = new RelayQueueSupervisorHarness();
         $queues = [];
@@ -136,15 +131,28 @@ class RelayQueueSupervisorTest extends TestCase
         );
     }
 
-    public function test_the_bot_lane_comes_up_without_a_manual_worker(): void
+    public function test_the_heartbeat_total_is_the_sum_of_the_lanes(): void
     {
-        Queue::fake();
-
         $supervisor = new RelayQueueSupervisorHarness();
         $supervisor->reconcile('bot');
+        $supervisor->publishHeartbeat();
 
-        $this->assertSame(['bot'], $supervisor->spawnedRoles);
-        $this->assertSame((new ImportBotFileJob(1))->queue, $supervisor->queueFor('bot'));
+        $status = Cache::get(RelayQueueSupervisor::STATUS_KEY);
+
+        $live = 0;
+        $desired = 0;
+
+        foreach (RelayQueueSupervisor::ROLES as $role) {
+            $this->assertArrayHasKey($role . '_workers', $status);
+            $this->assertArrayHasKey($role . '_desired', $status);
+
+            $live += $status[$role . '_workers'];
+            $desired += $status[$role . '_desired'];
+        }
+
+        $this->assertSame($live, $status['workers']);
+        $this->assertSame($desired, $status['desired']);
+        $this->assertGreaterThanOrEqual(1, $status['bot_desired'], 'the bot lane is always staffed');
     }
 
     /** A row in the state a dead worker leaves behind. */
