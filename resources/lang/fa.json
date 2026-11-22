@@ -461,5 +461,8 @@
     "relayRoleDownload": "دانلود",
     "relayRoleUpload": "آپلود",
     "relayRoleProbe": "پروب",
-    "relayRoleBot": "بات"
+    "relayRoleBot": "بات",
+    "secretMissing": "ذخیره نشده",
+    "botOnline": "آنلاین",
+    "botOffline": "آفلاین"
 }

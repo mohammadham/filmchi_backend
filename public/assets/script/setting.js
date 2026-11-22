@@ -368,17 +368,30 @@ $(document).ready(function () {
     $(document).on("click", "#botHealthBtn", function (e) {
         e.preventDefault();
         botPost("botHealth", $(this), function (response) {
-            $("#botFlagBadge")
+            const flagBadge = $("#botFlagBadge");
+            const tokenBadge = $("#botTokenBadge");
+            const healthBadge = $("#botHealthBadge");
+
+            // A red badge with "saved" on it is worse than no badge: the text
+            // is set from the same answer as the colour.
+            const botBadgeText = function (badge, value) {
+                badge.text(`${badge.data("label")}: ${value}`);
+            };
+
+            flagBadge
                 .removeClass("bg-success bg-secondary")
-                .addClass(response.enabled ? "bg-success" : "bg-secondary")
-                .text(`Bot: ${response.enabled ? "on" : "off"}`);
-            $("#botTokenBadge")
+                .addClass(response.enabled ? "bg-success" : "bg-secondary");
+            botBadgeText(flagBadge, response.enabled ? flagBadge.data("on") : flagBadge.data("off"));
+
+            tokenBadge
                 .removeClass("bg-success bg-danger")
                 .addClass(response.token_set ? "bg-success" : "bg-danger");
-            $("#botHealthBadge")
+            botBadgeText(tokenBadge, response.token_set ? tokenBadge.data("saved") : tokenBadge.data("missing"));
+
+            healthBadge
                 .removeClass("bg-secondary bg-success bg-danger")
-                .addClass(response.ok ? "bg-success" : "bg-danger")
-                .text(`Health: ${response.ok ? "online" : "offline"}`);
+                .addClass(response.ok ? "bg-success" : "bg-danger");
+            botBadgeText(healthBadge, response.ok ? healthBadge.data("online") : healthBadge.data("offline"));
 
             let lines = [
                 `Bot: ${response.ok ? "online" : "offline"} — ${botEscape(response.message)}`,

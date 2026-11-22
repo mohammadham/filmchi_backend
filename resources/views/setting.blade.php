@@ -661,9 +661,9 @@
                     <div class="d-flex align-items-center justify-content-between">
                         <h4 class="mb-0 fw-semibold">{{ __('botCard') }}</h4>
                         <div class="d-flex align-items-center gap-2">
-                            <span class="badge {{ $relay['relay_bot_enabled'] ? 'bg-success' : 'bg-secondary' }}" id="botFlagBadge">{{ __('botFlag') }}: {{ $relay['relay_bot_enabled'] ? __('botOn') : __('botOff') }}</span>
-                            <span class="badge {{ $relay['relay_bot_token_set'] ? 'bg-success' : 'bg-danger' }}" id="botTokenBadge">{{ __('botToken') }}: {{ $relay['relay_bot_token_set'] ? __('secretStored') : '-' }}</span>
-                            <span class="badge bg-secondary" id="botHealthBadge">{{ __('botHealth') }}: -</span>
+                            <span class="badge {{ $relay['relay_bot_enabled'] ? 'bg-success' : 'bg-secondary' }}" id="botFlagBadge" data-label="{{ __('botFlag') }}" data-on="{{ __('botOn') }}" data-off="{{ __('botOff') }}">{{ __('botFlag') }}: {{ $relay['relay_bot_enabled'] ? __('botOn') : __('botOff') }}</span>
+                            <span class="badge {{ $relay['relay_bot_token_set'] ? 'bg-success' : 'bg-danger' }}" id="botTokenBadge" data-label="{{ __('botToken') }}" data-saved="{{ __('secretStored') }}" data-missing="{{ __('secretMissing') }}">{{ __('botToken') }}: {{ $relay['relay_bot_token_set'] ? __('secretStored') : __('secretMissing') }}</span>
+                            <span class="badge bg-secondary" id="botHealthBadge" data-label="{{ __('botHealth') }}" data-online="{{ __('botOnline') }}" data-offline="{{ __('botOffline') }}">{{ __('botHealth') }}: -</span>
                         </div>
                     </div>
                 </div>

@@ -461,5 +461,8 @@
     "relayRoleDownload": "Download",
     "relayRoleUpload": "Upload",
     "relayRoleProbe": "Probe",
-    "relayRoleBot": "Bot"
+    "relayRoleBot": "Bot",
+    "secretMissing": "not saved",
+    "botOnline": "online",
+    "botOffline": "offline"
 }
