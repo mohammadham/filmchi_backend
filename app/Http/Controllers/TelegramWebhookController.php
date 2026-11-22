@@ -143,6 +143,27 @@ class TelegramWebhookController extends Controller
             return;
         }
 
+        // The daily limit counts documents, not bytes: one huge file can still
+        // eat the whole disk budget, so the size cap is checked before anything
+        // is written or queued.
+        $maxBytes = max(0, (int) config('media_relay.bot.max_size_mb', 0)) * 1024 * 1024;
+
+        if ($maxBytes > 0 && (int) ($document['file_size'] ?? 0) > $maxBytes) {
+            Log::info('bot document over the size cap', [
+                'user' => $userId,
+                'size' => (int) ($document['file_size'] ?? 0),
+                'cap_mb' => (int) config('media_relay.bot.max_size_mb', 0),
+            ]);
+
+            $this->bot->trySendMessage($chatId, sprintf(
+                '⚠️ این فایل %s است و از سقف %s مگابایتی ربات بزرگ‌تر است؛ نسخهٔ کم‌حجم‌تر را بفرست.',
+                $this->humanSize((int) ($document['file_size'] ?? 0)),
+                (int) config('media_relay.bot.max_size_mb', 0)
+            ));
+
+            return;
+        }
+
         // The same bytes are already in the relay: asking the two questions
         // and queueing an import that would only answer "already stored" wastes
         // the user's time, so the deduped answer comes before the first question.
@@ -165,6 +186,18 @@ class TelegramWebhookController extends Controller
         ]);
 
         $this->bot->trySendMessage($chatId, 'کیفیت را انتخاب کن: 1080، 720 یا 480 (/cancel برای لغو)');
+    }
+
+    /** GB/MB/KB for the size-cap reply, so the number reads like the panel's. */
+    protected function humanSize(int $bytes): string
+    {
+        foreach (['GB' => 1024 ** 3, 'MB' => 1024 ** 2, 'KB' => 1024] as $unit => $scale) {
+            if ($bytes >= $scale) {
+                return round($bytes / $scale, $bytes % $scale === 0 ? 0 : 1) . ' ' . $unit;
+            }
+        }
+
+        return $bytes . ' B';
     }
 
     /**

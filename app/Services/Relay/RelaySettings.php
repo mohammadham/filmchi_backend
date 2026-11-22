@@ -83,6 +83,7 @@ class RelaySettings
         'relay_bot_channel_id' => ['media_relay.bot.channel_id', 'int'],
         'relay_bot_quality' => ['media_relay.bot.quality', 'string'],
         'relay_bot_daily_limit' => ['media_relay.bot.daily_limit', 'int'],
+        'relay_bot_max_size_mb' => ['media_relay.bot.max_size_mb', 'int'],
     ];
 
     /**
@@ -176,6 +177,7 @@ class RelaySettings
             'relay_bot_channel_id' => (int) config('media_relay.bot.channel_id', 0),
             'relay_bot_quality' => (string) config('media_relay.bot.quality', '1080'),
             'relay_bot_daily_limit' => (int) config('media_relay.bot.daily_limit', 20),
+            'relay_bot_max_size_mb' => max(1, (int) config('media_relay.bot.max_size_mb', 2048)),
         ];
     }
 

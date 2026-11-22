@@ -455,5 +455,7 @@
     "botSubmissionStatus": "Status",
     "botSubmissionReceived": "Received",
     "botSubmissionSeriesYes": "series",
-    "botSubmissionSeriesNo": "movie"
+    "botSubmissionSeriesNo": "movie",
+    "botMaxSize": "Max file size (MB)",
+    "botMaxSizeHint": "A larger document is refused before any row or job is created."
 }

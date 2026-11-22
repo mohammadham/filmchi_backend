@@ -435,6 +435,9 @@ return [
         'quality'        => (string) env('RELAY_BOT_QUALITY', '1080'),
         // Files one allowed user may submit per day (0 = unlimited).
         'daily_limit'    => (int) env('RELAY_BOT_DAILY_LIMIT', 20),
+        // Per-file ceiling in MB (0 = no ceiling). Twenty files a day is still
+        // a disk budget if one of them is a multi-gigabyte episode.
+        'max_size_mb'    => (int) env('RELAY_BOT_MAX_SIZE_MB', 2048),
         // copyMessage is metadata + a server-side copy: seconds, not minutes.
         'copy_timeout'   => (int) env('RELAY_BOT_COPY_TIMEOUT', 60),
         // A webhook reply must stay inside Telegram's delivery budget.

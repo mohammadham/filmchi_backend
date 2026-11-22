@@ -139,6 +139,25 @@
 
                 activeValue.textContent = data.active;
                 workersValue.textContent = data.workers_live + '/' + data.workers_desired;
+
+                if (data.roles) {
+                    Object.keys(data.roles).forEach(function (role) {
+                        const suffix = role.charAt(0).toUpperCase() + role.slice(1);
+                        const value = document.getElementById('relayRuntimeRole' + suffix + 'Value');
+                        const badge = document.getElementById('relayRuntimeRole' + suffix + 'Badge');
+
+                        if (value) {
+                            value.textContent = data.roles[role].live + '/' + data.roles[role].desired;
+                        }
+
+                        if (badge) {
+                            badge.classList.toggle('bg-primary-subtle', !data.supervisor_down);
+                            badge.classList.toggle('text-primary', !data.supervisor_down);
+                            badge.classList.toggle('bg-secondary-subtle', !!data.supervisor_down);
+                            badge.classList.toggle('text-secondary', !!data.supervisor_down);
+                        }
+                    });
+                }
                 queuedValue.textContent = data.queued;
 
                 if (retryingValue) {

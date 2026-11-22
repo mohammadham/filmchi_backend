@@ -160,6 +160,7 @@ RELAY_BOT_STORAGE_CHAT=@store            # channel the bot copies documents into
 RELAY_BOT_CHANNEL_ID=7                   # Telegram Drive channel-registry id (manifest fallback)
 RELAY_BOT_QUALITY=1080                   # default label; each file is asked anyway
 RELAY_BOT_DAILY_LIMIT=20                 # 0 = unlimited
+RELAY_BOT_MAX_SIZE_MB=2048               # per-file ceiling; 0 = none
 RELAY_BOT_QUEUE=bot                      # queue name; the supervisor consumes this one
 RELAY_BOT_CONCURRENCY=1                  # clamped to 1..2 by the supervisor
 ```

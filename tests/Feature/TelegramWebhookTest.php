@@ -355,6 +355,44 @@ class TelegramWebhookTest extends TestCase
         Queue::assertPushed(ImportBotFileJob::class, 1);
     }
 
+    public function test_a_document_over_the_size_cap_is_refused_before_anything_is_written(): void
+    {
+        Queue::fake();
+        Http::fake();
+        config(['media_relay.bot.max_size_mb' => 1]);
+
+        $this->postUpdate($this->documentUpdate(98, 111, ['file_size' => 5 * 1024 * 1024]))->assertOk();
+
+        $this->assertSame(0, DB::table('bot_sessions')->where('chat_id', 111)->count(), 'no question for a file past the cap');
+        $this->assertSame(0, DB::table('bot_submissions')->count(), 'no row is written');
+        Queue::assertNothingPushed();
+        Http::assertSent(fn ($request) => str_contains((string) $request['text'], 'بزرگ‌تر')
+            && str_contains((string) $request['text'], '5 MB')
+            && str_contains((string) $request['text'], '1 مگابایتی'));
+    }
+
+    public function test_a_document_at_the_size_cap_is_still_accepted(): void
+    {
+        Queue::fake();
+        Http::fake();
+        config(['media_relay.bot.max_size_mb' => 1]);
+
+        $this->postUpdate($this->documentUpdate(99, 111, ['file_size' => 1024 * 1024]))->assertOk();
+
+        $this->assertSame('quality', $this->sessionState(), 'the cap is exclusive, the edge still passes');
+    }
+
+    public function test_a_zero_size_cap_means_no_ceiling(): void
+    {
+        Queue::fake();
+        Http::fake();
+        config(['media_relay.bot.max_size_mb' => 0]);
+
+        $this->postUpdate($this->documentUpdate(100, 111, ['file_size' => 5 * 1024 * 1024]))->assertOk();
+
+        $this->assertSame('quality', $this->sessionState());
+    }
+
     public function test_a_file_already_stored_is_answered_before_the_questions(): void
     {
         Queue::fake();
@@ -468,13 +506,13 @@ class TelegramWebhookTest extends TestCase
         return DB::table('bot_sessions')->where('chat_id', 111)->value('state');
     }
 
-    protected function documentUpdate(int $updateId, int $userId = 111): array
+    protected function documentUpdate(int $updateId, int $userId = 111, array $document = []): array
     {
         $update = $this->update($updateId, $userId);
 
         unset($update['message']['text']);
 
-        $update['message']['document'] = [
+        $update['message']['document'] = $document + [
             'file_id' => 'AAA' . $updateId,
             'file_unique_id' => 'uq-' . $updateId,
             'file_name' => 'movie.mkv',
