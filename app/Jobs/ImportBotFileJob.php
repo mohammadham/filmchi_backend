@@ -109,7 +109,7 @@ class ImportBotFileJob implements ShouldQueue
             'copy_message_id' => $result['copy_message_id'],
         ]);
 
-        $this->reply($bot, (int) $submission->chat_id, $result, $submission);
+        $this->reply($bot, $result, $submission);
     }
 
     /** The row the webhook wrote; the job is keyed by it, not by the update. */
@@ -122,8 +122,9 @@ class ImportBotFileJob implements ShouldQueue
      * The user always learns the outcome: the public link on success, the
      * reason on a terminal failure.
      */
-    protected function reply(TelegramBotClient $bot, int $chatId, array $result, ?object $submission = null): void
+    protected function reply(TelegramBotClient $bot, array $result, object $submission): void
     {
+        $chatId = (int) $submission->chat_id;
         $file = $result['file'];
         $link = $result['link']->streamUrl();
 
