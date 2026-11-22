@@ -457,5 +457,9 @@
     "botSubmissionSeriesYes": "سریال",
     "botSubmissionSeriesNo": "فیلم",
     "botMaxSize": "سقف حجم فایل (مگابایت)",
-    "botMaxSizeHint": "سند بزرگ‌تر از این مقدار قبل از ساخت هر ردیف یا جابی رد می‌شود."
+    "botMaxSizeHint": "سند بزرگ‌تر از این مقدار قبل از ساخت هر ردیف یا جابی رد می‌شود.",
+    "relayRoleDownload": "دانلود",
+    "relayRoleUpload": "آپلود",
+    "relayRoleProbe": "پروب",
+    "relayRoleBot": "بات"
 }

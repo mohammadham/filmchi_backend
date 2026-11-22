@@ -457,5 +457,9 @@
     "botSubmissionSeriesYes": "series",
     "botSubmissionSeriesNo": "movie",
     "botMaxSize": "Max file size (MB)",
-    "botMaxSizeHint": "A larger document is refused before any row or job is created."
+    "botMaxSizeHint": "A larger document is refused before any row or job is created.",
+    "relayRoleDownload": "Download",
+    "relayRoleUpload": "Upload",
+    "relayRoleProbe": "Probe",
+    "relayRoleBot": "Bot"
 }

@@ -15,6 +15,11 @@
                             <span class="badge bg-secondary">{{ __('relayWorkerStatus') }}: {{ $workers->count() }}</span>
                             <span class="badge bg-info">{{ __('relayRuntimeActive') }}: <span id="relayRuntimeActiveValue">{{ (int) $relayRuntime['active'] }}</span></span>
                             <span class="badge bg-primary">{{ __('relayRuntimeWorkers') }}: <span id="relayRuntimeWorkersValue">{{ (int) $relayRuntime['workers_live'] }}/{{ (int) $relayRuntime['workers_desired'] }}</span></span>
+                            @foreach($relayRuntime['roles'] as $role => $roleCounts)
+                                <span class="badge bg-primary-subtle text-primary" id="relayRuntimeRole{{ ucfirst($role) }}Badge">
+                                    {{ __('relayRole' . ucfirst($role)) }}: <span id="relayRuntimeRole{{ ucfirst($role) }}Value">{{ (int) $roleCounts['live'] }}/{{ (int) $roleCounts['desired'] }}</span>
+                                </span>
+                            @endforeach
                             <span class="badge bg-secondary">{{ __('relayRuntimeQueued') }}: <span id="relayRuntimeQueuedValue">{{ (int) $relayRuntime['queued'] }}</span></span>
                             <span class="badge bg-warning text-dark">{{ __('relayRuntimeRetrying') }}: <span id="relayRuntimeRetryingValue">{{ (int) $relayRuntime['retrying'] }}</span></span>
                             <span class="badge bg-danger">{{ __('relayRuntimeFailed') }}: <span id="relayRuntimeFailedValue">{{ (int) $relayRuntime['failed'] }}</span></span>

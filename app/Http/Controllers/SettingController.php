@@ -145,6 +145,15 @@ class SettingController extends Controller
 
         $live = 0;
         $desired = max(1, (int) config('media_relay.ingest.concurrency', 1));
+        $roleCounts = [];
+
+        // The heartbeat already publishes live and target per lane; the card
+        // shows each lane on its own so a stopped bot pool is visible while
+        // download and upload keep running.
+        foreach (RelayQueueSupervisor::ROLES as $role) {
+            $roleCounts[$role] = ['live' => 0, 'desired' => 0];
+        }
+
         $heartbeatAt = null;
         $heartbeatAge = null;
         $heartbeatLabel = __('relayRuntimeHeartbeatNever');
@@ -167,6 +176,13 @@ class SettingController extends Controller
                     if ($heartbeatAge <= 20) {
                         $live = max(0, (int) ($heartbeat['workers'] ?? 0));
                         $supervisorDown = false;
+
+                        foreach ($roleCounts as $role => $_) {
+                            $roleCounts[$role] = [
+                                'live' => max(0, (int) ($heartbeat[$role . '_workers'] ?? 0)),
+                                'desired' => max(0, (int) ($heartbeat[$role . '_desired'] ?? 0)),
+                            ];
+                        }
                     }
                 }
             }
@@ -189,6 +205,7 @@ class SettingController extends Controller
             'failed' => $failed,
             'workers_live' => $live,
             'workers_desired' => $desired,
+            'roles' => $roleCounts,
             'heartbeat_at' => $heartbeatAt,
             'heartbeat_age_s' => $heartbeatAge,
             'heartbeat_label' => $heartbeatLabel,
