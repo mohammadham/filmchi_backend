@@ -58,3 +58,9 @@ conversation_tail.txt
 # runtime artifacts
 /storage/logs/*.log
 .DS_Store
+# local agent skills and generated graph output (graphify)
+.agent
+.agents/
+graphify-out/
+docs/GRAPHIFY_KNOWLEDGE.md
+
