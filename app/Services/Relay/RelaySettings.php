@@ -87,6 +87,34 @@ class RelaySettings
     ];
 
     /**
+     * Connection secrets. Their inputs render empty, so a blank box means
+     * "keep the stored value" rather than "erase it".
+     *
+     * @var array<int, string>
+     */
+    public const SECRET_COLUMNS = [
+        'relay_tg_password', 'relay_tg_api_key', 'relay_nine_password', 'relay_nine_api_key',
+        'relay_bot_token', 'relay_bot_webhook_secret',
+    ];
+
+    /**
+     * Drop the blank secret boxes from a filtered card payload.
+     *
+     * @param  array<string, mixed>  $values
+     * @return array<string, mixed>
+     */
+    public static function withoutBlankSecrets(array $values): array
+    {
+        foreach (self::SECRET_COLUMNS as $column) {
+            if (array_key_exists($column, $values) && trim((string) $values[$column]) === '') {
+                unset($values[$column]);
+            }
+        }
+
+        return $values;
+    }
+
+    /**
      * Columns that may be saved from the panel.
      *
      * @return array<int, string>

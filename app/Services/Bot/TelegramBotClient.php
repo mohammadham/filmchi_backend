@@ -104,7 +104,7 @@ class TelegramBotClient
      */
     public function setWebhook(string $url, string $secret = ''): void
     {
-        $params = ['url' => $url, 'drop_pending_updates' => 'false'];
+        $params = ['url' => $url, 'drop_pending_updates' => false];
 
         if ($secret !== '') {
             $params['secret_token'] = $secret;

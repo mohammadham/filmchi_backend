@@ -380,27 +380,7 @@ class SettingController extends Controller
             ]);
         }
 
-        $input = RelaySettings::filterInput($request->all());
-
-        // Never blank out a secret by accident: an empty box keeps the saved value.
-        foreach ([
-            'relay_tg_password', 'relay_tg_api_key', 'relay_nine_password', 'relay_nine_api_key',
-            'relay_bot_token', 'relay_bot_webhook_secret',
-        ] as $secret) {
-            if (array_key_exists($secret, $input) && trim((string) $input[$secret]) === '') {
-                unset($input[$secret]);
-            }
-        }
-
-        // Each card posts only its own fields, so a flag absent from the
-        // request keeps its stored value (unchecking posts a hidden 0).
-        foreach (['relay_enabled', 'relay_bot_enabled'] as $flag) {
-            if ($request->has($flag)) {
-                $input[$flag] = $request->boolean($flag);
-            }
-        }
-
-        RelaySettings::save($setting, $input);
+        RelaySettings::save($setting, $this->relayCardInput($request));
 
         return response()->json([
             'status' => true,
@@ -414,8 +394,8 @@ class SettingController extends Controller
      */
     public function botHealth(Request $request)
     {
-        $this->applyBotOverrides($request);
-
+        // Badges describe what is stored, not what is being typed: the buttons
+        // save the card first, so an unsaved box can never look saved.
         $bot = new TelegramBotClient();
         $health = $bot->health();
 
@@ -454,12 +434,16 @@ class SettingController extends Controller
     }
 
     /**
-     * Register the webhook for the token/secret in the form. The secret is the
-     * path segment and the header, so both sides are set in the same call.
+     * Save the card, then register its secret as both the webhook path and the
+     * header: Telegram and the webhook route must never hold different values.
      */
     public function setBotWebhook(Request $request)
     {
-        $this->applyBotOverrides($request);
+        $error = $this->saveBotCard($request);
+
+        if ($error !== null) {
+            return $error;
+        }
 
         $secret = trim((string) config('media_relay.bot.webhook_secret'));
 
@@ -480,14 +464,20 @@ class SettingController extends Controller
 
         return response()->json([
             'status' => true,
-            'message' => 'Webhook set: ' . $this->maskSecret($url, $secret),
+            'message' => 'Card saved and webhook set: ' . $this->maskSecret($url, $secret),
             'webhook_url' => $this->maskSecret($url, $secret),
         ]);
     }
 
     public function deleteBotWebhook(Request $request)
     {
-        $this->applyBotOverrides($request);
+        // Same reason as set: the token typed here has to be stored, not left
+        // in the browser, or the next call would use a different bot.
+        $error = $this->saveBotCard($request);
+
+        if ($error !== null) {
+            return $error;
+        }
 
         try {
             (new TelegramBotClient())->deleteWebhook();
@@ -495,13 +485,45 @@ class SettingController extends Controller
             return response()->json(['status' => false, 'message' => $e->getMessage()]);
         }
 
-        return response()->json(['status' => true, 'message' => 'Webhook removed.']);
+        return response()->json(['status' => true, 'message' => 'Card saved and webhook removed.']);
     }
 
-    /** Form values for this request only; persisting still needs Save. */
-    protected function applyBotOverrides(Request $request): void
+    /**
+     * The card payload every save path shares: blank secret boxes keep their
+     * stored value, and a flag missing from the request keeps its stored state
+     * (unchecking a toggle posts the hidden 0).
+     *
+     * @return array<string, mixed>
+     */
+    protected function relayCardInput(Request $request): array
     {
-        RelaySettings::apply(null, RelaySettings::filterInput($request->all()));
+        $input = RelaySettings::withoutBlankSecrets(RelaySettings::filterInput($request->all()));
+
+        foreach (['relay_enabled', 'relay_bot_enabled'] as $flag) {
+            if ($request->has($flag)) {
+                $input[$flag] = $request->boolean($flag);
+            }
+        }
+
+        return $input;
+    }
+
+    /**
+     * Persist the bot card before a webhook call, so Telegram and this install
+     * always agree. Returns the error response to send back, or null to go on.
+     */
+    protected function saveBotCard(Request $request): ?\Illuminate\Http\JsonResponse
+    {
+        try {
+            RelaySettings::save(GlobalSettings::first() ?: new GlobalSettings(), $this->relayCardInput($request));
+        } catch (\Throwable $e) {
+            return response()->json([
+                'status' => false,
+                'message' => 'could not save the bot card, so nothing was registered: ' . $e->getMessage(),
+            ]);
+        }
+
+        return null;
     }
 
     protected function botWebhookUrl(string $secret): string
