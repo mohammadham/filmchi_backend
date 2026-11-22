@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Exceptions\PermanentImportFailure;
 use App\Jobs\ImportBotFileJob;
 use App\RelayFile;
 use App\RelayLink;
@@ -150,6 +151,20 @@ class ImportBotFileJobTest extends TestCase
         return $sent;
     }
 
+    /** How many manifests the bot pushed into the storage channel. */
+    protected function manifestSends(): int
+    {
+        $sent = 0;
+
+        foreach (Http::recorded() as [$request]) {
+            if (str_contains($request->url(), '/sendDocument')) {
+                $sent++;
+            }
+        }
+
+        return $sent;
+    }
+
     public function test_a_document_update_is_imported_and_the_user_gets_the_link(): void
     {
         $this->fakeTelegram();
@@ -277,6 +292,68 @@ class ImportBotFileJobTest extends TestCase
 
         $this->assertSame('failed', DB::table('bot_submissions')->where('id', $row->id)->value('status'));
         $this->assertSame(1, $this->failureMessages(), 'the user gets exactly one ❌ ذخیره نشد');
+    }
+
+    public function test_an_incomplete_restore_fails_once_without_a_retry(): void
+    {
+        $this->fakeTelegram();
+        config(['media_relay.bot.channel_id' => 7]);
+
+        // adopt is refused, so the job takes the manifest path, and the restore
+        // comes back with one lost part.
+        $drive = new DriveMock([
+            new Response(503, [], (string) json_encode(['detail' => 'adopt unavailable'])),
+            new Response(200, [], (string) json_encode(['access_token' => 'jwt-9', 'expires_in' => 60])),
+            new Response(200, [], (string) json_encode([
+                'ok' => true,
+                'inserted' => 1,
+                'skipped' => 0,
+                'file_ids' => ['f_partial'],
+                'missing_parts' => 1,
+            ])),
+        ]);
+
+        $submissionId = $this->queueDocument();
+        $job = new ImportBotFileJob($submissionId);
+
+        // The queue handle is what chooses "retry" over "stop", so the test
+        // watches it instead of guessing from the status column.
+        $handle = new class
+        {
+            /** @var array<int, Throwable> */
+            public array $failures = [];
+
+            public function fail($e = null): void
+            {
+                $this->failures[] = $e;
+            }
+        };
+
+        $job->job = $handle;
+
+        $job->handle(new BotFileImporter($drive), new TelegramBotClient('123:abc'));
+
+        $this->assertCount(1, $handle->failures, 'the first refusal must fail the job, not retry it');
+        $this->assertInstanceOf(PermanentImportFailure::class, $handle->failures[0]);
+        $this->assertStringContainsString('lost 1 file part', $handle->failures[0]->getMessage());
+
+        $row = DB::table('bot_submissions')->where('id', $submissionId)->first();
+        $this->assertSame('failed', $row->status, 'a permanent failure is terminal at once');
+        $this->assertStringContainsString('f_partial', (string) $row->error);
+
+        // One attempt: one channel copy and one manifest. Each retry would mint
+        // another file id, which is the reason this failure has to be final.
+        $this->assertSame(1, $this->submittedCopy());
+        $this->assertSame(1, $this->manifestSends());
+        $this->assertNull(
+            RelayFile::where('tg_unique_id', 'bot-test-u1')->first(),
+            'a file with missing parts must never be published'
+        );
+        $this->assertSame(0, $this->failureMessages(), 'the text belongs to failed(), not the catch');
+
+        $job->failed($handle->failures[0]);
+
+        $this->assertSame(1, $this->failureMessages(), 'the user hears about it exactly once');
     }
 
     public function test_a_retry_reuses_the_copy_the_first_attempt_made(): void

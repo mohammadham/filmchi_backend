@@ -511,6 +511,7 @@
                                 <span class="text-muted small">{{ __('relayStorageHint') }}</span>
                             </span>
                             <label>
+                                <input type="hidden" name="relay_enabled" value="0">
                                 <input type="checkbox" class="d-none" id="relayEnabled" name="relay_enabled" value="1" {{ $relay['relay_enabled'] ? 'checked' : '' }}>
                                 <span class="toggle_background">
                                     <div class="circle-icon"></div>
@@ -625,6 +626,103 @@
 
                     <div class="modal-footer p-0">
                         <button type="button" class="btn btn-outline-primary" id="testRelayBtn">{{ __('testConnection') }}</button>
+                        <button type="submit" class="btn theme-btn text-white">{{ __('save') }}</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <div class="page-title w-100">
+                    <div class="d-flex align-items-center justify-content-between">
+                        <h4 class="mb-0 fw-semibold">{{ __('botCard') }}</h4>
+                        <div class="d-flex align-items-center gap-2">
+                            <span class="badge {{ $relay['relay_bot_enabled'] ? 'bg-success' : 'bg-secondary' }}" id="botFlagBadge">{{ __('botFlag') }}: {{ $relay['relay_bot_enabled'] ? __('botOn') : __('botOff') }}</span>
+                            <span class="badge {{ $relay['relay_bot_token_set'] ? 'bg-success' : 'bg-danger' }}" id="botTokenBadge">{{ __('botToken') }}: {{ $relay['relay_bot_token_set'] ? __('secretStored') : '-' }}</span>
+                            <span class="badge bg-secondary" id="botHealthBadge">{{ __('botHealth') }}: -</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="card-body px-4">
+                <form id="botSettingForm" method="POST" autocomplete="off">
+                    @csrf
+                    <div class="card w-auto p-3 mb-3">
+                        <div class="checkbox-slider d-flex align-items-center justify-content-between">
+                            <span class="me-3">
+                                {{ __('botEnabled') }}
+                                <br>
+                                <span class="text-muted small">{{ __('botCardHint') }}</span>
+                            </span>
+                            <label>
+                                <input type="hidden" name="relay_bot_enabled" value="0">
+                                <input type="checkbox" class="d-none" id="botEnabled" name="relay_bot_enabled" value="1" {{ $relay['relay_bot_enabled'] ? 'checked' : '' }}>
+                                <span class="toggle_background">
+                                    <div class="circle-icon"></div>
+                                    <div class="vertical_line"></div>
+                                </span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-lg-6">
+                            <div class="form-group">
+                                <label class="form-label">{{ __('botToken') }}</label>
+                                <input type="password" class="form-control" name="relay_bot_token" value="" placeholder="{{ __('leaveBlankToKeep') }}">@if($relay['relay_bot_token_set']) <span class="badge bg-success-subtle text-success ms-1">{{ __('secretStored') }}</span>@endif
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">{{ __('botWebhookSecret') }}</label>
+                                <input type="password" class="form-control" name="relay_bot_webhook_secret" value="" placeholder="{{ __('leaveBlankToKeep') }}">@if($relay['relay_bot_webhook_secret_set']) <span class="badge bg-success-subtle text-success ms-1">{{ __('secretStored') }}</span>@endif
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">{{ __('botAllowedIds') }}</label>
+                                <input type="text" class="form-control" name="relay_bot_allowed_ids" value="{{ $relay['relay_bot_allowed_ids'] }}" placeholder="123456789, 987654321">
+                            </div>
+                        </div>
+                        <div class="col-lg-6">
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label class="form-label">{{ __('botStorageChat') }}</label>
+                                        <input type="text" class="form-control" name="relay_bot_storage_chat" value="{{ $relay['relay_bot_storage_chat'] }}">
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label class="form-label">{{ __('botChannelId') }}</label>
+                                        <input type="number" class="form-control" name="relay_bot_channel_id" value="{{ $relay['relay_bot_channel_id'] }}">
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label class="form-label">{{ __('botQuality') }}</label>
+                                        <input type="text" class="form-control" name="relay_bot_quality" value="{{ $relay['relay_bot_quality'] }}" placeholder="1080">
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label class="form-label">{{ __('botDailyLimit') }}</label>
+                                        <input type="number" min="1" class="form-control" name="relay_bot_daily_limit" value="{{ $relay['relay_bot_daily_limit'] }}">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="botActionResult" class="small mb-2"></div>
+
+                    <div class="modal-footer p-0">
+                        <button type="button" class="btn btn-outline-primary" id="botHealthBtn">{{ __('botCheckHealth') }}</button>
+                        <button type="button" class="btn btn-outline-primary" id="setBotWebhookBtn">{{ __('botSetWebhook') }}</button>
+                        <button type="button" class="btn btn-outline-danger" id="deleteBotWebhookBtn">{{ __('botDeleteWebhook') }}</button>
                         <button type="submit" class="btn theme-btn text-white">{{ __('save') }}</button>
                     </div>
                 </form>

@@ -429,5 +429,22 @@
     "relaySelectAll": "Select all",
     "relayRequeueSelected": "Requeue selected",
     "relayRequeueSelectedHint": "Only failed rows can be selected; rows already waiting in the queue are skipped.",
-    "relayRequeueSelectedConfirm": "Put the selected sources back on the download/upload queue?"
+    "relayRequeueSelectedConfirm": "Put the selected sources back on the download/upload queue?",
+    "botCard": "Telegram bot",
+    "botCardHint": "The bot registers a Telegram document by pointing at the message, so nothing is uploaded or downloaded through this server.",
+    "botEnabled": "Enable the bot",
+    "botToken": "Bot token",
+    "botWebhookSecret": "Webhook secret",
+    "botAllowedIds": "Allowed user ids",
+    "botStorageChat": "Bot storage chat",
+    "botChannelId": "Channel id",
+    "botQuality": "Download quality",
+    "botDailyLimit": "Daily import limit",
+    "botFlag": "Bot",
+    "botHealth": "Health",
+    "botOn": "on",
+    "botOff": "off",
+    "botCheckHealth": "Check health",
+    "botSetWebhook": "Set webhook",
+    "botDeleteWebhook": "Remove webhook"
 }

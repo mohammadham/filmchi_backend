@@ -2,6 +2,7 @@
 
 namespace App\Services\Relay;
 
+use App\Exceptions\PermanentImportFailure;
 use RuntimeException;
 use Throwable;
 
@@ -130,6 +131,24 @@ class StoredMessageImporter
         // the parts in the same call (channels.py restore), so the row is
         // usable the moment restore returns. Waiting would only pin a queue
         // worker for ready_timeout on a file that is already there.
+        //
+        // That is exactly why the counters matter: restore inserts the row with
+        // the manifest's status even when a part fails, so a non-zero
+        // missing_parts is the only evidence that the stored message is
+        // truncated. Registering it would publish a link to a broken file.
+        $missingParts = (int) ($restored['missing_parts'] ?? 0);
+
+        // A retry cannot fix bytes that were never stored, and every attempt
+        // mints a new file id, so this failure is final: the job must not spend
+        // its attempts on it (see PermanentImportFailure).
+        if ($missingParts > 0) {
+            throw new PermanentImportFailure(sprintf(
+                'channel restore stored %s but lost %d file part(s); an incomplete file must not be registered as ready',
+                (string) ($restored['file_ids'][0] ?? $fileId),
+                $missingParts
+            ), 0, $refusal);
+        }
+
         return [
             'path' => 'manifest',
             'file_id' => $fileId,

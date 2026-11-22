@@ -35,6 +35,13 @@ class RelayQueueSupervisor extends Command
     /** Cache key read by the settings page. */
     public const STATUS_KEY = 'relay:queue:supervisor';
 
+    /**
+     * Every lane the supervisor reconciles, in spawn order. One list, so a lane
+     * cannot be spawned in one place and forgotten in another: the bot queue
+     * only works because ImportBotFileJob names the same queue this list does.
+     */
+    public const ROLES = ['download', 'upload', 'probe', 'bot'];
+
     /** @var array<int, array{process:resource,pipes:array,stopping:bool,role:string,started_at:int}> */
     protected $children = [];
 
@@ -57,21 +64,17 @@ class RelayQueueSupervisor extends Command
     {
         $this->installSignalHandlers();
 
-        $this->info(sprintf(
-            'relay queue supervisor started (downloads=%d, uploads=%d, probes=%d, bots=%d)',
-            $this->desiredRoleConcurrency('download'),
-            $this->desiredRoleConcurrency('upload'),
-            $this->desiredRoleConcurrency('probe'),
-            $this->desiredRoleConcurrency('bot')
-        ));
+        $this->info('relay queue supervisor started (' . implode(', ', array_map(
+            fn (string $role): string => $role . '=' . $this->desiredRoleConcurrency($role),
+            self::ROLES
+        )) . ')');
 
         while (!$this->stopping) {
             $this->reapChildren();
 
-            $this->reconcileRole('download');
-            $this->reconcileRole('upload');
-            $this->reconcileRole('probe');
-            $this->reconcileRole('bot');
+            foreach (self::ROLES as $role) {
+                $this->reconcileRole($role);
+            }
 
             // Re-probe failed/auto-disabled Workers on their own backoff
             // schedule. This is deliberately independent of the healthy-pool
@@ -150,12 +153,11 @@ class RelayQueueSupervisor extends Command
      */
     protected function heartbeat(): void
     {
-        $download = $this->countRole('download');
-        $upload = $this->countRole('upload');
-        $probe = $this->countRole('probe');
-        $bot = $this->countRole('bot');
+        $roles = [];
 
-        $roles = ['download' => $download, 'upload' => $upload, 'probe' => $probe, 'bot' => $bot];
+        foreach (self::ROLES as $role) {
+            $roles[$role] = $this->countRole($role);
+        }
 
         try {
             $status = ['updated_at' => now()->toIso8601String()];
@@ -166,8 +168,10 @@ class RelayQueueSupervisor extends Command
             }
 
             $status['workers'] = array_sum($roles);
-            $status['desired'] = $status['download_desired'] + $status['upload_desired']
-                + $status['probe_desired'] + $status['bot_desired'];
+            $status['desired'] = array_sum(array_map(
+                fn (string $role): int => $status[$role . '_desired'],
+                self::ROLES
+            ));
 
             Cache::put(self::STATUS_KEY, $status, now()->addMinutes(10));
         } catch (Throwable $e) {
@@ -353,8 +357,16 @@ class RelayQueueSupervisor extends Command
             'upload' => (string) config('media_relay.upload.queue', 'uploads'),
             'probe' => (string) config('media_relay.workers.probe_queue', 'probes'),
             'bot' => (string) config('media_relay.bot.queue', 'bot'),
-            default => (string) ($this->option('queue') ?: config('media_relay.queue.name', 'default')),
+            default => $this->downloadQueue(),
         };
+    }
+
+    /** `--queue` when the command really runs; the configured name otherwise. */
+    protected function downloadQueue(): string
+    {
+        $option = $this->input === null ? null : $this->option('queue');
+
+        return (string) ($option ?: config('media_relay.queue.name', 'default'));
     }
 
     protected function reapChildren(): void

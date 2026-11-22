@@ -106,6 +106,47 @@ class RelayQueueSupervisorTest extends TestCase
         Queue::assertPushed(ImportBotFileJob::class, 1);
     }
 
+    public function test_every_lane_in_the_role_list_is_supervised_on_its_own_queue(): void
+    {
+        $this->assertSame(
+            ['download', 'upload', 'probe', 'bot'],
+            RelayQueueSupervisor::ROLES,
+            'the bot lane must stay in the reconciled loop'
+        );
+
+        $supervisor = new RelayQueueSupervisorHarness();
+        $queues = [];
+
+        foreach (RelayQueueSupervisor::ROLES as $role) {
+            $queue = $supervisor->queueFor($role);
+
+            $this->assertNotSame('', $queue, $role . ' needs a queue');
+            $queues[] = $queue;
+
+            if ($role !== 'download') {
+                // The download lane may be pinned to 0 by the disk budget.
+                $this->assertGreaterThanOrEqual(1, $supervisor->desired($role), $role . ' needs a worker');
+            }
+        }
+
+        $this->assertCount(
+            count(RelayQueueSupervisor::ROLES),
+            array_unique($queues),
+            'each lane keeps its own queue so no import sits behind a transfer'
+        );
+    }
+
+    public function test_the_bot_lane_comes_up_without_a_manual_worker(): void
+    {
+        Queue::fake();
+
+        $supervisor = new RelayQueueSupervisorHarness();
+        $supervisor->reconcile('bot');
+
+        $this->assertSame(['bot'], $supervisor->spawnedRoles);
+        $this->assertSame((new ImportBotFileJob(1))->queue, $supervisor->queueFor('bot'));
+    }
+
     /** A row in the state a dead worker leaves behind. */
     protected function submission(string $uniqueId, string $status, $updatedAt): int
     {

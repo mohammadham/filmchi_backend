@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Exceptions\PermanentImportFailure;
 use App\Services\Bot\BotFileImporter;
 use App\Services\Bot\TelegramBotClient;
 use Illuminate\Bus\Queueable;
@@ -65,6 +66,22 @@ class ImportBotFileJob implements ShouldQueue
                     'size' => (int) ($submission->size ?? 0),
                     'mime' => (string) ($submission->mime ?? ''),
                 ], (int) $submission->chat_id, (int) $submission->telegram_user_id);
+        } catch (PermanentImportFailure $e) {
+            // The stored message is incomplete, so every attempt would end here -
+            // and the manifest path mints a new file id each time, leaving one
+            // more half-registered row in Telegram Drive per retry. Fail on the
+            // first refusal: fail() stops the queue (no retry) and runs failed(),
+            // which is the only place that sends the terminal text.
+            $this->setStatus((int) $submission->id, 'failed', $e->getMessage());
+
+            Log::warning('bot file import failed permanently', [
+                'submission_id' => (int) $submission->id,
+                'message' => $e->getMessage(),
+            ]);
+
+            $this->fail($e);
+
+            return;
         } catch (Throwable $e) {
             $willRetry = $this->attempts() < max(1, (int) $this->tries);
 

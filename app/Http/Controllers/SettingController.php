@@ -17,6 +17,7 @@ use App\RelayWorker;
 use App\Notification;
 use App\Season;
 use App\Pages;
+use App\Services\Bot\TelegramBotClient;
 use App\Services\Relay\DiskBudget;
 use App\Services\Relay\NineDriveClient;
 use App\Services\Relay\RelaySettings;
@@ -374,7 +375,13 @@ class SettingController extends Controller
             }
         }
 
-        $input['relay_enabled'] = $request->boolean('relay_enabled');
+        // Each card posts only its own fields, so a flag absent from the
+        // request keeps its stored value (unchecking posts a hidden 0).
+        foreach (['relay_enabled', 'relay_bot_enabled'] as $flag) {
+            if ($request->has($flag)) {
+                $input[$flag] = $request->boolean($flag);
+            }
+        }
 
         RelaySettings::save($setting, $input);
 
@@ -382,6 +389,110 @@ class SettingController extends Controller
             'status' => true,
             'message' => 'Relay settings updated successfully',
         ]);
+    }
+
+    /**
+     * Bot card badges: the Bot API answers online/offline plus the webhook
+     * Telegram currently has, measured against the URL this panel would use.
+     */
+    public function botHealth(Request $request)
+    {
+        $this->applyBotOverrides($request);
+
+        $bot = new TelegramBotClient();
+        $health = $bot->health();
+
+        $info = ['url' => '', 'pending' => 0, 'last_error' => ''];
+
+        if ($health['ok']) {
+            try {
+                $info = $bot->webhookInfo();
+            } catch (\Throwable $e) {
+                $info['last_error'] = $e->getMessage();
+            }
+        }
+
+        $secret = trim((string) config('media_relay.bot.webhook_secret'));
+        $expected = $secret !== '' ? $this->botWebhookUrl($secret) : '';
+        $registered = (string) $info['url'];
+
+        return response()->json([
+            'status' => true,
+            'enabled' => (bool) config('media_relay.bot.enabled'),
+            'token_set' => (string) config('media_relay.bot.token') !== '',
+            'secret_set' => $secret !== '',
+            'ok' => $health['ok'],
+            'message' => $health['message'],
+            // The secret is the path segment of this URL: the panel says whether
+            // Telegram has the right one, never what it is.
+            'webhook_url' => $this->maskSecret($registered, $secret),
+            'webhook_ok' => $expected !== '' && $registered === $expected,
+            'expected_webhook_url' => $this->maskSecret($expected, $secret),
+            'pending_updates' => (int) $info['pending'],
+            'last_error' => (string) $info['last_error'],
+        ]);
+    }
+
+    /**
+     * Register the webhook for the token/secret in the form. The secret is the
+     * path segment and the header, so both sides are set in the same call.
+     */
+    public function setBotWebhook(Request $request)
+    {
+        $this->applyBotOverrides($request);
+
+        $secret = trim((string) config('media_relay.bot.webhook_secret'));
+
+        if ($secret === '') {
+            return response()->json([
+                'status' => false,
+                'message' => 'webhook secret is empty: fill it in and save the card first',
+            ]);
+        }
+
+        $url = $this->botWebhookUrl($secret);
+
+        try {
+            (new TelegramBotClient())->setWebhook($url, $secret);
+        } catch (\Throwable $e) {
+            return response()->json(['status' => false, 'message' => $e->getMessage()]);
+        }
+
+        return response()->json([
+            'status' => true,
+            'message' => 'Webhook set: ' . $this->maskSecret($url, $secret),
+            'webhook_url' => $this->maskSecret($url, $secret),
+        ]);
+    }
+
+    public function deleteBotWebhook(Request $request)
+    {
+        $this->applyBotOverrides($request);
+
+        try {
+            (new TelegramBotClient())->deleteWebhook();
+        } catch (\Throwable $e) {
+            return response()->json(['status' => false, 'message' => $e->getMessage()]);
+        }
+
+        return response()->json(['status' => true, 'message' => 'Webhook removed.']);
+    }
+
+    /** Form values for this request only; persisting still needs Save. */
+    protected function applyBotOverrides(Request $request): void
+    {
+        RelaySettings::apply(null, RelaySettings::filterInput($request->all()));
+    }
+
+    protected function botWebhookUrl(string $secret): string
+    {
+        return route('telegramWebhook', ['secret' => $secret]);
+    }
+
+    /** Display form of a webhook URL; the panel never returns the secret itself. */
+    protected function maskSecret(string $url, string $secret): string
+    {
+        return $secret === '' || $url === '' ? $url : str_replace($secret, '***', $url);
     }
 
     /**

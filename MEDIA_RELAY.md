@@ -63,12 +63,24 @@ New:
 - [resources/views/mediaRelay.blade.php](resources/views/mediaRelay.blade.php), [public/assets/script/mediaRelay.js](public/assets/script/mediaRelay.js)
 - three migrations under [database/migrations](database/migrations) creating `relay_files`, `relay_links`, `relay_events`
 
+Bot (the intake path described under [Telegram bot](#telegram-bot)):
+
+- [app/Http/Controllers/TelegramWebhookController.php](app/Http/Controllers/TelegramWebhookController.php)
+- [app/Services/Bot/TelegramBotClient.php](app/Services/Bot/TelegramBotClient.php), [BotFileImporter.php](app/Services/Bot/BotFileImporter.php), [BotManifestSender.php](app/Services/Bot/BotManifestSender.php)
+- [app/Services/Relay/StoredMessageImporter.php](app/Services/Relay/StoredMessageImporter.php), [app/Jobs/ImportBotFileJob.php](app/Jobs/ImportBotFileJob.php)
+- four migrations under [database/migrations](database/migrations): `2026_11_21_000001` (`relay_bot_*` columns on `global_settings`), `000002` (`bot_updates` dedup key, `bot_sessions`, `bot_submissions`), `000003` (bot columns plus the unique `(storage_chat, message_id)` file-part index), `000005` (`quality`, `is_series`)
+- tests: [tests/Feature/TelegramWebhookTest.php](tests/Feature/TelegramWebhookTest.php), [ImportBotFileJobTest.php](tests/Feature/ImportBotFileJobTest.php), [StoredMessageImporterTest.php](tests/Feature/StoredMessageImporterTest.php), [BotFileImporterTest.php](tests/Feature/BotFileImporterTest.php), [BotManifestSenderTest.php](tests/Feature/BotManifestSenderTest.php), [RelayQueueSupervisorTest.php](tests/Feature/RelayQueueSupervisorTest.php)
+
 Touched, additively only:
 
-- [routes/web.php](routes/web.php) — public relay routes plus the panel routes
+- [routes/web.php](routes/web.php) — public relay routes, the panel routes, the CSRF-exempt `POST telegram/webhook/{secret}` route and the bot card actions
 - [resources/views/include/app.blade.php](resources/views/include/app.blade.php) — sidebar entry "Media Relay"
-- [resources/lang/en.json](resources/lang/en.json) — labels
-- [.env.example](.env.example) — configuration block
+- [app/Console/Commands/RelayQueueSupervisor.php](app/Console/Commands/RelayQueueSupervisor.php) — a `bot` lane next to download/upload/probe, and stale `bot_submissions` are re-queued
+- [app/Http/Controllers/SettingController.php](app/Http/Controllers/SettingController.php) — bot card save, `setBotWebhook` / `deleteBotWebhook`, `botHealth`
+- [resources/views/setting.blade.php](resources/views/setting.blade.php), [public/assets/script/setting.js](public/assets/script/setting.js) — the bot card
+- [resources/lang/en.json](resources/lang/en.json), [resources/lang/fa.json](resources/lang/fa.json) — labels
+- [config/media_relay.php](config/media_relay.php) — the `bot` block next to the relay settings
+- [.env.example](.env.example) — configuration blocks
 
 The existing storage paths (`GlobalFunction::saveFileAndGivePath`, the media gallery, content sources) are unchanged.
 
@@ -117,6 +129,80 @@ php artisan relay:status            # tier health and statistics
 **9drive panel credentials.** Uploading to 9drive only needs the API key, but serving cached bytes goes through the public share endpoints, which are created with a panel session. Without `NINEDRIVE_EMAIL`/`NINEDRIVE_PASSWORD` a promoted file is marked warm and falls back to the public Google Drive link, which Google throttles with an interstitial for large files. Setting the credentials avoids that.
 
 ---
+
+## Telegram bot
+
+An allowed user sends a document to the bot, answers two questions (quality, then
+series) and the file is copied into the storage chat and adopted by Telegram
+Drive. A fresh install needs these five steps.
+
+**1. Migrations.** `php artisan migrate` is enough; the bot migrations guard with
+`hasTable`/`hasColumn`, so they are safe to re-run:
+
+| Migration | Adds |
+|---|---|
+| `2026_11_21_000001_add_bot_settings_to_global_settings` | `relay_bot_*` columns on `global_settings` |
+| `2026_11_21_000002_create_bot_tables` | `bot_updates` (dedup key), `bot_sessions`, `bot_submissions` |
+| `2026_11_21_000003_add_origin_and_bot_columns` | bot columns on relay files and the unique file-part index |
+| `2026_11_21_000005_add_conversation_answers_to_bot_submissions` | `quality` and `is_series` on `bot_submissions` |
+
+There is no `…_000004`: `bot_updates` keeps only the dedup key, not the update
+payload.
+
+**2. Environment.**
+
+```env
+RELAY_BOT_ENABLED=true
+RELAY_BOT_TOKEN=123456:AA...             # BotFather token
+RELAY_BOT_WEBHOOK_SECRET=...             # long random string: URL path + Telegram header
+RELAY_BOT_ALLOWED_IDS=1111111,2222222    # numeric Telegram user ids, not usernames
+RELAY_BOT_STORAGE_CHAT=@store            # channel the bot copies documents into
+RELAY_BOT_CHANNEL_ID=7                   # Telegram Drive channel-registry id (manifest fallback)
+RELAY_BOT_QUALITY=1080                   # default label; each file is asked anyway
+RELAY_BOT_DAILY_LIMIT=20                 # 0 = unlimited
+RELAY_BOT_QUEUE=bot                      # queue name; the supervisor consumes this one
+RELAY_BOT_CONCURRENCY=1                  # clamped to 1..2 by the supervisor
+```
+
+Optional: `RELAY_BOT_COPY_TIMEOUT` (60), `RELAY_BOT_REPLY_TIMEOUT` (5),
+`RELAY_BOT_STALE_SECONDS` (600), `RELAY_BOT_REQUEUE_SECONDS` (300). The same
+fields are editable on the settings page; a blank token/secret field keeps the
+stored value, and the panel never returns either secret.
+
+**3. Webhook.** Use **Set webhook** on the bot card (it calls the Bot API for
+you), or:
+
+```bash
+curl -X POST "https://api.telegram.org/bot$RELAY_BOT_TOKEN/setWebhook" \
+  -d "url=https://<panel-host>/telegram/webhook/$RELAY_BOT_WEBHOOK_SECRET" \
+  -d "secret_token=$RELAY_BOT_WEBHOOK_SECRET" \
+  -d 'allowed_updates=["message","callback_query"]'
+```
+
+A wrong path segment is `404` and a wrong header `403`, both without writing a
+row. `/ping` answers `pong` and `/start` answers a welcome without touching the
+queue, so the endpoint can be checked before any worker exists. **Delete
+webhook** removes it again.
+
+**4. Queue lane.** `ImportBotFileJob` dispatches on `RELAY_BOT_QUEUE`, and
+`relay:queue-supervisor` reconciles a worker for that lane next to
+download/upload/probe. Start it once (it is the `worker` service in
+`flixy-compose.yml`):
+
+```bash
+php artisan relay:queue-supervisor --queue=default --poll=3
+# relay queue supervisor started (download=1, upload=1, probe=1, bot=1)
+```
+
+With `QUEUE_CONNECTION=sync` there is no worker at all and the import runs inside
+the webhook request; set `redis` or `database` for anything real. The supervisor
+also re-queues submissions left `queued`/`retrying` for `RELAY_BOT_STALE_SECONDS`,
+so a worker that dies does not strand a file.
+
+**5. Smoke test.** Send `/ping` from an allowed account (expect `pong`), then a
+small document: the bot asks quality, then series, replies that the file is
+queued, and answers with the `/r/{token}` link once the import finishes. The bot
+card's health call reports the `getMe` result and the registered webhook.
 
 ## Endpoints
 
@@ -181,7 +267,7 @@ The production `.env` uses `QUEUE_CONNECTION=sync`, so crossing the threshold on
 
 ### Deployment notes
 
-- `docker-compose.yml` bind-mounts `./storage/app` and `./storage/logs`; without them every rebuild wipes uploads and logs.
+- `flixy-compose.yml` (copied to `docker-compose.yml` on the server by `deploy.yml` before `docker compose up`) bind-mounts `./storage/app` and `./storage/logs`; without them every rebuild wipes uploads and logs.
 - Sessions use Redis (`SESSION_DRIVER=redis`) so panel logins survive redeploys.
 - `deploy.yml` now runs `php artisan migrate --force` and `optimize:clear` after `docker compose up`.
 - `setting.js` is cache-busted with `?v=<filemtime>`; bumping assets no longer requires a hard refresh.

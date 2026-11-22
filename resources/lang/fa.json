@@ -429,5 +429,22 @@
     "relaySelectAll": "انتخاب همه",
     "relayRequeueSelected": "افزودن موارد انتخاب‌شده به صف",
     "relayRequeueSelectedHint": "فقط ردیف‌های ناموفق قابل انتخاب هستند؛ ردیف‌های در انتظار تلاش دوباره صف نمی‌شوند.",
-    "relayRequeueSelectedConfirm": "موارد انتخاب‌شده دوباره به صف دانلود و آپلود اضافه شوند؟"
+    "relayRequeueSelectedConfirm": "موارد انتخاب‌شده دوباره به صف دانلود و آپلود اضافه شوند؟",
+    "botCard": "ربات تلگرام",
+    "botCardHint": "ربات سند تلگرام را با اشاره به همان پیام ثبت می‌کند؛ هیچ فایلی از این سرور آپلود یا دانلود نمی‌شود.",
+    "botEnabled": "فعال‌سازی ربات",
+    "botToken": "توکن ربات",
+    "botWebhookSecret": "کلید وب‌هوک",
+    "botAllowedIds": "شناسه‌های مجاز کاربران",
+    "botStorageChat": "چت ذخیره‌سازی ربات",
+    "botChannelId": "شناسه کانال",
+    "botQuality": "کیفیت دانلود",
+    "botDailyLimit": "سقف ورود روزانه",
+    "botFlag": "ربات",
+    "botHealth": "سلامت",
+    "botOn": "روشن",
+    "botOff": "خاموش",
+    "botCheckHealth": "بررسی سلامت",
+    "botSetWebhook": "ثبت وب‌هوک",
+    "botDeleteWebhook": "حذف وب‌هوک"
 }

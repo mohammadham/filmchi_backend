@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Exceptions\PermanentImportFailure;
 use App\Services\Bot\BotManifestSender;
 use App\Services\Relay\StoredMessageImporter;
 use App\Services\Relay\TelegramDriveRefusal;
@@ -90,7 +91,7 @@ class StoredMessageImporterTest extends TestCase
             $drive = new DriveMock([
                 new Response($status, [], (string) json_encode(['detail' => 'adopt unavailable'])),
                 new Response(200, [], (string) json_encode(['access_token' => 'jwt-9', 'expires_in' => 60])),
-                new Response(200, [], (string) json_encode(['ok' => true, 'inserted' => 1, 'skipped' => 0, 'file_ids' => ['f_restored']])),
+                new Response(200, [], (string) json_encode(['ok' => true, 'inserted' => 1, 'skipped' => 0, 'file_ids' => ['f_restored'], 'missing_parts' => 0])),
             ]);
 
             $manifestJson = null;
@@ -183,6 +184,43 @@ class StoredMessageImporterTest extends TestCase
         });
     }
 
+    public function test_a_restore_that_lost_a_part_is_never_a_ready_file(): void
+    {
+        $drive = new DriveMock([
+            new Response(404, [], (string) json_encode(['detail' => 'message not found in the storage chat'])),
+            new Response(200, [], (string) json_encode(['access_token' => 'jwt-9', 'expires_in' => 60])),
+            // The row is inserted, but one part could not be added: exactly what
+            // the removed poll used to catch.
+            new Response(200, [], (string) json_encode([
+                'ok' => true,
+                'inserted' => 1,
+                'skipped' => 0,
+                'file_ids' => ['f_partial'],
+                'missing_parts' => 2,
+            ])),
+        ]);
+
+        try {
+            (new StoredMessageImporter($drive))->import(
+                $this->message(),
+                7,
+                function (string $json): int {
+                    return 555;
+                }
+            );
+
+            $this->fail('an incomplete restore must fail the import');
+        } catch (PermanentImportFailure $e) {
+            // The type is the contract: the job must not retry this one.
+            $this->assertInstanceOf(PermanentImportFailure::class, $e);
+            $this->assertStringContainsString('f_partial', $e->getMessage());
+            $this->assertStringContainsString('lost 2 file part(s)', $e->getMessage());
+            $this->assertStringContainsString('must not be registered as ready', $e->getMessage());
+        }
+
+        $this->assertCount(3, $drive->history, 'adopt → login → restore, then the guard stops here');
+    }
+
     public function test_the_bot_sends_the_manifest_and_restore_completes_the_import(): void
     {
         // The real sender (not a closure) talks to api.telegram.org while the
@@ -194,7 +232,7 @@ class StoredMessageImporterTest extends TestCase
         $drive = new DriveMock([
             new Response(404, [], (string) json_encode(['detail' => 'message not found in the storage chat'])),
             new Response(200, [], (string) json_encode(['access_token' => 'jwt-9', 'expires_in' => 60])),
-            new Response(200, [], (string) json_encode(['ok' => true, 'inserted' => 1, 'skipped' => 0, 'file_ids' => ['f_x']])),
+            new Response(200, [], (string) json_encode(['ok' => true, 'inserted' => 1, 'skipped' => 0, 'file_ids' => ['f_x'], 'missing_parts' => 0])),
         ]);
 
         $result = (new StoredMessageImporter($drive))->import(

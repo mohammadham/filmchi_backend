@@ -194,6 +194,9 @@ Route::get('relayRuntime', [SettingController::class, 'relayRuntime'])->middlewa
 Route::post('saveSettings', [SettingController::class, 'saveSettings'])->middleware(['checkLogin'])->name('saveSettings');
 Route::post('saveRelaySettings', [SettingController::class, 'saveRelaySettings'])->middleware(['checkLogin'])->name('saveRelaySettings');
 Route::post('testRelayConnection', [SettingController::class, 'testRelayConnection'])->middleware(['checkLogin'])->name('testRelayConnection');
+Route::post('botHealth', [SettingController::class, 'botHealth'])->middleware(['checkLogin'])->name('botHealth');
+Route::post('setBotWebhook', [SettingController::class, 'setBotWebhook'])->middleware(['checkLogin'])->name('setBotWebhook');
+Route::post('deleteBotWebhook', [SettingController::class, 'deleteBotWebhook'])->middleware(['checkLogin'])->name('deleteBotWebhook');
 Route::post('saveWorkerSystem', [WorkerController::class, 'saveSystem'])->middleware(['checkLogin'])->name('saveWorkerSystem');
 Route::post('relayWorkers/test-all', [WorkerController::class, 'testAll'])->middleware(['checkLogin'])->name('relayWorkers.testAll');
 Route::post('relayWorkers/test-degraded', [WorkerController::class, 'testDegraded'])->middleware(['checkLogin'])->name('relayWorkers.testDegraded');

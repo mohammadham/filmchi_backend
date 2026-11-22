@@ -302,4 +302,106 @@ $(document).ready(function () {
         });
     });
 
+    function botFormData() {
+        let formData = new FormData($("#botSettingForm")[0]);
+        formData.set("relay_bot_enabled", $("#botEnabled").prop("checked") ? 1 : 0);
+        return formData;
+    }
+
+    function botResult(text, ok) {
+        $("#botActionResult")
+            .removeClass("text-success text-danger")
+            .addClass(ok ? "text-success" : "text-danger")
+            .html(text);
+    }
+
+    function botPost(action, $btn, onSuccess) {
+        $btn.prop("disabled", true);
+        $.ajax({
+            type: "POST",
+            url: relayApiUrl(action),
+            data: botFormData(),
+            contentType: false,
+            processData: false,
+            success: onSuccess,
+            error: function () {
+                somethingWentWrongToast();
+            },
+            complete: function () {
+                $btn.prop("disabled", false);
+            },
+        });
+    }
+
+    $(document).on("submit", "#botSettingForm", function (e) {
+        e.preventDefault();
+        checkUserType(function () {
+            $.ajax({
+                type: "POST",
+                url: relayApiUrl("saveRelaySettings"),
+                data: botFormData(),
+                contentType: false,
+                processData: false,
+                success: function (response) {
+                    if (response.status) {
+                        showSuccessToast();
+                        $("#botHealthBtn").trigger("click");
+                    } else {
+                        somethingWentWrongToast();
+                    }
+                },
+                error: function () {
+                    somethingWentWrongToast();
+                },
+            });
+        });
+    });
+
+    $(document).on("click", "#botHealthBtn", function (e) {
+        e.preventDefault();
+        botPost("botHealth", $(this), function (response) {
+            $("#botFlagBadge")
+                .removeClass("bg-success bg-secondary")
+                .addClass(response.enabled ? "bg-success" : "bg-secondary")
+                .text(`Bot: ${response.enabled ? "on" : "off"}`);
+            $("#botTokenBadge")
+                .removeClass("bg-success bg-danger")
+                .addClass(response.token_set ? "bg-success" : "bg-danger");
+            $("#botHealthBadge")
+                .removeClass("bg-secondary bg-success bg-danger")
+                .addClass(response.ok ? "bg-success" : "bg-danger")
+                .text(`Health: ${response.ok ? "online" : "offline"}`);
+
+            let lines = [
+                `Bot: ${response.ok ? "online" : "offline"} — ${response.message}`,
+                `Webhook: ${response.webhook_url || "not set"}${response.webhook_ok ? " (matches)" : ""}`,
+                `Pending updates: ${response.pending_updates}`,
+            ];
+            if (response.last_error) {
+                lines.push(`Last error: ${response.last_error}`);
+            }
+            botResult(lines.join("<br>"), response.ok && response.webhook_ok);
+        });
+    });
+
+    $(document).on("click", "#setBotWebhookBtn", function (e) {
+        e.preventDefault();
+        botPost("setBotWebhook", $(this), function (response) {
+            botResult(response.message, response.status);
+            if (response.status) {
+                $("#botHealthBtn").trigger("click");
+            }
+        });
+    });
+
+    $(document).on("click", "#deleteBotWebhookBtn", function (e) {
+        e.preventDefault();
+        botPost("deleteBotWebhook", $(this), function (response) {
+            botResult(response.message, response.status);
+            if (response.status) {
+                $("#botHealthBtn").trigger("click");
+            }
+        });
+    });
+
 });
