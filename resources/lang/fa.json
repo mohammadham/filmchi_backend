@@ -446,5 +446,14 @@
     "botOff": "خاموش",
     "botCheckHealth": "بررسی سلامت",
     "botSetWebhook": "ثبت وب‌هوک",
-    "botDeleteWebhook": "حذف وب‌هوک"
+    "botDeleteWebhook": "حذف وب‌هوک",
+    "botSubmissions": "ارسال‌های ربات",
+    "botSubmissionsEmpty": "هنوز سندی به ربات ارسال نشده است.",
+    "botSubmissionsHint": "۲۰ سند آخرین که ربات پذیرفته، همراه با پاسخ کیفیت و سریال از گفت‌وگو.",
+    "botSubmissionUser": "کاربر",
+    "botSubmissionSeries": "سریال",
+    "botSubmissionStatus": "وضعیت",
+    "botSubmissionReceived": "زمان",
+    "botSubmissionSeriesYes": "سریال",
+    "botSubmissionSeriesNo": "فیلم"
 }

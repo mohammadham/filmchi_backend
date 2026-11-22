@@ -446,5 +446,14 @@
     "botOff": "off",
     "botCheckHealth": "Check health",
     "botSetWebhook": "Set webhook",
-    "botDeleteWebhook": "Remove webhook"
+    "botDeleteWebhook": "Remove webhook",
+    "botSubmissions": "Bot submissions",
+    "botSubmissionsEmpty": "The bot has not accepted a document yet.",
+    "botSubmissionsHint": "The last 20 documents the bot accepted, with the quality and series answers from the chat.",
+    "botSubmissionUser": "User",
+    "botSubmissionSeries": "Series",
+    "botSubmissionStatus": "Status",
+    "botSubmissionReceived": "Received",
+    "botSubmissionSeriesYes": "series",
+    "botSubmissionSeriesNo": "movie"
 }

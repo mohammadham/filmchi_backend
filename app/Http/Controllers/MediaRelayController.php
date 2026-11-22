@@ -19,6 +19,7 @@ use App\Services\Relay\SourceRequeuer;
 use App\Services\Relay\Thumbnail;
 use App\Services\Relay\UploadMetrics;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
@@ -180,6 +181,7 @@ class MediaRelayController extends Controller
         return view('mediaRelay', [
             'failedSources' => $failedSources,
             'failedSourcesCount' => $failedSourcesCount,
+            'botSubmissions' => $this->botSubmissions(),
             'attemptHistory' => $attemptHistory,
             'downloadRetryMax' => max(1, min(10, (int) config('media_relay.ingest.retry_max_attempts', 3))),
             'uploadRetryMax' => max(1, min(10, (int) config('media_relay.upload.retry_max_attempts', 3))),
@@ -196,6 +198,32 @@ class MediaRelayController extends Controller
             'ninedriveConfigured' => $this->relay->ninedrive()->isConfigured(),
             'telegramConfigured' => $this->relay->telegram()->isConfigured(),
         ]);
+    }
+
+    /**
+     * The documents the bot accepted, newest first.
+     *
+     * The quality and series answers are decisions the person made in the
+     * chat; until now they only existed inside the Telegram reply, so the panel
+     * showed the file without what was chosen for it.
+     *
+     * @return \Illuminate\Support\Collection<int, object>
+     */
+    protected function botSubmissions()
+    {
+        if (!Schema::hasTable('bot_submissions')) {
+            return collect();
+        }
+
+        try {
+            return DB::table('bot_submissions')
+                ->orderByDesc('id')
+                ->limit(20)
+                ->get();
+        } catch (Throwable $e) {
+            // A half-migrated panel must still render its relay page.
+            return collect();
+        }
     }
 
     /**

@@ -256,6 +256,8 @@
                 </div>
             </div>
 
+            @include('partials.botSubmissions', ['botSubmissions' => $botSubmissions])
+
             <div class="d-flex flex-wrap align-items-center justify-content-between mb-2">
                 <div class="d-flex align-items-center gap-2">
                     <select id="relayStateFilter" class="form-control form-control-sm" style="width:auto">
