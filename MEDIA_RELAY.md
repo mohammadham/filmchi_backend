@@ -165,7 +165,12 @@ RELAY_BOT_CONCURRENCY=1                  # clamped to 1..2 by the supervisor
 ```
 
 Optional: `RELAY_BOT_COPY_TIMEOUT` (60), `RELAY_BOT_REPLY_TIMEOUT` (5),
-`RELAY_BOT_STALE_SECONDS` (600), `RELAY_BOT_REQUEUE_SECONDS` (300). The same
+`RELAY_BOT_STALE_SECONDS` (600), `RELAY_BOT_REQUEUE_SECONDS` (300),
+`RELAY_BOT_UPDATE_RETENTION_DAYS` (2), `RELAY_BOT_PRUNE_SECONDS` (3600).
+The dedup table is pruned by the supervisor: `bot_updates` rows older than the
+retention (`received_at`, indexed) are deleted hourly. Retention is clamped to at
+least one day, so it always outlives Telegram's 24-hour retry window and a
+retried delivery can never start a second flow. The same
 fields are editable on the settings page; a blank token/secret field keeps the
 stored value, and the panel never returns either secret.
 
@@ -195,14 +200,25 @@ php artisan relay:queue-supervisor --queue=default --poll=3
 ```
 
 With `QUEUE_CONNECTION=sync` there is no worker at all and the import runs inside
-the webhook request; set `redis` or `database` for anything real. The supervisor
-also re-queues submissions left `queued`/`retrying` for `RELAY_BOT_STALE_SECONDS`,
-so a worker that dies does not strand a file.
+the webhook request; set `redis` or `database` for anything real. That case is
+not silent: each inline dispatch logs `bot import runs inline`, and the bot
+card's health call reports `queue_sync`, so the warning shows up in the panel
+too. The supervisor also re-queues submissions left `queued`/`retrying` for
+`RELAY_BOT_STALE_SECONDS`, so a worker that dies does not strand a file.
 
 **5. Smoke test.** Send `/ping` from an allowed account (expect `pong`), then a
 small document: the bot asks quality, then series, replies that the file is
 queued, and answers with the `/r/{token}` link once the import finishes. The bot
 card's health call reports the `getMe` result and the registered webhook.
+
+A half-answered conversation is not a trap: `/cancel` (also `/cancel@BotName`)
+drops the `bot_sessions` row, so the parked document is never registered and the
+next text starts fresh. Both re-asks name the command.
+
+The answers do not stay in the chat: **Media Relay → Bot submissions** lists the
+last 20 rows of `bot_submissions` with the stored `quality`, the `is_series`
+flag and the import status, so a wrong or missing answer is visible (and
+fixable) from the panel.
 
 ## Endpoints
 
