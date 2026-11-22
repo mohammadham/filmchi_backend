@@ -410,12 +410,10 @@ class MediaRelayController extends Controller
         $duplicate = $this->relay->storage()->findByChecksum($upload->getRealPath());
 
         if ($duplicate) {
-            $link = new RelayLink();
-            $link->relay_file_id = $duplicate->id;
-            $link->token = Str::random(40);
-            $link->mode = RelayLink::MODE_STREAM;
-            $link->label = $request->filled('name') ? (string) $request->input('name') : $upload->getClientOriginalName();
-            $link->save();
+            $link = RelayLink::issueFor(
+                $duplicate,
+                $request->filled('name') ? (string) $request->input('name') : $upload->getClientOriginalName()
+            );
 
             MediaGallery::registerRelayFile($duplicate, $link->streamUrl(), $link->label);
 
@@ -479,12 +477,7 @@ class MediaRelayController extends Controller
 
         // Hand out a public link right away and expose the file in the media
         // library, so it is immediately usable inside Content.
-        $link = new RelayLink();
-        $link->relay_file_id = $file->id;
-        $link->token = Str::random(40);
-        $link->mode = RelayLink::MODE_STREAM;
-        $link->label = $name;
-        $link->save();
+        $link = RelayLink::issueFor($file, $name);
 
         MediaGallery::registerRelayFile($file, $link->streamUrl(), $name);
 
@@ -802,12 +795,7 @@ class MediaRelayController extends Controller
             $duplicate = $this->relay->storage()->findByChecksum($part);
 
             if ($duplicate) {
-                $link = new RelayLink();
-                $link->relay_file_id = $duplicate->id;
-                $link->token = Str::random(40);
-                $link->mode = RelayLink::MODE_STREAM;
-                $link->label = $name;
-                $link->save();
+                $link = RelayLink::issueFor($duplicate, $name);
 
                 MediaGallery::registerRelayFile($duplicate, $link->streamUrl(), $name);
 
@@ -864,12 +852,7 @@ class MediaRelayController extends Controller
 
         Thumbnail::make($part, (string) ($file->mime ?? $mime), $file);
 
-        $link = new RelayLink();
-        $link->relay_file_id = $file->id;
-        $link->token = Str::random(40);
-        $link->mode = RelayLink::MODE_STREAM;
-        $link->label = $name;
-        $link->save();
+        $link = RelayLink::issueFor($file, $name);
 
         MediaGallery::registerRelayFile($file, $link->streamUrl(), $name);
 
@@ -1021,13 +1004,12 @@ class MediaRelayController extends Controller
 
         $ttl = (int) $request->input('ttl', config('media_relay.relay.link_ttl', 0));
 
-        $link = new RelayLink();
-        $link->relay_file_id = $file->id;
-        $link->token = Str::random(40);
+        // One creation point (file, token, label); the panel only adds the
+        // options that make this link different from the default one.
+        $link = RelayLink::issueFor($file, $request->input('label'));
         $link->mode = $request->input('mode') === RelayLink::MODE_DOWNLOAD
             ? RelayLink::MODE_DOWNLOAD
             : RelayLink::MODE_STREAM;
-        $link->label = $request->input('label');
         $link->max_downloads = (int) $request->input('max_downloads', 0);
         $link->expires_at = $ttl > 0 ? now()->addSeconds($ttl) : null;
 
