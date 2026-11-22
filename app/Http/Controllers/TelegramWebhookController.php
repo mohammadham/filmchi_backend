@@ -3,6 +3,8 @@
 namespace App\Http\Controllers;
 
 use App\Jobs\ImportBotFileJob;
+use App\RelayFile;
+use App\RelayLink;
 use App\Services\Bot\TelegramBotClient;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -105,6 +107,15 @@ class TelegramWebhookController extends Controller
             return;
         }
 
+        // The way out of a half-answered conversation. Checked before the
+        // document so `/cancel` never has to compete with an attachment, and
+        // before the session step so any text cannot swallow it.
+        if ($this->isCancel($message)) {
+            $this->cancelSession($message);
+
+            return;
+        }
+
         if (is_array($message['document'] ?? null)) {
             $this->beginSubmission($message);
 
@@ -132,6 +143,17 @@ class TelegramWebhookController extends Controller
             return;
         }
 
+        // The same bytes are already in the relay: asking the two questions
+        // and queueing an import that would only answer "already stored" wastes
+        // the user's time, so the deduped answer comes before the first question.
+        $stored = $this->storedAnswer($uniqueId);
+
+        if ($stored !== null) {
+            $this->bot->trySendMessage($chatId, $stored);
+
+            return;
+        }
+
         // A second document mid-conversation replaces the parked one: the user
         // changed their mind, and only the newest file should ever be imported.
         $this->saveSession($userId, $chatId, 'quality', [
@@ -142,23 +164,43 @@ class TelegramWebhookController extends Controller
             'mime' => (string) ($document['mime_type'] ?? ''),
         ]);
 
-        $this->bot->trySendMessage($chatId, 'کیفیت را انتخاب کن: 1080، 720 یا 480');
+        $this->bot->trySendMessage($chatId, 'کیفیت را انتخاب کن: 1080، 720 یا 480 (/cancel برای لغو)');
     }
 
     /**
-     * Advance the conversation parked for this user/chat. Returns false when the
-     * message is not an answer, so unrelated text stays a no-op.
+     * The stored copy's answer, or null when this file is new.
+     *
+     * `relay_files.tg_unique_id` is the key BotFileImporter dedupes on, so the
+     * webhook and the job can never disagree about what "already stored" means.
+     */
+    protected function storedAnswer(string $uniqueId): ?string
+    {
+        $file = RelayFile::where('tg_unique_id', $uniqueId)->first();
+
+        if ($file === null) {
+            return null;
+        }
+
+        $link = RelayLink::where('relay_file_id', $file->id)->first();
+
+        return '♻️ این فایل قبلاً ذخیره شده بود.' . ($link !== null ? "
+" . $link->streamUrl() : '');
+    }
+
+    /**
+     * Advance the conversation parked for this user/chat. Unrelated text (
+     * or an expired session) simply changes nothing.
      *
      * @param  array  $message  message
      */
-    protected function continueSession(array $message, int $updateId): bool
+    protected function continueSession(array $message, int $updateId): void
     {
         $chatId = (int) ($message['chat']['id'] ?? 0);
         $userId = (int) ($message['from']['id'] ?? 0);
         $text = trim((string) ($message['text'] ?? ''));
 
         if ($chatId <= 0 || $userId <= 0 || $text === '') {
-            return false;
+            return;
         }
 
         $session = DB::table('bot_sessions')
@@ -168,7 +210,7 @@ class TelegramWebhookController extends Controller
             ->first();
 
         if ($session === null) {
-            return false;
+            return;
         }
 
         $payload = json_decode((string) $session->payload, true);
@@ -178,35 +220,31 @@ class TelegramWebhookController extends Controller
             $quality = $this->qualityAnswer($text);
 
             if ($quality === null) {
-                $this->bot->trySendMessage($chatId, 'یکی از کیفیتهای 1080، 720 یا 480 را بفرست.');
+                $this->bot->trySendMessage($chatId, 'یکی از کیفیتهای 1080، 720 یا 480 را بفرست. (/cancel برای لغو)');
 
-                return true;
+                return;
             }
 
             $payload['quality'] = $quality;
             $this->saveSession($userId, $chatId, 'series', $payload);
             $this->bot->trySendMessage($chatId, 'این فایل بخشی از یک سریال است؟ (بله یا خیر)');
 
-            return true;
+            return;
         }
 
         if ($session->state === 'series') {
             $isSeries = $this->seriesAnswer($text);
 
             if ($isSeries === null) {
-                $this->bot->trySendMessage($chatId, 'لطفاً «بله» یا «خیر» بنویس.');
+                $this->bot->trySendMessage($chatId, 'لطفاً «بله» یا «خیر» بنویس. (/cancel برای لغو)');
 
-                return true;
+                return;
             }
 
             DB::table('bot_sessions')->where('id', $session->id)->delete();
 
             $this->finishSubmission($payload, $userId, $chatId, $updateId, $isSeries);
-
-            return true;
         }
-
-        return false;
     }
 
     /**
@@ -265,8 +303,31 @@ class TelegramWebhookController extends Controller
             ->value('id');
 
         if ($submissionId > 0) {
+            $this->warnIfQueueIsSync();
+
             ImportBotFileJob::dispatch($submissionId);
         }
+    }
+
+    /**
+     * QUEUE_CONNECTION=sync runs the import inside this webhook request: no
+     * worker, no retry, and Telegram waits for the whole copy/adopt before the
+     * update is acknowledged. A redis/database queue is the supported setup, so
+     * the misconfiguration gets said out loud instead of looking like a normal
+     * import (the panel's bot card shows the same flag).
+     */
+    protected function warnIfQueueIsSync(): void
+    {
+        $connection = (string) config('queue.default');
+
+        if ($connection !== 'sync') {
+            return;
+        }
+
+        Log::warning('bot import runs inline: queue.default is sync', [
+            'connection' => $connection,
+            'fix' => 'set QUEUE_CONNECTION=redis (or database) and run relay:queue-supervisor',
+        ]);
     }
 
     protected function saveSession(int $userId, int $chatId, string $state, array $payload): void
@@ -320,6 +381,41 @@ class TelegramWebhookController extends Controller
     }
 
     /**
+     * `/cancel`: the parked document is dropped with the session, so nothing is
+     * imported and the next text starts fresh instead of re-asking the question.
+     */
+    protected function cancelSession(array $message): void
+    {
+        $chatId = (int) ($message['chat']['id'] ?? 0);
+        $userId = (int) ($message['from']['id'] ?? 0);
+
+        if ($chatId <= 0 || $userId <= 0) {
+            return;
+        }
+
+        // Scoped to this user and chat, and deliberately not filtered by
+        // expires_at: an expired leftover row must not survive the cancel either.
+        $removed = DB::table('bot_sessions')
+            ->where('telegram_user_id', $userId)
+            ->where('chat_id', $chatId)
+            ->delete();
+
+        // No submission row is touched: it is only written by the last answer,
+        // so dropping the session is the whole cancel.
+        $this->bot->trySendMessage($chatId, $removed > 0
+            ? '❌ لغو شد؛ سند ذخیره نشد. هر وقت خواستی دوباره بفرست.'
+            : 'گفت‌وگویی در جریان نیست. فایل را به‌صورت سند (Document) بفرست.');
+    }
+
+    /** `/cancel`, with the same optional `@BotName` suffix as the greetings. */
+    protected function isCancel(array $message): bool
+    {
+        $text = trim((string) ($message['text'] ?? ''));
+
+        return $text !== '' && preg_match('#^/cancel(@\w+)?(\s|$)#i', $text) === 1;
+    }
+
+    /**
      * `/ping` and `/start`, with Telegram's optional `@BotName` suffix (and an
      * argument) in groups. `/start` matters as much as `/ping`: it is the
      * button every user presses first, and a silent bot looks broken.
@@ -346,7 +442,7 @@ class TelegramWebhookController extends Controller
         }
 
         $this->bot->trySendMessage($chatId, $command === 'start'
-            ? 'سلام! سند یا ویدیو را بفرست تا ذخیره‌اش کنم.'
+            ? 'سلام! فایل را به‌صورت سند (Document) بفرست تا ذخیره‌اش کنم.'
             : 'pong');
     }
 

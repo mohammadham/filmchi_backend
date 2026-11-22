@@ -3,9 +3,12 @@
 namespace Tests\Feature;
 
 use App\Jobs\ImportBotFileJob;
+use App\RelayFile;
+use App\RelayLink;
 use App\Services\Relay\RelaySettings;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
 use Tests\TestCase;
 
@@ -30,6 +33,7 @@ class TelegramWebhookTest extends TestCase
         DB::table('bot_updates')->delete();
         DB::table('bot_submissions')->where('telegram_user_id', 111)->delete();
         DB::table('bot_sessions')->where('telegram_user_id', 111)->delete();
+        $this->cleanStored();
     }
 
     protected function postUpdate(array $update, string $secret = 's3cret', ?string $header = 's3cret')
@@ -194,6 +198,46 @@ class TelegramWebhookTest extends TestCase
         Queue::assertPushed(ImportBotFileJob::class, 1);
     }
 
+    public function test_a_sync_queue_warns_that_the_import_runs_inline(): void
+    {
+        Queue::fake();
+        Http::fake();
+        config(['queue.default' => 'sync']);
+
+        Log::spy();
+
+        $this->postDocument(70);
+        $this->answer(71, '1080');
+        $this->answer(72, 'خیر');
+
+        Queue::assertPushed(ImportBotFileJob::class, 1);
+
+        Log::shouldHaveReceived('warning')->withArgs(function (string $message, array $context = []): bool {
+            return str_contains($message, 'runs inline')
+                && ($context['connection'] ?? '') === 'sync';
+        })->once();
+    }
+
+    public function test_a_real_queue_does_not_raise_the_inline_warning(): void
+    {
+        Queue::fake();
+        Http::fake();
+        config(['queue.default' => 'redis']);
+
+        Log::spy();
+
+        $this->postDocument(73);
+        $this->answer(74, '1080');
+        $this->answer(75, 'خیر');
+
+        Queue::assertPushed(ImportBotFileJob::class, 1);
+
+        // Other warnings (a failed reply, say) are not what this test is about.
+        Log::shouldNotHaveReceived('warning', function (string $message): bool {
+            return str_contains($message, 'runs inline');
+        });
+    }
+
     public function test_an_outsider_gets_no_session_even_with_a_document(): void
     {
         Queue::fake();
@@ -263,6 +307,152 @@ class TelegramWebhookTest extends TestCase
         Queue::assertPushed(ImportBotFileJob::class, 2);
     }
 
+    public function test_an_expired_session_is_ignored(): void
+    {
+        Queue::fake();
+        Http::fake();
+
+        $this->postDocument(90);
+        $this->assertSame('quality', $this->sessionState());
+
+        // The 30-minute window ran out while the chat sat idle.
+        DB::table('bot_sessions')->where('chat_id', 111)->update(['expires_at' => now()->subMinute()]);
+
+        $before = count(Http::recorded());
+
+        $this->answer(91, '720');
+
+        $this->assertSame($before, count(Http::recorded()), 'an expired session must not be answered');
+        $this->assertSame('quality', $this->sessionState(), 'the stale row is left alone');
+        $this->assertSame(0, DB::table('bot_submissions')->count());
+        Queue::assertNothingPushed();
+    }
+
+    public function test_a_second_document_mid_conversation_replaces_the_first(): void
+    {
+        Queue::fake();
+        Http::fake();
+
+        $this->postDocument(92);
+        $this->answer(93, '1080');
+        $this->assertSame('series', $this->sessionState());
+
+        // The user changed their mind before answering the last question.
+        $this->postDocument(94);
+
+        $this->assertSame('quality', $this->sessionState(), 'the new document restarts the questions');
+
+        $payload = json_decode((string) DB::table('bot_sessions')->where('chat_id', 111)->value('payload'), true);
+
+        $this->assertSame('uq-94', $payload['file_unique_id']);
+        $this->assertArrayNotHasKey('quality', $payload, 'the old answers must not carry over');
+
+        $this->answer(95, '720');
+        $this->answer(96, 'خیر');
+
+        $this->assertSame(1, DB::table('bot_submissions')->count(), 'only the newest document is registered');
+        $this->assertSame('uq-94', DB::table('bot_submissions')->value('file_unique_id'));
+        Queue::assertPushed(ImportBotFileJob::class, 1);
+    }
+
+    public function test_a_file_already_stored_is_answered_before_the_questions(): void
+    {
+        Queue::fake();
+        Http::fake();
+
+        $file = new RelayFile();
+        $file->name = 'movie.mkv';
+        $file->size = 2048;
+        $file->tg_file_id = 'f_old';
+        $file->tg_backend = 'telegram';
+        $file->cache_state = RelayFile::COLD;
+        $file->ingest_status = 'completed';
+        $file->origin = 'bot';
+        $file->tg_unique_id = 'uq-97';
+        $file->save();
+
+        $link = RelayLink::issueFor($file);
+
+        $this->postDocument(97);
+
+        $this->assertSame(0, DB::table('bot_sessions')->where('chat_id', 111)->count(), 'a stored file must not open a conversation');
+        $this->assertSame(0, DB::table('bot_submissions')->count());
+        Queue::assertNothingPushed();
+        Http::assertSent(fn ($request) => str_contains((string) $request['text'], 'قبلاً ذخیره')
+            && str_contains((string) $request['text'], $link->token));
+    }
+
+    public function test_cancel_drops_the_half_answered_session(): void
+    {
+        Queue::fake();
+        Http::fake();
+
+        $this->postDocument(80);
+        $this->answer(81, '720');
+        $this->assertSame('series', $this->sessionState());
+
+        $this->answer(82, '/cancel');
+
+        $this->assertSame(0, DB::table('bot_sessions')->where('chat_id', 111)->count(), 'the session must be gone');
+        $this->assertSame(0, DB::table('bot_submissions')->count(), 'a cancelled file is never registered');
+        Queue::assertNothingPushed();
+        Http::assertSent(fn ($request) => str_contains((string) $request['text'], 'لغو شد'));
+
+        // The next text is a fresh start, not another re-ask of the question.
+        $this->answer(83, 'بله');
+
+        $this->assertSame(0, DB::table('bot_sessions')->where('chat_id', 111)->count());
+        Queue::assertNothingPushed();
+    }
+
+    public function test_cancel_also_works_with_the_bot_name_suffix(): void
+    {
+        Queue::fake();
+        Http::fake();
+
+        $this->postDocument(84);
+        $this->assertSame('quality', $this->sessionState());
+
+        $this->answer(85, '/cancel@flixy_bot');
+
+        $this->assertSame(0, DB::table('bot_sessions')->where('chat_id', 111)->count());
+        $this->assertSame(0, DB::table('bot_submissions')->count());
+    }
+
+    public function test_cancel_without_a_conversation_is_a_quiet_noop(): void
+    {
+        Queue::fake();
+        Http::fake();
+
+        $this->answer(86, '/cancel');
+
+        $this->assertSame(0, DB::table('bot_submissions')->count());
+        Queue::assertNothingPushed();
+        Http::assertSent(fn ($request) => str_contains((string) $request['text'], 'در جریان نیست'));
+    }
+
+    public function test_a_stuck_answer_points_at_cancel(): void
+    {
+        Queue::fake();
+        Http::fake();
+
+        $this->postDocument(87);
+        $this->answer(88, 'خیلی خوب');
+
+        Http::assertSent(fn ($request) => str_contains((string) $request['text'], '/cancel'));
+    }
+
+    /** The relay rows this file's dedup test creates. */
+    protected function cleanStored(): void
+    {
+        $ids = RelayFile::where('tg_unique_id', 'uq-97')->pluck('id');
+
+        if ($ids->isNotEmpty()) {
+            RelayLink::whereIn('relay_file_id', $ids)->delete();
+            RelayFile::whereIn('id', $ids)->delete();
+        }
+    }
+
     protected function postDocument(int $updateId, int $userId = 111): void
     {
         $this->postUpdate($this->documentUpdate($updateId, $userId))->assertOk();
@@ -323,9 +513,13 @@ class TelegramWebhookTest extends TestCase
         $this->postUpdate($this->update(120, 111, 'private', '/start'))->assertOk();
 
         Http::assertSent(function ($request) {
+            $text = (string) $request['text'];
+
+            // Only documents are accepted, so the welcome must not promise video.
             return str_ends_with($request->url(), '/sendMessage')
                 && (int) $request['chat_id'] === 111
-                && str_contains((string) $request['text'], 'سند');
+                && str_contains($text, 'سند')
+                && !str_contains($text, 'ویدیو');
         });
     }
 
