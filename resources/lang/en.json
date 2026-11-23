@@ -456,6 +456,8 @@
     "botSubmissionReceived": "Received",
     "botSubmissionSeriesYes": "series",
     "botSubmissionSeriesNo": "movie",
+    "botSubmissionEdit": "Correct the answers",
+    "botSubmissionQualityNone": "no answer",
     "botMaxSize": "Max file size (MB)",
     "botMaxSizeHint": "A larger document is refused before any row or job is created.",
     "relayRoleDownload": "Download",

@@ -567,6 +567,43 @@ $(document).ready(function () {
             });
         });
     });
+
+    /* ------------------------------------------------- bot submissions */
+
+    $(document).on("click", ".botSubmissionEdit", function () {
+        $("#bot_submission_id").val($(this).attr("data-id"));
+        $("#botSubmissionName").text($(this).attr("data-name") || "");
+        $("#bot_submission_quality").val($(this).attr("data-quality") || "");
+        $("#bot_submission_series").val($(this).attr("data-series") === "1" ? "1" : "0");
+    });
+
+    $("#saveBotSubmission").on("click", function (e) {
+        e.preventDefault();
+
+        var id = $("#bot_submission_id").val();
+
+        checkUserType(function () {
+            $.ajax({
+                type: "POST",
+                url: `${domainUrl}updateBotSubmission`,
+                dataType: "json",
+                data: {
+                    submission_id: id,
+                    quality: $("#bot_submission_quality").val(),
+                    is_series: $("#bot_submission_series").val(),
+                },
+                success: function (response) {
+                    if (response.status) {
+                        showSuccessToast();
+                        window.location.reload();
+                    } else {
+                        notify(response.message, "error");
+                    }
+                },
+            });
+        });
+    });
+
     /* --------------------------------------- failed sources bulk requeue */
 
     function updateFailedSourceSelection() {

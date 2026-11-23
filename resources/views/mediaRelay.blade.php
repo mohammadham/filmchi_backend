@@ -420,4 +420,42 @@
         </div>
     </div>
 </div>
+
+<!-- Bot submission answers: lives at page level so the card cannot clip it -->
+<div class="modal fade" id="botSubmissionEditModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-sm modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title fw-semibold mb-0 text-white">{{ __('botSubmissionEdit') }}</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="bot_submission_id">
+                <p class="small text-muted text-truncate" id="botSubmissionName" dir="ltr"></p>
+
+                <div class="mb-3">
+                    <label class="form-label">{{ __('quality') }}</label>
+                    <select id="bot_submission_quality" class="form-control">
+                        <option value="">{{ __('botSubmissionQualityNone') }}</option>
+                        <option value="1080">1080</option>
+                        <option value="720">720</option>
+                        <option value="480">480</option>
+                    </select>
+                </div>
+
+                <div>
+                    <label class="form-label">{{ __('botSubmissionSeries') }}</label>
+                    <select id="bot_submission_series" class="form-control">
+                        <option value="0">{{ __('botSubmissionSeriesNo') }}</option>
+                        <option value="1">{{ __('botSubmissionSeriesYes') }}</option>
+                    </select>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn text-light" data-bs-dismiss="modal">{{ __('close') }}</button>
+                <button type="button" id="saveBotSubmission" class="btn btn-primary text-light">{{ __('save') }}</button>
+            </div>
+        </div>
+    </div>
+</div>
 @endsection

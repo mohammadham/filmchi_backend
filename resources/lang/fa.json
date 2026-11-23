@@ -456,6 +456,8 @@
     "botSubmissionReceived": "زمان",
     "botSubmissionSeriesYes": "سریال",
     "botSubmissionSeriesNo": "فیلم",
+    "botSubmissionEdit": "اصلاح پاسخ‌ها",
+    "botSubmissionQualityNone": "بدون پاسخ",
     "botMaxSize": "سقف حجم فایل (مگابایت)",
     "botMaxSizeHint": "سند بزرگ‌تر از این مقدار قبل از ساخت هر ردیف یا جابی رد می‌شود.",
     "relayRoleDownload": "دانلود",

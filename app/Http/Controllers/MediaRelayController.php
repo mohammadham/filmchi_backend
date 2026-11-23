@@ -227,6 +227,47 @@ class MediaRelayController extends Controller
     }
 
     /**
+     * Correct the quality or series answer of a submission from the panel.
+     *
+     * The two answers are recorded, not applied to the stored file: they only
+     * describe what the person chose in the chat, so fixing the row is enough -
+     * without it the only way to change them was re-sending the whole document.
+     */
+    public function updateBotSubmission(Request $request)
+    {
+        // The form's "no answer" option posts an empty string; it means null
+        // however the request pipeline delivered it.
+        $quality = trim((string) $request->input('quality', ''));
+        $request->merge(['quality' => $quality !== '' ? $quality : null]);
+
+        $validated = $request->validate([
+            'submission_id' => 'required|integer|min:1',
+            'quality' => 'nullable|string|in:1080,720,480',
+            'is_series' => 'required|boolean',
+        ]);
+
+        if (!Schema::hasTable('bot_submissions')) {
+            return response()->json(['status' => false, 'message' => 'Bot submissions are not available.']);
+        }
+
+        $id = (int) $validated['submission_id'];
+
+        // Checked before the update: an unchanged save reports zero affected
+        // rows, which must not read as "this submission is gone".
+        if (!DB::table('bot_submissions')->where('id', $id)->exists()) {
+            return response()->json(['status' => false, 'message' => 'Submission not found.']);
+        }
+
+        DB::table('bot_submissions')->where('id', $id)->update([
+            'quality' => $validated['quality'] ?? null,
+            'is_series' => (bool) $validated['is_series'],
+            'updated_at' => now(),
+        ]);
+
+        return response()->json(['status' => true, 'message' => 'Bot submission updated.']);
+    }
+
+    /**
      * Download/upload failures and rows waiting for their next retry.
      *
      * Both source tables are included: movie content and episode sources use
