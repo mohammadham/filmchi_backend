@@ -186,8 +186,9 @@ curl -X POST "https://api.telegram.org/bot$RELAY_BOT_TOKEN/setWebhook" \
 ```
 
 A wrong path segment is `404` and a wrong header `403`, both without writing a
-row. `/ping` answers `pong` and `/start` answers a welcome without touching the
-queue, so the endpoint can be checked before any worker exists. **Delete
+row. `/ping` answers `pong`, `/start` answers a welcome and `/help` lists the
+commands plus the two import steps, all without touching the queue, so the
+endpoint can be checked before any worker exists. **Delete
 webhook** removes it again.
 
 **4. Queue lane.** `ImportBotFileJob` dispatches on `RELAY_BOT_QUEUE`, and

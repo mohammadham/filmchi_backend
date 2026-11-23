@@ -36,6 +36,13 @@ class TelegramWebhookController extends Controller
     /** How long a half-answered conversation waits for the next message. */
     protected const SESSION_MINUTES = 30;
 
+    /** `/help`: the commands the bot answers, then the two questions it asks. */
+    protected const HELP_TEXT = "راهنما:\n"
+        . "/start — سلام و شروع\n"
+        . "/ping — تست اینکه ربات پاسخ می‌دهد\n"
+        . "/cancel — لغو گفتگوی نیمه‌کاره\n"
+        . 'ثبت فایل: فایل را با گزینهٔ Document (Send as file) بفرست، بعد کیفیت (1080/720/480) و سریال بودن را جواب بده؛ در پایان لینک پخش می‌آید.';
+
     public function __construct(protected TelegramBotClient $bot)
     {
     }
@@ -123,7 +130,35 @@ class TelegramWebhookController extends Controller
             return;
         }
 
+        // Telegram stores a photo, a video, a GIF or a round video compressed
+        // and without a file name, so none of them can be imported as a
+        // document. Say that instead of leaving the chat silent.
+        if ($this->isCompressedMedia($message)) {
+            $this->bot->trySendMessage(
+                (int) ($message['chat']['id'] ?? 0),
+                '📄 فایل را به‌صورت Document (Send as file) بفرست تا ذخیره شود؛ عکس و ویدیو فشرده‌اند.'
+            );
+
+            return;
+        }
+
         $this->continueSession($message, $updateId);
+    }
+
+    /**
+     * Media kinds the Bot API delivers without a file name.
+     *
+     * @param  array  $message  message
+     */
+    protected function isCompressedMedia(array $message): bool
+    {
+        foreach (['photo', 'video', 'animation', 'video_note'] as $kind) {
+            if (!empty($message[$kind])) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -178,6 +213,10 @@ class TelegramWebhookController extends Controller
 
         // A second document mid-conversation replaces the parked one: the user
         // changed their mind, and only the newest file should ever be imported.
+        // The replaced file was never stored, so say it was dropped instead of
+        // letting them believe both will arrive.
+        $replacedName = $this->replacedDocumentName($userId, $chatId, $uniqueId);
+
         $this->saveSession($userId, $chatId, 'quality', [
             'message_id' => $messageId,
             'file_unique_id' => $uniqueId,
@@ -186,7 +225,45 @@ class TelegramWebhookController extends Controller
             'mime' => (string) ($document['mime_type'] ?? ''),
         ]);
 
-        $this->bot->trySendMessage($chatId, 'کیفیت را انتخاب کن: 1080، 720 یا 480 (/cancel برای لغو)');
+        $question = 'کیفیت را انتخاب کن: 1080، 720 یا 480 (/cancel برای لغو)';
+
+        if ($replacedName !== null) {
+            $question = '⚠️ فایل ' . ($replacedName !== '' ? '«' . $replacedName . '» ' : 'قبلی ')
+                . 'لغو شد و ذخیره نمی‌شود؛ فایل جدید جایش را گرفت.'
+                . "\n" . $question;
+        }
+
+        $this->bot->trySendMessage($chatId, $question);
+    }
+
+    /**
+     * The name of the parked document this one replaces, or null.
+     *
+     * Only a *different* file counts: re-sending the same document (a retried
+     * delivery, a second copy) is the same file, and calling that a cancel
+     * would be noise. An empty string is a replaced file with no name.
+     */
+    protected function replacedDocumentName(int $userId, int $chatId, string $uniqueId): ?string
+    {
+        $session = DB::table('bot_sessions')
+            ->where('telegram_user_id', $userId)
+            ->where('chat_id', $chatId)
+            ->where('expires_at', '>', now())
+            ->first();
+
+        if ($session === null) {
+            return null;
+        }
+
+        $payload = json_decode((string) $session->payload, true);
+        $payload = is_array($payload) ? $payload : [];
+        $parked = (string) ($payload['file_unique_id'] ?? '');
+
+        if ($parked === '' || $parked === $uniqueId) {
+            return null;
+        }
+
+        return trim((string) ($payload['name'] ?? ''));
     }
 
     /** GB/MB/KB for the size-cap reply, so the number reads like the panel's. */
@@ -464,7 +541,7 @@ class TelegramWebhookController extends Controller
     }
 
     /**
-     * `/ping` and `/start`, with Telegram's optional `@BotName` suffix (and an
+     * `/ping`, `/start` and `/help`, with Telegram's optional `@BotName` suffix (and an
      * argument) in groups. `/start` matters as much as `/ping`: it is the
      * button every user presses first, and a silent bot looks broken.
      *
@@ -475,7 +552,7 @@ class TelegramWebhookController extends Controller
     {
         $text = trim((string) ($message['text'] ?? ''));
 
-        if ($text !== '' && preg_match('#^/(ping|start)(@\w+)?(\s|$)#i', $text, $match) === 1) {
+        if ($text !== '' && preg_match('#^/(ping|start|help)(@\w+)?(\s|$)#i', $text, $match) === 1) {
             return strtolower($match[1]);
         }
 
@@ -489,9 +566,11 @@ class TelegramWebhookController extends Controller
             return;
         }
 
-        $this->bot->trySendMessage($chatId, $command === 'start'
-            ? 'سلام! فایل را به‌صورت سند (Document) بفرست تا ذخیره‌اش کنم.'
-            : 'pong');
+        $this->bot->trySendMessage($chatId, match ($command) {
+            'start' => 'سلام! فایل را به‌صورت سند (Document) بفرست تا ذخیره‌اش کنم.',
+            'help' => self::HELP_TEXT,
+            default => 'pong',
+        });
     }
 
     /**

@@ -493,6 +493,83 @@ class TelegramWebhookTest extends TestCase
         }
     }
 
+    public function test_a_new_document_says_the_parked_one_was_dropped(): void
+    {
+        Queue::fake();
+        Http::fake(['api.telegram.org/*' => Http::response([
+            'ok' => true,
+            'result' => ['message_id' => 80],
+        ])]);
+
+        $this->postDocument(90);
+        $this->postDocument(91);
+
+        // the replaced file is named, and the quality question still follows
+        Http::assertSent(function ($request) {
+            $text = (string) $request['text'];
+
+            return str_contains($text, 'لغو شد')
+                && str_contains($text, 'movie.mkv')
+                && str_contains($text, '1080');
+        });
+
+        // one live conversation, pointing at the second document only
+        $this->assertSame(1, DB::table('bot_sessions')->count());
+        $payload = json_decode((string) DB::table('bot_sessions')->value('payload'), true);
+        $this->assertSame(91, (int) $payload['message_id']);
+        $this->assertSame(0, DB::table('bot_submissions')->count(), 'the dropped file was never queued');
+    }
+
+    public function test_resending_the_same_document_is_not_called_a_cancel(): void
+    {
+        Queue::fake();
+        Http::fake(['api.telegram.org/*' => Http::response([
+            'ok' => true,
+            'result' => ['message_id' => 81],
+        ])]);
+
+        $this->postUpdate($this->documentUpdate(92))->assertOk();
+        $this->postUpdate($this->documentUpdate(93, 111, ['file_unique_id' => 'uq-92']))->assertOk();
+
+        Http::assertNotSent(fn ($request) => str_contains((string) $request['text'], 'لغو شد'));
+    }
+
+    public function test_a_photo_or_a_video_is_told_to_arrive_as_a_document(): void
+    {
+        Queue::fake();
+        Http::fake(['api.telegram.org/*' => Http::response([
+            'ok' => true,
+            'result' => ['message_id' => 9],
+        ])]);
+
+        $this->postUpdate($this->mediaUpdate(100, ['photo' => [
+            ['file_id' => 'p', 'file_unique_id' => 'pq', 'width' => 90, 'height' => 90],
+        ]]))->assertOk();
+        $this->postUpdate($this->mediaUpdate(101, ['video' => [
+            'file_id' => 'v', 'file_unique_id' => 'vq', 'duration' => 3,
+        ]]))->assertOk();
+
+        Http::assertSentCount(2);
+        Http::assertSent(fn ($request) => str_ends_with($request->url(), '/sendMessage')
+            && (int) $request['chat_id'] === 111
+            && str_contains((string) $request['text'], 'Document'));
+
+        // nothing was parked and nothing was queued
+        $this->assertSame(0, DB::table('bot_sessions')->count());
+        $this->assertSame(0, DB::table('bot_submissions')->count());
+        Queue::assertNothingPushed();
+    }
+
+    /** An update that carries media instead of text. */
+    protected function mediaUpdate(int $updateId, array $media): array
+    {
+        $update = $this->update($updateId);
+
+        unset($update['message']['text']);
+
+        return ['update_id' => $update['update_id'], 'message' => $update['message'] + $media];
+    }
+
     /** One document through the whole question flow, which queues one import. */
     protected function importDocument(int $updateId): void
     {
@@ -571,15 +648,41 @@ class TelegramWebhookTest extends TestCase
         });
     }
 
+    public function test_the_help_command_lists_the_commands_and_the_import_steps(): void
+    {
+        Http::fake(['api.telegram.org/*' => Http::response([
+            'ok' => true,
+            'result' => ['message_id' => 71],
+        ])]);
+
+        $this->postUpdate($this->update(123, 111, 'private', '/help'))->assertOk();
+        // Telegram appends @BotName in groups, so the suffix must not hide it
+        $this->postUpdate($this->update(124, 111, 'private', '/help@flixy_bot'))->assertOk();
+
+        Http::assertSentCount(2);
+        Http::assertSent(function ($request) {
+            $text = (string) $request['text'];
+
+            return str_ends_with($request->url(), '/sendMessage')
+                && (int) $request['chat_id'] === 111
+                && str_contains($text, '/start')
+                && str_contains($text, '/ping')
+                && str_contains($text, '/cancel')
+                && str_contains($text, 'Document')
+                && str_contains($text, '1080');
+        });
+    }
+
     public function test_a_longer_command_is_not_mistaken_for_a_greeting(): void
     {
         Http::fake();
 
         $this->postUpdate($this->update(121, 111, 'private', '/startle'))->assertOk();
         $this->postUpdate($this->update(122, 111, 'private', '/pingpong'))->assertOk();
+        $this->postUpdate($this->update(125, 111, 'private', '/helper'))->assertOk();
 
         Http::assertNothingSent();
-        $this->assertSame(2, DB::table('bot_updates')->count(), 'both updates are recorded, neither replied');
+        $this->assertSame(3, DB::table('bot_updates')->count(), 'every update is recorded, none replied');
     }
 
     public function test_only_an_allowed_ping_is_answered(): void
