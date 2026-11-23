@@ -31,7 +31,6 @@ class BotUpdatePruneTest extends TestCase
     {
         DB::table('bot_updates')->insert([
             'update_id' => $updateId,
-            'kind' => 'message',
             'received_at' => $receivedAt,
         ]);
     }
@@ -88,7 +87,7 @@ class BotUpdatePruneTest extends TestCase
         $rows = [];
 
         for ($i = 0; $i < BotUpdatePruner::BATCH + 1; $i++) {
-            $rows[] = ['update_id' => 10000 + $i, 'kind' => 'message', 'received_at' => $old];
+            $rows[] = ['update_id' => 10000 + $i, 'received_at' => $old];
         }
 
         DB::table('bot_updates')->insert($rows);

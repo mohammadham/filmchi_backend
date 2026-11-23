@@ -93,7 +93,7 @@ class TelegramWebhookTest extends TestCase
         $this->postUpdate($update)->assertOk(); // Telegram retries the same id
 
         $this->assertSame(1, DB::table('bot_updates')->count());
-        $this->assertSame('message', DB::table('bot_updates')->where('update_id', 10)->value('kind'));
+        $this->assertNotNull(DB::table('bot_updates')->where('update_id', 10)->value('received_at'));
 
         $callback = [
             'update_id' => 11,
@@ -111,7 +111,6 @@ class TelegramWebhookTest extends TestCase
         $this->postUpdate($callback)->assertOk();
 
         $this->assertSame(2, DB::table('bot_updates')->count());
-        $this->assertSame('callback_query', DB::table('bot_updates')->where('update_id', 11)->value('kind'));
     }
 
     public function test_outsiders_and_group_chats_are_ignored_silently(): void

@@ -145,9 +145,11 @@ Drive. A fresh install needs these five steps.
 | `2026_11_21_000002_create_bot_tables` | `bot_updates` (dedup key), `bot_sessions`, `bot_submissions` |
 | `2026_11_21_000003_add_origin_and_bot_columns` | bot columns on relay files and the unique file-part index |
 | `2026_11_21_000005_add_conversation_answers_to_bot_submissions` | `quality` and `is_series` on `bot_submissions` |
+| `2026_11_23_000001_drop_kind_from_bot_updates` | drops the unread `bot_updates.kind` column |
 
 There is no `…_000004`: `bot_updates` keeps only the dedup key, not the update
-payload.
+payload (its `kind` column was written but never read, so a later migration
+drops it).
 
 **2. Environment.**
 

@@ -89,7 +89,6 @@ class TelegramWebhookController extends Controller
         // only the delivery that actually recorded the row moves the flow on.
         $recorded = DB::table('bot_updates')->insertOrIgnore([
             'update_id' => $updateId,
-            'kind' => array_key_exists('callback_query', $update) ? 'callback_query' : 'message',
             'received_at' => now(),
         ]);
 
