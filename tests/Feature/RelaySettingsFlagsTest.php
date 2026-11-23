@@ -103,6 +103,30 @@ class RelaySettingsFlagsTest extends TestCase
         $this->assertTrue((bool) $this->settings()->relay_bot_enabled, 'and it does not leak into the other card');
     }
 
+    public function test_an_unchecked_bot_toggle_and_blank_boxes_leave_the_relay_card_alone(): void
+    {
+        $this->settings()->forceFill([
+            'relay_enabled' => true,
+            'relay_bot_enabled' => true,
+            'relay_bot_token' => '123:stored',
+            'relay_bot_webhook_secret' => 'stored-secret',
+        ])->save();
+
+        // Exactly what the bot form posts: an unchecked toggle sends the hidden
+        // 0, and the secret boxes always render empty.
+        $payload = $this->save([
+            'relay_bot_enabled' => '0',
+            'relay_bot_token' => '',
+            'relay_bot_webhook_secret' => '',
+        ]);
+
+        $this->assertTrue($payload['status']);
+        $this->assertFalse((bool) $this->settings()->relay_bot_enabled, 'the bot card switched only itself off');
+        $this->assertTrue((bool) $this->settings()->relay_enabled, 'the relay card keeps its switch');
+        $this->assertSame('123:stored', $this->settings()->relay_bot_token, 'a blank box keeps the stored token');
+        $this->assertSame('stored-secret', $this->settings()->relay_bot_webhook_secret, 'and the stored secret');
+    }
+
     public function test_a_blank_secret_box_keeps_the_stored_secret(): void
     {
         $this->settings()->forceFill(['relay_bot_token' => '999:stored', 'relay_bot_webhook_secret' => 'stored-secret'])->save();
