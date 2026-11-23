@@ -285,6 +285,15 @@ The production `.env` uses `QUEUE_CONNECTION=sync`, so crossing the threshold on
 */5 * * * * docker exec flixy php /app/artisan relay:promote --limit=20 >> /var/log/flixy-relay-promote.log 2>&1
 ```
 
+The same install has no supervisor, so nothing would prune the `bot_updates`
+dedup table. Run the shared pruner from cron too (the supervisor runs the very
+same `BotUpdatePruner` on its own tick, so both paths delete exactly the rows
+Telegram can no longer retry):
+
+```cron
+17 * * * * docker exec flixy php /app/artisan relay:prune-bot-updates >> /var/log/flixy-relay-prune.log 2>&1
+```
+
 ### Deployment notes
 
 - `flixy-compose.yml` (copied to `docker-compose.yml` on the server by `deploy.yml` before `docker compose up`) bind-mounts `./storage/app` and `./storage/logs`; without them every rebuild wipes uploads and logs.

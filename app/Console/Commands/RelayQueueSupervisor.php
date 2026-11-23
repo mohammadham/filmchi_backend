@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Jobs\ImportBotFileJob;
+use App\Services\Bot\BotUpdatePruner;
 use App\Services\Relay\DiskBudget;
 use App\Services\Relay\IngestPartSweeper;
 use App\Services\Relay\RelaySettings;
@@ -261,13 +262,11 @@ class RelayQueueSupervisor extends Command
     }
 
     /**
-     * Drop dedup rows Telegram can no longer retry.
+     * Drop dedup rows Telegram can no longer retry, on this loop's interval.
      *
-     * Telegram gives up on a delivery after 24 hours, so a row older than that
-     * cannot dedupe anything a second time. The retention is clamped to at least
-     * one day for exactly that reason: pruning a row inside the retry window
-     * would let a retried update start a second flow. Old rows go in batches so
-     * a long-abandoned install does not lock the table in one huge delete.
+     * The schedule is the supervisor's (it ticks while the pool is up); the
+     * cutoff and the batching live in BotUpdatePruner, which
+     * `relay:prune-bot-updates` runs too, for installs with no supervisor.
      */
     protected function pruneBotUpdates(): void
     {
@@ -279,25 +278,8 @@ class RelayQueueSupervisor extends Command
 
         $this->lastBotPruneAt = time();
 
-        $cutoff = now()->subDays(max(1, (int) config('media_relay.bot.update_retention_days', 2)));
-        $deleted = 0;
-
         try {
-            do {
-                // Ids first: a DELETE ... LIMIT is not portable, and this keeps
-                // each statement short whatever the backlog is.
-                $ids = DB::table('bot_updates')
-                    ->where('received_at', '<', $cutoff)
-                    ->orderBy('update_id')
-                    ->limit(1000)
-                    ->pluck('update_id');
-
-                if ($ids->isEmpty()) {
-                    break;
-                }
-
-                $deleted += DB::table('bot_updates')->whereIn('update_id', $ids->all())->delete();
-            } while ($ids->count() >= 1000);
+            $deleted = (new BotUpdatePruner())->prune();
         } catch (Throwable $e) {
             // A transient DB hiccup must not stop the pool; the next interval
             // retries with the same cutoff.

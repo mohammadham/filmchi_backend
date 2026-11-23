@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Services\Bot\BotUpdatePruner;
 use Illuminate\Support\Facades\DB;
 use Tests\Support\RelayQueueSupervisorHarness;
 use Tests\TestCase;
@@ -80,18 +81,44 @@ class BotUpdatePruneTest extends TestCase
         $this->assertSame([9020], $this->remaining(), 'retention is clamped to one day, never to zero');
     }
 
-    public function test_pruning_keeps_a_retried_delivery_inside_the_window_single(): void
+    public function test_the_artisan_command_prunes_an_install_without_a_supervisor(): void
     {
-        $this->update(9030, now());
+        // more than one batch, so the id-first loop runs twice
+        $old = now()->subDays(5);
+        $rows = [];
 
-        // The same update_id arriving twice is the case this table exists for.
-        $again = DB::table('bot_updates')->insertOrIgnore([
-            'update_id' => 9030,
-            'kind' => 'message',
-            'received_at' => now(),
-        ]);
+        for ($i = 0; $i < BotUpdatePruner::BATCH + 1; $i++) {
+            $rows[] = ['update_id' => 10000 + $i, 'kind' => 'message', 'received_at' => $old];
+        }
 
-        $this->assertSame(0, $again, 'a retried delivery must not record a second row');
-        $this->assertSame([9030], $this->remaining());
+        DB::table('bot_updates')->insert($rows);
+        $this->update(9099, now());
+
+        $this->artisan('relay:prune-bot-updates')
+            ->expectsOutputToContain('pruned 1001')
+            ->assertExitCode(0);
+
+        $this->assertSame([9099], $this->remaining(), 'the fresh row and only that one survives');
+    }
+
+    public function test_the_prune_stops_at_the_window_edge_and_keeps_every_newer_row(): void
+    {
+        // Retention is 2 days and the prune deletes received_at < cutoff, so a
+        // row one second either side of the edge says which way it went. The
+        // edge is not pinned to the exact second: the command takes its own
+        // now(), a few milliseconds later than this one.
+        $edge = now()->subDays(2);
+
+        $this->update(9040, $edge->copy()->subSecond());   // past the edge: Telegram gave up
+        $this->update(9041, $edge->copy()->addSecond());   // one second inside: still retryable
+        $this->update(9042, now());                        // just arrived
+
+        (new RelayQueueSupervisorHarness())->pruneUpdates();
+
+        $this->assertSame(
+            [9041, 9042],
+            $this->remaining(),
+            'the prune stops at the edge; every row inside the retry window survives'
+        );
     }
 }
