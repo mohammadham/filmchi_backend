@@ -459,7 +459,7 @@
     "botSubmissionEdit": "Correct the answers",
     "botSubmissionQualityNone": "no answer",
     "botMaxSize": "Max file size (MB)",
-    "botMaxSizeHint": "A larger document is refused before any row or job is created.",
+    "botMaxSizeHint": "A larger document is refused before any row or job is created. 0 = no ceiling.",
     "relayRoleDownload": "Download",
     "relayRoleUpload": "Upload",
     "relayRoleProbe": "Probe",

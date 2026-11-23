@@ -178,34 +178,36 @@ class TelegramWebhookController extends Controller
             return;
         }
 
-        // The daily limit counts documents, not bytes: one huge file can still
-        // eat the whole disk budget, so the size cap is checked before anything
-        // is written or queued.
-        $maxBytes = max(0, (int) config('media_relay.bot.max_size_mb', 0)) * 1024 * 1024;
-
-        if ($maxBytes > 0 && (int) ($document['file_size'] ?? 0) > $maxBytes) {
-            Log::info('bot document over the size cap', [
-                'user' => $userId,
-                'size' => (int) ($document['file_size'] ?? 0),
-                'cap_mb' => (int) config('media_relay.bot.max_size_mb', 0),
-            ]);
-
-            $this->bot->trySendMessage($chatId, sprintf(
-                '⚠️ این فایل %s است و از سقف %s مگابایتی ربات بزرگ‌تر است؛ نسخهٔ کم‌حجم‌تر را بفرست.',
-                $this->humanSize((int) ($document['file_size'] ?? 0)),
-                (int) config('media_relay.bot.max_size_mb', 0)
-            ));
-
-            return;
-        }
-
         // The same bytes are already in the relay: asking the two questions
         // and queueing an import that would only answer "already stored" wastes
-        // the user's time, so the deduped answer comes before the first question.
+        // the user's time, so the deduped answer comes before the first question
+        // — and before the size cap, which guards what would be imported.
         $stored = $this->storedAnswer($uniqueId);
 
         if ($stored !== null) {
             $this->bot->trySendMessage($chatId, $stored);
+
+            return;
+        }
+
+        // The daily limit counts documents, not bytes: one huge file can still
+        // eat the whole disk budget, so the size cap is checked before anything
+        // is written or queued.
+        $sizeBytes = (int) ($document['file_size'] ?? 0);
+        $capMb = (int) config('media_relay.bot.max_size_mb', 0);
+
+        if ($capMb > 0 && $sizeBytes > $capMb * 1024 * 1024) {
+            Log::info('bot document over the size cap', [
+                'user' => $userId,
+                'size' => $sizeBytes,
+                'cap_mb' => $capMb,
+            ]);
+
+            $this->bot->trySendMessage($chatId, sprintf(
+                '⚠️ این فایل %s است و از سقف %s مگابایتی ربات بزرگ‌تر است؛ نسخهٔ کم‌حجم‌تر را بفرست.',
+                $this->humanSize($sizeBytes),
+                $capMb
+            ));
 
             return;
         }

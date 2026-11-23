@@ -2,7 +2,9 @@
 
 namespace Tests\Feature;
 
+use App\GlobalSettings;
 use App\Jobs\ImportBotFileJob;
+use App\Providers\AppServiceProvider;
 use App\RelayFile;
 use App\RelayLink;
 use App\Services\Relay\RelaySettings;
@@ -394,23 +396,123 @@ class TelegramWebhookTest extends TestCase
         $this->assertSame('quality', $this->sessionState());
     }
 
+    /**
+     * The settings row the panel writes to, plus a copy to restore it after.
+     *
+     * @return array{0:\App\GlobalSettings,1:array<string,mixed>}
+     */
+    protected function rememberSettings(): array
+    {
+        $setting = GlobalSettings::first();
+
+        if ($setting === null) {
+            $this->fail('the install has no global_settings row for the panel to save');
+        }
+
+        return [$setting, $setting->getAttributes()];
+    }
+
+    /** @param array<string,mixed> $attributes */
+    protected function restoreSettings(GlobalSettings $setting, array $attributes): void
+    {
+        // refresh() first: the instance still holds the pre-test values, so
+        // forceFill() alone would leave nothing dirty and skip the UPDATE.
+        $setting->refresh();
+        $setting->forceFill($attributes)->save();
+
+        RelaySettings::apply($setting);
+    }
+
+    public function test_the_cap_saved_in_the_panel_is_the_cap_the_webhook_applies(): void
+    {
+        Queue::fake();
+        Http::fake();
+
+        [$setting, $before] = $this->rememberSettings();
+
+        try {
+            // exactly what the bot card posts: the controller stores the value
+            // and makes it effective for the requests that follow.
+            // The bot card also carries its on/off switch; the saved card is
+            // re-applied as a whole, so an off switch would 404 the endpoint.
+            $this->withSession(['user_name' => 'admin'])
+                ->post('saveRelaySettings', [
+                    'relay_bot_enabled' => 1,
+                    'relay_bot_max_size_mb' => 7,
+                ])
+                ->assertOk()
+                ->assertJson(['status' => true]);
+
+            $this->assertSame(7, (int) DB::table('global_settings')->value('relay_bot_max_size_mb'));
+            $this->assertSame(7, (int) config('media_relay.bot.max_size_mb'), 'the saved cap is live, not just stored');
+
+            $this->postUpdate($this->documentUpdate(110, 111, ['file_size' => 8 * 1024 * 1024]))->assertOk();
+
+            $this->assertSame(0, DB::table('bot_sessions')->where('chat_id', 111)->count(), 'no question for a file past the saved cap');
+            $this->assertSame(0, DB::table('bot_submissions')->count());
+            Queue::assertNothingPushed();
+            Http::assertSent(fn ($request) => str_contains((string) $request['text'], '8 MB')
+                && str_contains((string) $request['text'], '7 مگابایتی'));
+        } finally {
+            $this->restoreSettings($setting, $before);
+        }
+    }
+
+    public function test_a_cap_stored_in_the_database_is_applied_on_the_next_boot(): void
+    {
+        Queue::fake();
+        Http::fake();
+
+        [$setting, $before] = $this->rememberSettings();
+
+        try {
+            // Only the row changes: nobody calls config() for the panel path,
+            // so what makes it effective is the boot-time bridge.
+            DB::table('global_settings')->update([
+                'relay_bot_enabled' => 1,
+                'relay_bot_max_size_mb' => 4,
+            ]);
+            config(['media_relay.bot.max_size_mb' => 2048]);
+
+            (new AppServiceProvider($this->app))->boot();
+
+            $this->assertSame(4, (int) config('media_relay.bot.max_size_mb'));
+
+            $this->postUpdate($this->documentUpdate(111, 111, ['file_size' => 5 * 1024 * 1024]))->assertOk();
+
+            $this->assertSame(0, DB::table('bot_sessions')->where('chat_id', 111)->count());
+            Http::assertSent(fn ($request) => str_contains((string) $request['text'], '4 مگابایتی'));
+        } finally {
+            $this->restoreSettings($setting, $before);
+        }
+    }
+
+    public function test_a_stored_file_is_answered_as_stored_even_past_the_cap(): void
+    {
+        Queue::fake();
+        Http::fake();
+        config(['media_relay.bot.max_size_mb' => 1]);
+
+        // Nothing would be imported for a duplicate, so the cheap answer wins
+        // over the cap: the file is already in the relay, whatever its size.
+        $link = $this->seedStoredFile();
+
+        $this->postUpdate($this->documentUpdate(105, 111, [
+            'file_unique_id' => 'uq-97', // the row seedStoredFile() just wrote
+            'file_size' => 5 * 1024 * 1024,
+        ]))->assertOk();
+
+        $this->assertSame(0, DB::table('bot_sessions')->where('chat_id', 111)->count());
+        Http::assertSent(fn ($request) => str_contains((string) $request['text'], 'قبلاً ذخیره')
+            && str_contains((string) $request['text'], $link->token));
+    }
+
     public function test_a_file_already_stored_is_answered_before_the_questions(): void
     {
         Queue::fake();
         Http::fake();
 
-        $file = new RelayFile();
-        $file->name = 'movie.mkv';
-        $file->size = 2048;
-        $file->tg_file_id = 'f_old';
-        $file->tg_backend = 'telegram';
-        $file->cache_state = RelayFile::COLD;
-        $file->ingest_status = 'completed';
-        $file->origin = 'bot';
-        $file->tg_unique_id = 'uq-97';
-        $file->save();
-
-        $link = RelayLink::issueFor($file);
+        $link = $this->seedStoredFile();
 
         $this->postDocument(97);
 
@@ -479,6 +581,23 @@ class TelegramWebhookTest extends TestCase
         $this->answer(88, 'خیلی خوب');
 
         Http::assertSent(fn ($request) => str_contains((string) $request['text'], '/cancel'));
+    }
+
+    /** A completed relay row plus its link, as if the bot had imported it. */
+    protected function seedStoredFile(): RelayLink
+    {
+        $file = new RelayFile();
+        $file->name = 'movie.mkv';
+        $file->size = 2048;
+        $file->tg_file_id = 'f_old';
+        $file->tg_backend = 'telegram';
+        $file->cache_state = RelayFile::COLD;
+        $file->ingest_status = 'completed';
+        $file->origin = 'bot';
+        $file->tg_unique_id = 'uq-97';
+        $file->save();
+
+        return RelayLink::issueFor($file);
     }
 
     /** The relay rows this file's dedup test creates. */

@@ -205,7 +205,8 @@ class RelaySettings
             'relay_bot_channel_id' => (int) config('media_relay.bot.channel_id', 0),
             'relay_bot_quality' => (string) config('media_relay.bot.quality', '1080'),
             'relay_bot_daily_limit' => (int) config('media_relay.bot.daily_limit', 20),
-            'relay_bot_max_size_mb' => max(1, (int) config('media_relay.bot.max_size_mb', 2048)),
+            // 0 is a real choice: no ceiling (see RELAY_BOT_MAX_SIZE_MB).
+            'relay_bot_max_size_mb' => max(0, (int) config('media_relay.bot.max_size_mb', 2048)),
         ];
     }
 

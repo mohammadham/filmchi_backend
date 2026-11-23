@@ -737,7 +737,7 @@
                                 <div class="col-md-6">
                                     <div class="form-group">
                                         <label class="form-label">{{ __('botMaxSize') }}</label>
-                                        <input type="number" min="1" class="form-control" name="relay_bot_max_size_mb" value="{{ $relay['relay_bot_max_size_mb'] }}">
+                                        <input type="number" min="0" class="form-control" name="relay_bot_max_size_mb" value="{{ $relay['relay_bot_max_size_mb'] }}">
                                         <span class="text-muted small">{{ __('botMaxSizeHint') }}</span>
                                     </div>
                                 </div>
