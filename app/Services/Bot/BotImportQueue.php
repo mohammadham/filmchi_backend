@@ -14,7 +14,7 @@ use Illuminate\Support\Facades\Log;
  */
 class BotImportQueue
 {
-    public const INLINE_DRIVERS = ['sync', 'null'];
+    private const INLINE_DRIVERS = ['sync', 'null'];
 
     public static function driver(): string
     {
@@ -32,15 +32,15 @@ class BotImportQueue
      */
     public static function warnOnceAnHour(): void
     {
-        if (!static::runsInline()) {
+        $driver = static::driver();
+
+        if (!in_array($driver, self::INLINE_DRIVERS, true)) {
             return;
         }
 
         if (!Cache::add('relay:bot:warn:inline-warning', true, now()->addHour())) {
             return;
         }
-
-        $driver = static::driver();
 
         // null is the worse of the two: sync at least runs the import, null
         // throws it away. The line says which one the install is on.

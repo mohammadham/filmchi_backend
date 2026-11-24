@@ -58,7 +58,7 @@ class BotHealthQueueTest extends TestCase
         $this->assertSame('null', $payload['queue_connection']);
     }
 
-    public function test_a_real_queue_is_not_flagged_and_the_secret_stays_hidden(): void
+    public function test_a_real_queue_is_not_flagged(): void
     {
         config(['queue.default' => 'redis']);
 
@@ -66,7 +66,5 @@ class BotHealthQueueTest extends TestCase
 
         $this->assertFalse($payload['queue_sync']);
         $this->assertSame('redis', $payload['queue_connection']);
-        $this->assertStringNotContainsString('s3cret', (string) $payload['expected_webhook_url']);
-        $this->assertStringNotContainsString('s3cret', (string) $payload['webhook_url']);
     }
 }

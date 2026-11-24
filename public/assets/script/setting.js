@@ -402,15 +402,11 @@ $(document).ready(function () {
                 lines.push(`Last error: ${botEscape(response.last_error)}`);
             }
             if (response.queue_sync) {
-                // sync runs the import inside the webhook request, null drops
-                // it: neither has a worker, so the card warns for both. The line
-                // is translated with the rest of the card: the blade hands it
-                // over in data-queue-warning, with :driver as the placeholder.
+                // sync runs the import in the request and null drops it: neither
+                // has a worker. :driver is the translated line's placeholder.
                 lines.unshift(
-                    String(healthBadge.attr("data-queue-warning") || "").replace(
-                        ":driver",
-                        botEscape(response.queue_connection)
-                    )
+                    String(healthBadge.attr("data-queue-warning") || "")
+                        .replace(":driver", botEscape(response.queue_connection))
                 );
             }
             botResult(
