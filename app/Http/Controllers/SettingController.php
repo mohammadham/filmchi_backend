@@ -527,7 +527,7 @@ class SettingController extends Controller
     protected function saveBotCard(Request $request): ?\Illuminate\Http\JsonResponse
     {
         try {
-            RelaySettings::save(GlobalSettings::first() ?: new GlobalSettings(), $this->relayCardInput($request));
+            RelaySettings::save(GlobalSettings::first() ?: $this->settingsRow(), $this->relayCardInput($request));
         } catch (\Throwable $e) {
             return response()->json([
                 'status' => false,
@@ -536,6 +536,23 @@ class SettingController extends Controller
         }
 
         return null;
+    }
+
+    /**
+     * The row the panel writes to when the install has none yet.
+     *
+     * A migrated-only schema (fresh install, the CI test database) starts
+     * without a global_settings row, and the migration declares
+     * is_live_tv_enable NOT NULL with no default. The first card save is an
+     * insert, so it has to carry that column or the save fails on SQLite and on
+     * strict MySQL alike.
+     */
+    protected function settingsRow(): GlobalSettings
+    {
+        $settings = new GlobalSettings();
+        $settings->is_live_tv_enable = 0;
+
+        return $settings;
     }
 
     protected function botWebhookUrl(string $secret): string

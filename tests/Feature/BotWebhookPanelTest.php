@@ -231,6 +231,22 @@ class BotWebhookPanelTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_the_card_saves_on_a_schema_with_no_settings_row(): void
+    {
+        // CI builds the schema from migrations only, so there is no settings row
+        // and the first card save inserts one. That insert used to fail on
+        // is_live_tv_enable (NOT NULL, no default), which turned every save on a
+        // fresh install into "could not save the card".
+        GlobalSettings::query()->delete();
+
+        Http::fake(['api.telegram.org/*' => Http::response(['ok' => true, 'result' => true])]);
+
+        $payload = $this->card('setBotWebhook', ['relay_bot_token' => '123:abc']);
+
+        $this->assertTrue($payload['status'], (string) ($payload['message'] ?? ''));
+        $this->assertSame('123:abc', GlobalSettings::first()->relay_bot_token);
+    }
+
     public function test_set_webhook_registers_the_secret_as_path_and_header(): void
     {
         Http::fake(['api.telegram.org/*' => Http::response(['ok' => true, 'result' => true])]);
