@@ -447,6 +447,7 @@
     "botCheckHealth": "Check health",
     "botSetWebhook": "Set webhook",
     "botDeleteWebhook": "Remove webhook",
+    "botButtonsHint": "Set/Remove webhook save the card before calling Telegram. Check health only reads what is stored, so save first if you edited the card. A blank token or secret box keeps the saved value.",
     "botSubmissions": "Bot submissions",
     "botSubmissionsEmpty": "The bot has not accepted a document yet.",
     "botSubmissionsHint": "The last 20 documents the bot accepted, with the quality and series answers from the chat.",
@@ -466,5 +467,6 @@
     "relayRoleBot": "Bot",
     "secretMissing": "not saved",
     "botOnline": "online",
-    "botOffline": "offline"
+    "botOffline": "offline",
+    "botQueueWarning": "Queue: :driver — no worker picks the import up. Set QUEUE_CONNECTION=redis and start relay:queue-supervisor."
 }

@@ -447,6 +447,7 @@
     "botCheckHealth": "بررسی سلامت",
     "botSetWebhook": "ثبت وب‌هوک",
     "botDeleteWebhook": "حذف وب‌هوک",
+    "botButtonsHint": "ثبت و حذف وب‌هوک اول کارت را ذخیره می‌کنند و بعد با تلگرام حرف می‌زنند. بررسی سلامت فقط مقدار ذخیره‌شده را می‌سنجد، پس اگر کارت را تغییر داده‌اید اول ذخیره کنید. کادر خالی توکن یا وب‌هوک‌سکرت مقدار قبلی را نگه می‌دارد.",
     "botSubmissions": "ارسال‌های ربات",
     "botSubmissionsEmpty": "هنوز سندی به ربات ارسال نشده است.",
     "botSubmissionsHint": "۲۰ سند آخرین که ربات پذیرفته، همراه با پاسخ کیفیت و سریال از گفت‌وگو.",
@@ -466,5 +467,6 @@
     "relayRoleBot": "بات",
     "secretMissing": "ذخیره نشده",
     "botOnline": "آنلاین",
-    "botOffline": "آفلاین"
+    "botOffline": "آفلاین",
+    "botQueueWarning": "صف: :driver — هیچ ورکری این ایمپورت را برنمی‌دارد. مقدار QUEUE_CONNECTION را redis کنید و relay:queue-supervisor را اجرا کنید."
 }

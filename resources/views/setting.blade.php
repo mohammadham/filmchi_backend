@@ -663,7 +663,7 @@
                         <div class="d-flex align-items-center gap-2">
                             <span class="badge {{ $relay['relay_bot_enabled'] ? 'bg-success' : 'bg-secondary' }}" id="botFlagBadge" data-label="{{ __('botFlag') }}" data-on="{{ __('botOn') }}" data-off="{{ __('botOff') }}">{{ __('botFlag') }}: {{ $relay['relay_bot_enabled'] ? __('botOn') : __('botOff') }}</span>
                             <span class="badge {{ $relay['relay_bot_token_set'] ? 'bg-success' : 'bg-danger' }}" id="botTokenBadge" data-label="{{ __('botToken') }}" data-saved="{{ __('secretStored') }}" data-missing="{{ __('secretMissing') }}">{{ __('botToken') }}: {{ $relay['relay_bot_token_set'] ? __('secretStored') : __('secretMissing') }}</span>
-                            <span class="badge bg-secondary" id="botHealthBadge" data-label="{{ __('botHealth') }}" data-online="{{ __('botOnline') }}" data-offline="{{ __('botOffline') }}">{{ __('botHealth') }}: -</span>
+                            <span class="badge bg-secondary" id="botHealthBadge" data-label="{{ __('botHealth') }}" data-online="{{ __('botOnline') }}" data-offline="{{ __('botOffline') }}" data-queue-warning="{{ __('botQueueWarning') }}">{{ __('botHealth') }}: -</span>
                         </div>
                     </div>
                 </div>
@@ -753,6 +753,7 @@
                         <button type="button" class="btn btn-outline-danger" id="deleteBotWebhookBtn">{{ __('botDeleteWebhook') }}</button>
                         <button type="submit" class="btn theme-btn text-white">{{ __('save') }}</button>
                     </div>
+                    <div class="text-muted small">{{ __('botButtonsHint') }}</div>
                 </form>
             </div>
         </div>
