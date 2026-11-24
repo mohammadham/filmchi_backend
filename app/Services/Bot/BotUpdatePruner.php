@@ -14,10 +14,9 @@ use Illuminate\Support\Facades\DB;
  * day for exactly that reason: pruning inside the retry window would let a
  * retried update start a second flow.
  *
- * Two callers share this one implementation - the supervisor tick and
- * `relay:prune-bot-updates`, which is what a cron entry runs on installs that do
- * not keep the supervisor up (every `QUEUE_CONNECTION=sync` install) - so the
- * cutoff and the batching cannot drift apart between them.
+ * `relay:prune-bot-updates` is the only caller: it runs from the scheduler's
+ * hourly entry (see App\Console\Kernel), so an install with no supervisor still
+ * prunes, and the cutoff and the batching live in this one place.
  */
 class BotUpdatePruner
 {

@@ -24,7 +24,13 @@ class Kernel extends ConsoleKernel
      */
     protected function schedule(Schedule $schedule)
     {
-        // $schedule->command('inspire')->hourly();
+        // bot_updates only dedupes retried deliveries, and it must not depend on
+        // a supervisor being up: a QUEUE_CONNECTION=sync install never starts
+        // one, which left the table growing forever. Hourly stays well inside
+        // the 24-hour retry window the rows protect.
+        $schedule->command('relay:prune-bot-updates')
+            ->hourly()
+            ->withoutOverlapping();
     }
 
     /**

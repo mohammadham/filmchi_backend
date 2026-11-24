@@ -8,14 +8,13 @@ use Illuminate\Support\Facades\Log;
 use Throwable;
 
 /**
- * Prune `bot_updates` from cron.
+ * Prune `bot_updates`.
  *
- * The supervisor prunes on its own tick, but an install that runs
- * `QUEUE_CONNECTION=sync` has no supervisor at all, so its dedup table would grow
- * forever. This command runs the same BotUpdatePruner, so both paths delete
- * exactly the rows Telegram can no longer retry.
- *
- *   * * * * * cd /path/to/flixy && php artisan relay:prune-bot-updates
+ * The prune used to ride on the supervisor's tick, but an install on
+ * `QUEUE_CONNECTION=sync` has no supervisor at all, so its dedup table grew
+ * forever. This is the only prune path now and it runs from the scheduler (see
+ * App\Console\Kernel::schedule), so it needs neither a supervisor nor a cron
+ * line of its own per install.
  */
 class RelayPruneBotUpdates extends Command
 {
@@ -34,7 +33,10 @@ class RelayPruneBotUpdates extends Command
         } catch (Throwable $e) {
             // A cron job has nobody watching its output: leave the reason behind
             // so a failing prune is visible in the log too.
-            Log::warning('bot_updates prune failed', ['message' => $e->getMessage()]);
+            Log::warning('bot_updates prune failed', [
+                'message' => $e->getMessage(),
+                'cutoff' => $cutoff->toIso8601String(),
+            ]);
             $this->error('prune failed: ' . $e->getMessage());
 
             return self::FAILURE;

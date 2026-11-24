@@ -3,7 +3,6 @@
 namespace App\Console\Commands;
 
 use App\Jobs\ImportBotFileJob;
-use App\Services\Bot\BotUpdatePruner;
 use App\Services\Relay\DiskBudget;
 use App\Services\Relay\IngestPartSweeper;
 use App\Services\Relay\RelaySettings;
@@ -61,9 +60,6 @@ class RelayQueueSupervisor extends Command
     /** @var int */
     protected $lastBotRequeueAt = 0;
 
-    /** @var int last time bot_updates was pruned (unix seconds) */
-    protected $lastBotPruneAt = 0;
-
     public function handle(WorkerRegistry $workers): int
     {
         $this->installSignalHandlers();
@@ -102,7 +98,6 @@ class RelayQueueSupervisor extends Command
 
             $this->sweepDeferredParts();
             $this->requeueStaleBotImports();
-            $this->pruneBotUpdates();
 
             $this->heartbeat();
 
@@ -258,36 +253,6 @@ class RelayQueueSupervisor extends Command
         // (tests, and any embedder that reconciles without a terminal).
         if ($stale->isNotEmpty() && $this->output !== null) {
             $this->info(sprintf('requeued %d stale bot import(s)', $stale->count()));
-        }
-    }
-
-    /**
-     * Drop dedup rows Telegram can no longer retry, on this loop's interval.
-     *
-     * The schedule is the supervisor's (it ticks while the pool is up); the
-     * cutoff and the batching live in BotUpdatePruner, which
-     * `relay:prune-bot-updates` runs too, for installs with no supervisor.
-     */
-    protected function pruneBotUpdates(): void
-    {
-        $every = (int) config('media_relay.bot.prune_seconds', 3600);
-
-        if ($every <= 0 || time() - $this->lastBotPruneAt < $every) {
-            return;
-        }
-
-        $this->lastBotPruneAt = time();
-
-        try {
-            $deleted = (new BotUpdatePruner())->prune();
-        } catch (Throwable $e) {
-            // A transient DB hiccup must not stop the pool; the next interval
-            // retries with the same cutoff.
-            return;
-        }
-
-        if ($deleted > 0 && $this->output !== null) {
-            $this->info(sprintf('pruned %d old bot update(s)', $deleted));
         }
     }
 

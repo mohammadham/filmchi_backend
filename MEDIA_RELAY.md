@@ -161,21 +161,25 @@ RELAY_BOT_ALLOWED_IDS=1111111,2222222    # numeric Telegram user ids, not userna
 RELAY_BOT_STORAGE_CHAT=@store            # channel the bot copies documents into
 RELAY_BOT_CHANNEL_ID=7                   # Telegram Drive channel-registry id (manifest fallback)
 RELAY_BOT_QUALITY=1080                   # default label; each file is asked anyway
-RELAY_BOT_DAILY_LIMIT=20                 # 0 = unlimited
+RELAY_BOT_DAILY_LIMIT=20                 # documents per user per day; 0 = unlimited
 RELAY_BOT_MAX_SIZE_MB=2048               # per-file ceiling; 0 = none
+RELAY_BOT_COPY_TIMEOUT=60                # seconds for the server-side copyMessage
+RELAY_BOT_REPLY_TIMEOUT=5                # seconds a webhook reply may take
 RELAY_BOT_QUEUE=bot                      # queue name; the supervisor consumes this one
 RELAY_BOT_CONCURRENCY=1                  # clamped to 1..2 by the supervisor
+RELAY_BOT_STALE_SECONDS=600              # an untouched submission is re-queued after this
+RELAY_BOT_REQUEUE_SECONDS=300            # ...but not more often than this
+RELAY_BOT_UPDATE_RETENTION_DAYS=2        # dedup rows are pruned after this (min 1 day)
 ```
 
-Optional: `RELAY_BOT_COPY_TIMEOUT` (60), `RELAY_BOT_REPLY_TIMEOUT` (5),
-`RELAY_BOT_STALE_SECONDS` (600), `RELAY_BOT_REQUEUE_SECONDS` (300),
-`RELAY_BOT_UPDATE_RETENTION_DAYS` (2), `RELAY_BOT_PRUNE_SECONDS` (3600).
-The dedup table is pruned by the supervisor: `bot_updates` rows older than the
-retention (`received_at`, indexed) are deleted hourly. Retention is clamped to at
+The dedup table is pruned by the scheduler: `relay:prune-bot-updates` runs
+hourly from `App\Console\Kernel::schedule` (never from the supervisor, which a
+`QUEUE_CONNECTION=sync` install does not have) and deletes `bot_updates` rows
+older than the retention (`received_at`, indexed). Retention is clamped to at
 least one day, so it always outlives Telegram's 24-hour retry window and a
-retried delivery can never start a second flow. The same
-fields are editable on the settings page; a blank token/secret field keeps the
-stored value, and the panel never returns either secret.
+retried delivery can never start a second flow. These values are
+also editable on the settings page; a blank token/secret field keeps the stored
+value, and the panel never returns either secret.
 
 **3. Webhook.** Use **Set webhook** on the bot card (it calls the Bot API for
 you), or:
@@ -288,13 +292,13 @@ The production `.env` uses `QUEUE_CONNECTION=sync`, so crossing the threshold on
 */5 * * * * docker exec flixy php /app/artisan relay:promote --limit=20 >> /var/log/flixy-relay-promote.log 2>&1
 ```
 
-The same install has no supervisor, so nothing would prune the `bot_updates`
-dedup table. Run the shared pruner from cron too (the supervisor runs the very
-same `BotUpdatePruner` on its own tick, so both paths delete exactly the rows
-Telegram can no longer retry):
+The same install has no supervisor, so the `bot_updates` prune does not depend
+on one: `relay:prune-bot-updates` is scheduled hourly in
+`App\Console\Kernel::schedule`. Only the standard scheduler cron is needed, and
+it runs the prune (and any later schedule entry) with it:
 
 ```cron
-17 * * * * docker exec flixy php /app/artisan relay:prune-bot-updates >> /var/log/flixy-relay-prune.log 2>&1
+* * * * * docker exec flixy php /app/artisan schedule:run >> /var/log/flixy-schedule.log 2>&1
 ```
 
 ### Deployment notes
