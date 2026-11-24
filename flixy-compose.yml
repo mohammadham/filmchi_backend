@@ -28,6 +28,32 @@ services:
       - 1panel-network
       - tdrive_default
 
+  # Laravel's scheduler: nothing else calls `relay:prune-bot-updates`, so
+  # without this container the bot_updates dedup table grows forever on an
+  # install that never starts a supervisor (QUEUE_CONNECTION=sync).
+  scheduler:
+    image: flixy:local
+    container_name: flixy-scheduler
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+    command:
+      - php
+      - /app/artisan
+      - schedule:work
+    volumes:
+      - ./storage/app:/app/storage/app
+      - ./storage/logs:/app/storage/logs
+    depends_on:
+      - flixy
+    networks:
+      - default
+      - 1panel-network
+      - tdrive_default
+
   worker:
     image: flixy:local
     container_name: flixy-worker
