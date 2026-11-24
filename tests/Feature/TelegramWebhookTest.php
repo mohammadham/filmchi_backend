@@ -693,7 +693,7 @@ class TelegramWebhookTest extends TestCase
         Http::assertNotSent(fn ($request) => str_contains((string) $request['text'], 'لغو شد'));
     }
 
-    public function test_a_photo_or_a_video_is_told_to_arrive_as_a_document(): void
+    public function test_media_telegram_sends_without_a_file_name_is_told_to_arrive_as_a_document(): void
     {
         Queue::fake();
         Http::fake(['api.telegram.org/*' => Http::response([
@@ -701,14 +701,22 @@ class TelegramWebhookTest extends TestCase
             'result' => ['message_id' => 9],
         ])]);
 
-        $this->postUpdate($this->mediaUpdate(100, ['photo' => [
-            ['file_id' => 'p', 'file_unique_id' => 'pq', 'width' => 90, 'height' => 90],
-        ]]))->assertOk();
-        $this->postUpdate($this->mediaUpdate(101, ['video' => [
-            'file_id' => 'v', 'file_unique_id' => 'vq', 'duration' => 3,
-        ]]))->assertOk();
+        $media = [
+            'photo' => [['file_id' => 'p', 'file_unique_id' => 'pq', 'width' => 90, 'height' => 90]],
+            'video' => ['file_id' => 'v', 'file_unique_id' => 'vq', 'duration' => 3],
+            'audio' => ['file_id' => 'a', 'file_unique_id' => 'aq', 'duration' => 30],
+            'voice' => ['file_id' => 'vo', 'file_unique_id' => 'voq', 'duration' => 4],
+            'sticker' => ['file_id' => 's', 'file_unique_id' => 'sq', 'width' => 512, 'height' => 512],
+        ];
 
-        Http::assertSentCount(2);
+        $updateId = 100;
+
+        foreach ($media as $kind => $value) {
+            $this->postUpdate($this->mediaUpdate($updateId++, [$kind => $value]))->assertOk();
+        }
+
+        // one answer per upload, all pointing at Document
+        Http::assertSentCount(count($media));
         Http::assertSent(fn ($request) => str_ends_with($request->url(), '/sendMessage')
             && (int) $request['chat_id'] === 111
             && str_contains((string) $request['text'], 'Document'));

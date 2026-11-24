@@ -132,13 +132,14 @@ class TelegramWebhookController extends Controller
             return;
         }
 
-        // Telegram stores a photo, a video, a GIF or a round video compressed
-        // and without a file name, so none of them can be imported as a
-        // document. Say that instead of leaving the chat silent.
-        if ($this->isCompressedMedia($message)) {
+        // Telegram delivers a photo, a video, a GIF, a round video, audio, a
+        // voice note or a sticker without a file name (and often recompressed),
+        // so none of them can be imported. Say that instead of leaving the chat
+        // silent.
+        if ($this->isMediaWithoutFileName($message)) {
             $this->bot->trySendMessage(
                 (int) ($message['chat']['id'] ?? 0),
-                '📄 فایل را به‌صورت Document (Send as file) بفرست تا ذخیره شود؛ عکس و ویدیو فشرده‌اند.'
+                '📄 فایل را به‌صورت Document (Send as file) بفرست تا ذخیره شود؛ عکس، ویدیو، صدا، ویس، استیکر و گیف نام فایل ندارند.'
             );
 
             return;
@@ -152,9 +153,9 @@ class TelegramWebhookController extends Controller
      *
      * @param  array  $message  message
      */
-    protected function isCompressedMedia(array $message): bool
+    protected function isMediaWithoutFileName(array $message): bool
     {
-        foreach (['photo', 'video', 'animation', 'video_note'] as $kind) {
+        foreach (['photo', 'video', 'animation', 'video_note', 'audio', 'voice', 'sticker'] as $kind) {
             if (!empty($message[$kind])) {
                 return true;
             }
