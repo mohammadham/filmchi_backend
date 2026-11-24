@@ -4,7 +4,11 @@ namespace Tests\Feature;
 
 use App\GlobalSettings;
 use App\Http\Controllers\SettingController;
+use App\Services\Relay\RelaySettings;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
+use Tests\Support\RemembersGlobalSettings;
 use Tests\TestCase;
 
 /**
@@ -18,28 +22,18 @@ use Tests\TestCase;
  */
 class RelaySettingsFlagsTest extends TestCase
 {
-    protected ?array $savedSettings = null;
-
-    protected bool $settingsExisted = false;
+    use RemembersGlobalSettings;
 
     protected function setUp(): void
     {
         parent::setUp();
 
-        $row = GlobalSettings::first();
-        $this->settingsExisted = $row !== null;
-        $this->savedSettings = $row?->getAttributes();
+        $this->rememberGlobalSettings();
     }
 
     protected function tearDown(): void
     {
-        if ($this->settingsExisted && $this->savedSettings !== null) {
-            (GlobalSettings::first() ?: new GlobalSettings())
-                ->forceFill($this->savedSettings)
-                ->save();
-        } elseif (!$this->settingsExisted) {
-            GlobalSettings::query()->delete();
-        }
+        $this->restoreGlobalSettings();
 
         parent::tearDown();
     }
@@ -125,6 +119,95 @@ class RelaySettingsFlagsTest extends TestCase
         $this->assertTrue((bool) $this->settings()->relay_enabled, 'the relay card keeps its switch');
         $this->assertSame('123:stored', $this->settings()->relay_bot_token, 'a blank box keeps the stored token');
         $this->assertSame('stored-secret', $this->settings()->relay_bot_webhook_secret, 'and the stored secret');
+    }
+
+    public function test_the_bot_card_saves_with_blank_text_boxes_and_keeps_the_relay_switch(): void
+    {
+        $this->settings()->forceFill([
+            'relay_enabled' => true,
+            'relay_bot_token' => '123:stored',
+            'relay_bot_storage_chat' => 'saved-chat',
+            'relay_bot_allowed_ids' => '42',
+        ])->save();
+
+        // What the browser's blank boxes become: the global
+        // ConvertEmptyStringsToNull middleware turns '' into null before the
+        // controller sees it. The relay columns are NOT NULL, so this used to
+        // die with "NOT NULL constraint failed:
+        // global_settings.relay_bot_storage_chat" and the card was not saved.
+        $payload = $this->save([
+            'relay_bot_enabled' => '1',
+            'relay_bot_token' => null,
+            'relay_bot_webhook_secret' => null,
+            'relay_bot_allowed_ids' => null,
+            'relay_bot_storage_chat' => null,
+            'relay_bot_quality' => null,
+            'relay_bot_channel_id' => null,
+            'relay_bot_daily_limit' => null,
+            'relay_bot_max_size_mb' => null,
+        ]);
+
+        $this->assertTrue($payload['status'], 'a blank text box must not fail the save');
+
+        $setting = $this->settings();
+        $this->assertSame('', (string) $setting->relay_bot_storage_chat, 'a blank chat is saved empty, not null');
+        $this->assertSame('', (string) $setting->relay_bot_allowed_ids);
+        $this->assertSame('', (string) $setting->relay_bot_quality);
+        $this->assertSame(0, (int) $setting->relay_bot_channel_id);
+        $this->assertTrue((bool) $setting->relay_bot_enabled);
+        $this->assertSame('123:stored', $setting->relay_bot_token, 'a blank secret box keeps the stored token');
+        $this->assertTrue((bool) $setting->relay_enabled, 'the bot card must not touch the relay switch');
+    }
+
+    /**
+     * The live crash was SQLite's "NOT NULL constraint failed:
+     * global_settings.relay_bot_storage_chat", and the install's MySQL is lenient
+     * enough to hide it, so the row is rebuilt on SQLite here: a blank box must
+     * be stored as its empty value on the driver that reported the bug.
+     */
+    public function test_a_blank_text_box_never_reaches_the_not_null_column(): void
+    {
+        config(['database.connections.relay_settings_guard' => [
+            'driver' => 'sqlite',
+            'database' => ':memory:',
+            'prefix' => '',
+        ]]);
+        DB::purge('relay_settings_guard');
+
+        Schema::connection('relay_settings_guard')->create('global_settings', function ($table) {
+            $table->increments('id');
+            $table->boolean('relay_enabled')->default(false);
+            $table->boolean('relay_bot_enabled')->default(false);
+            $table->text('relay_bot_token')->nullable();
+            $table->text('relay_bot_webhook_secret')->nullable();
+            $table->text('relay_bot_allowed_ids')->nullable();
+            $table->string('relay_bot_storage_chat')->default('');
+            $table->unsignedInteger('relay_bot_channel_id')->default(0);
+            $table->string('relay_bot_quality', 16)->default('1080');
+            $table->unsignedInteger('relay_bot_daily_limit')->default(20);
+            $table->unsignedInteger('relay_bot_max_size_mb')->default(2048);
+            $table->timestamps();
+        });
+
+        $setting = new GlobalSettings();
+        $setting->setConnection('relay_settings_guard');
+        $setting->relay_enabled = true;
+        $setting->save();
+
+        // Exactly what the controller calls after ConvertEmptyStringsToNull.
+        RelaySettings::save($setting, [
+            'relay_bot_enabled' => '1',
+            'relay_bot_allowed_ids' => null,
+            'relay_bot_storage_chat' => null,
+            'relay_bot_channel_id' => null,
+        ]);
+
+        $stored = $setting->fresh();
+        $this->assertSame('', $stored->relay_bot_storage_chat);
+        $this->assertSame('', $stored->relay_bot_allowed_ids);
+        $this->assertSame(0, (int) $stored->relay_bot_channel_id);
+        $this->assertTrue((bool) $stored->relay_bot_enabled);
+        $this->assertTrue((bool) $stored->relay_enabled, 'saving the card keeps the relay switch');
     }
 
     public function test_a_blank_secret_box_keeps_the_stored_secret(): void

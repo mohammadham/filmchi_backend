@@ -280,6 +280,15 @@ class RelaySettings
                 continue;
             }
 
+            // ConvertEmptyStringsToNull hands a blank box to us as null, and the
+            // relay columns are NOT NULL: a blank non-secret field means its
+            // empty value, not a missing one, so store what cast() reads from a
+            // blank box instead of letting the insert fail on the null. Secrets
+            // are left alone: they never arrive blank (the card drops them).
+            if ($value === null && !in_array($column, self::SECRET_COLUMNS, true)) {
+                $value = static::cast('', static::$map[$column][1]);
+            }
+
             $setting->{$column} = $value;
         }
 
