@@ -344,6 +344,8 @@ does not run that service has to call the scheduler from cron instead:
 - `flixy-compose.yml` (copied to `docker-compose.yml` on the server by `deploy.yml` before `docker compose up`) bind-mounts `./storage/app` and `./storage/logs`; without them every rebuild wipes uploads and logs.
 - Sessions use Redis (`SESSION_DRIVER=redis`) so panel logins survive redeploys.
 - `deploy.yml` now runs `php artisan migrate --force` and `optimize:clear` after `docker compose up`.
+- Abandoned resumable uploads are swept, not kept forever: the panel writes them to `storage/app/tmp-uploads` (bind-mounted, so on the host disk), and `sweepTmpUploads()` deletes parts older than `RELAY_INGEST_TMP_UPLOAD_HOURS` (default 12) from the supervisor's sweep and from `relay:ingest-sweep`. `maintenance.sh` also removes parts older than two days, which covers a stopped worker.
+- Logs rotate: the `stack` channel writes through `daily` (14 days), because `laravel.log` is written all day and a `find -mtime +14` delete never matches it. If an install pins `LOG_CHANNEL=single`, that file has no ceiling.
 - The `scheduler` service is what actually fires the hourly `relay:prune-bot-updates`: it stays up on its own and needs no host cron. If it is removed, `bot_updates` is never pruned on a `QUEUE_CONNECTION=sync` install. A deploy adds it automatically (`docker compose up -d` reads the new service); an install that is already up only needs:
 
   ```bash

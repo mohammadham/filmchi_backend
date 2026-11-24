@@ -27,6 +27,11 @@ use Throwable;
  * retry that keeps sliding forward without writing is exactly the admission
  * loop that lets dead parts live forever. Being blocked on disk space is not
  * progress either: the source can download again once there is room.
+ *
+ * The panel's resumable upload has the same failure mode in a different folder:
+ * storage/app/tmp-uploads is bind-mounted, no source row owns those parts, and
+ * the only code that deletes one runs when the browser finishes or the request
+ * fails. sweepTmpUploads() closes that hole on age alone.
  */
 class IngestPartSweeper
 {
@@ -35,9 +40,12 @@ class IngestPartSweeper
 
     protected string $dir;
 
-    public function __construct(?string $dir = null)
+    protected string $tmpDir;
+
+    public function __construct(?string $dir = null, ?string $tmpDir = null)
     {
         $this->dir = rtrim($dir ?? storage_path('app/ingest'), '/\\');
+        $this->tmpDir = rtrim($tmpDir ?? storage_path('app/tmp-uploads'), '/\\');
     }
 
     /**
@@ -101,6 +109,44 @@ class IngestPartSweeper
             }
 
             $result['sidecars']++;
+        }
+
+        return $result;
+    }
+
+    /**
+     * Delete resumable-upload parts no browser can still be writing.
+     *
+     * An upload that finished (or failed inside its request) unlinks its part
+     * itself. A tab closed mid-upload leaves the file behind, and since
+     * nothing else knows the id, age is the whole test: a live upload appends
+     * chunks and keeps the mtime current.
+     *
+     * @return array{deleted:int,bytes:int,kept:int}
+     */
+    public function sweepTmpUploads(?int $hours = null, bool $dryRun = false): array
+    {
+        $hours = max(1, $hours ?? (int) config('media_relay.ingest.tmp_upload_hours', 12));
+        $cutoff = time() - $hours * 3600;
+
+        $result = ['deleted' => 0, 'bytes' => 0, 'kept' => 0];
+
+        foreach (glob($this->tmpDir . '/*.part') ?: [] as $part) {
+            $mtime = @filemtime($part);
+
+            if ($mtime === false || $mtime > $cutoff) {
+                $result['kept']++;
+
+                continue;
+            }
+
+            $result['bytes'] += DiskBudget::fileBytes($part);
+
+            if (!$dryRun) {
+                @unlink($part);
+            }
+
+            $result['deleted']++;
         }
 
         return $result;

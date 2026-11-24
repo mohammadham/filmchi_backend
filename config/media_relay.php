@@ -90,6 +90,11 @@ return [
         // so a sweeper removes it once neither the source nor the file has
         // moved for this many hours.
         'stale_part_hours' => (int) env('RELAY_INGEST_STALE_PART_HOURS', 12),
+        // The panel's resumable upload writes its parts outside the ingest dir,
+        // so they are swept on their own clock: a browser that never finishes
+        // leaves a multi-gigabyte file nothing else will ever touch. No source
+        // row owns it, so age is the only signal (a live upload keeps writing).
+        'tmp_upload_hours' => (int) env('RELAY_INGEST_TMP_UPLOAD_HOURS', 12),
         // How often the queue supervisor runs that sweeper. 0 disables it.
         'stale_sweep_seconds' => (int) env('RELAY_INGEST_STALE_SWEEP_SECONDS', 900),
         // Fixed range size for the dynamic chunk queue. Small chunks let a

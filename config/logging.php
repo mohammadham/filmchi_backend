@@ -37,7 +37,10 @@ return [
     'channels' => [
         'stack' => [
             'driver' => 'stack',
-            'channels' => ['single'],
+            // daily, not single: laravel.log is written to all day and can never
+            // match the maintenance cron's "older than 14 days" delete, so a
+            // single channel is a file that grows until the disk is gone.
+            'channels' => ['daily'],
             'ignore_exceptions' => false,
         ],
 

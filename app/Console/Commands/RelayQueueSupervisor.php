@@ -200,16 +200,21 @@ class RelayQueueSupervisor extends Command
 
         try {
             // Resolved from the container so the sweep can be swapped in tests.
-            $result = app(IngestPartSweeper::class)->sweep();
+            $sweeper = app(IngestPartSweeper::class);
+            $result = $sweeper->sweep();
+            // Panel uploads live outside the ingest dir and have no source row:
+            // an abandoned resumable upload is otherwise never deleted.
+            $uploads = $sweeper->sweepTmpUploads();
 
             // A direct instance has no console; the sweep still has to work
             // there (tests, and any embedder that reconciles without a terminal).
-            if (($result['deleted'] > 0 || $result['sidecars'] > 0) && $this->output !== null) {
+            if (($result['deleted'] > 0 || $result['sidecars'] > 0 || $uploads['deleted'] > 0) && $this->output !== null) {
                 $this->info(sprintf(
-                    'swept %d stale ingest part(s), %d MB, %d orphan chunk manifest(s)',
+                    'swept %d stale ingest part(s), %d MB, %d orphan chunk manifest(s), %d abandoned upload part(s)',
                     $result['deleted'],
                     (int) round($result['bytes'] / 1048576),
-                    $result['sidecars']
+                    $result['sidecars'],
+                    $uploads['deleted']
                 ));
             }
         } catch (Throwable $e) {

@@ -25,6 +25,8 @@ class IngestPartSweeperTest extends TestCase
 
     protected string $dir;
 
+    protected string $tmpDir;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -32,21 +34,26 @@ class IngestPartSweeperTest extends TestCase
         $this->createSourceTables();
 
         $this->dir = sys_get_temp_dir() . '/flixy-ingest-sweep-' . uniqid();
+        $this->tmpDir = sys_get_temp_dir() . '/flixy-upload-sweep-' . uniqid();
 
-        if (!is_dir($this->dir)) {
-            @mkdir($this->dir, 0777, true);
+        foreach ([$this->dir, $this->tmpDir] as $dir) {
+            if (!is_dir($dir)) {
+                @mkdir($dir, 0777, true);
+            }
         }
     }
 
     protected function tearDown(): void
     {
-        foreach (glob($this->dir . '/*') ?: [] as $file) {
-            if (is_file($file)) {
-                @unlink($file);
+        foreach ([$this->dir, $this->tmpDir] as $dir) {
+            foreach (glob($dir . '/*') ?: [] as $file) {
+                if (is_file($file)) {
+                    @unlink($file);
+                }
             }
-        }
 
-        @rmdir($this->dir);
+            @rmdir($dir);
+        }
 
         foreach (['episode_sources', 'content_sources'] as $table) {
             try {
@@ -89,7 +96,25 @@ class IngestPartSweeperTest extends TestCase
 
     protected function sweep(int $staleHours = 12, bool $dryRun = false): array
     {
-        return (new IngestPartSweeper($this->dir))->sweep($staleHours, $dryRun);
+        return (new IngestPartSweeper($this->dir, $this->tmpDir))->sweep($staleHours, $dryRun);
+    }
+
+    /** An abandoned panel upload part; no source row owns these. */
+    protected function uploadPart(int $bytes = 4096, ?int $ageSeconds = null): string
+    {
+        $path = $this->tmpDir . '/' . bin2hex(random_bytes(16)) . '.part';
+        file_put_contents($path, str_repeat('x', $bytes));
+
+        if ($ageSeconds !== null) {
+            @touch($path, time() - $ageSeconds);
+        }
+
+        return $path;
+    }
+
+    protected function sweepUploads(int $staleHours = 12, bool $dryRun = false): array
+    {
+        return (new IngestPartSweeper($this->dir, $this->tmpDir))->sweepTmpUploads($staleHours, $dryRun);
     }
 
     public function test_an_abandoned_retrying_part_is_removed_and_its_bytes_reported(): void
@@ -205,6 +230,41 @@ class IngestPartSweeperTest extends TestCase
 
         $this->assertSame(1, $result['deleted']);
         $this->assertGreaterThan(0, $result['bytes']);
+        $this->assertFileExists($part);
+    }
+
+    public function test_an_abandoned_panel_upload_part_is_removed_and_its_bytes_reported(): void
+    {
+        // No source row can ever resume this: the browser that owned the id is
+        // gone, so an old file is dead weight on the same disk as MySQL.
+        $part = $this->uploadPart(4096, 24 * 3600);
+        $expected = DiskBudget::fileBytes($part);
+
+        $result = $this->sweepUploads(12);
+
+        $this->assertSame(1, $result['deleted']);
+        $this->assertSame($expected, $result['bytes']);
+        $this->assertFileDoesNotExist($part);
+    }
+
+    public function test_a_panel_upload_still_receiving_chunks_is_kept(): void
+    {
+        $part = $this->uploadPart(4096, 60);
+
+        $result = $this->sweepUploads(12);
+
+        $this->assertSame(0, $result['deleted']);
+        $this->assertSame(1, $result['kept']);
+        $this->assertFileExists($part);
+    }
+
+    public function test_the_upload_sweep_honours_a_dry_run(): void
+    {
+        $part = $this->uploadPart(4096, 24 * 3600);
+
+        $result = $this->sweepUploads(12, true);
+
+        $this->assertSame(1, $result['deleted']);
         $this->assertFileExists($part);
     }
 

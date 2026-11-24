@@ -28,14 +28,19 @@ class SweepIngestParts extends Command
         $dryRun = (bool) $this->option('dry-run');
         $staleHours = $this->option('stale-hours') !== null ? (int) $this->option('stale-hours') : null;
 
-        $result = (new IngestPartSweeper())->sweep($staleHours, $dryRun);
+        $sweeper = new IngestPartSweeper();
+        $result = $sweeper->sweep($staleHours, $dryRun);
+        // Abandoned resumable uploads live in their own folder and have no
+        // source row, so age is the only thing that can free them.
+        $uploads = $sweeper->sweepTmpUploads($staleHours, $dryRun);
 
         $this->info(sprintf(
-            '%s %d part file(s), %d MB, plus %d orphan chunk manifest(s); %d kept',
+            '%s %d part file(s), %d MB, plus %d orphan chunk manifest(s) and %d abandoned upload part(s); %d ingest part(s) kept',
             $dryRun ? 'would delete' : 'deleted',
             $result['deleted'],
             (int) round($result['bytes'] / 1048576),
             $result['sidecars'],
+            $uploads['deleted'],
             $result['kept']
         ));
 
