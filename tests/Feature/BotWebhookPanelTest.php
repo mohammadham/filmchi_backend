@@ -4,31 +4,30 @@ namespace Tests\Feature;
 
 use App\GlobalSettings;
 use App\Http\Controllers\SettingController;
+use App\Services\Bot\TelegramBotClient;
+use GuzzleHttp\Promise\PromiseInterface;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
+use Tests\Support\RemembersGlobalSettings;
 use Tests\TestCase;
 
 /**
- * The bot card's three buttons talk to the Bot API, so the only thing worth
- * pinning is the contract: getMe/getWebhookInfo decide the badge, and
- * setWebhook must register the same secret Telegram then sends back as a
- * header. The tests call the controller methods directly, exactly like the
- * card's fetch calls, because the login middleware is not what is under test.
+ * The card has two kinds of button: Set/Remove webhook write the card and only
+ * then talk to the Bot API, while Check health only reads what is stored
+ * (getMe/getWebhookInfo decide the badge). setWebhook must register the same
+ * secret Telegram then sends back as a header. The tests call the controller
+ * methods directly, exactly like the card's fetch calls, because the login
+ * middleware is not what is under test.
  */
 class BotWebhookPanelTest extends TestCase
 {
-    /** The install's own settings row, replayed after each test. */
-    protected ?array $savedSettings = null;
-
-    protected bool $settingsExisted = false;
+    use RemembersGlobalSettings;
 
     protected function setUp(): void
     {
         parent::setUp();
 
-        $row = GlobalSettings::first();
-        $this->settingsExisted = $row !== null;
-        $this->savedSettings = $row?->getAttributes();
+        $this->rememberGlobalSettings();
 
         config([
             'media_relay.bot.enabled' => true,
@@ -38,19 +37,9 @@ class BotWebhookPanelTest extends TestCase
         ]);
     }
 
-    /**
-     * The card now writes, and this suite runs on the install's own database:
-     * put the row back exactly as it was, or remove the one the test created.
-     */
     protected function tearDown(): void
     {
-        if ($this->settingsExisted && $this->savedSettings !== null) {
-            (GlobalSettings::first() ?: new GlobalSettings())
-                ->forceFill($this->savedSettings)
-                ->save();
-        } elseif (!$this->settingsExisted) {
-            GlobalSettings::query()->delete();
-        }
+        $this->restoreGlobalSettings();
 
         parent::tearDown();
     }
@@ -86,6 +75,18 @@ class BotWebhookPanelTest extends TestCase
         ]);
     }
 
+    /** getMe answers, getWebhookInfo returns whatever the test hands over. */
+    protected function fakeBotApiAnswering(PromiseInterface $webhookInfo): void
+    {
+        Http::fake([
+            'api.telegram.org/*/getMe' => Http::response([
+                'ok' => true,
+                'result' => ['id' => 1, 'is_bot' => true, 'username' => 'flixy_bot'],
+            ]),
+            'api.telegram.org/*/getWebhookInfo' => $webhookInfo,
+        ]);
+    }
+
     public function test_health_compares_the_registered_webhook_with_the_expected_url(): void
     {
         $this->fakeBotApi();
@@ -103,6 +104,29 @@ class BotWebhookPanelTest extends TestCase
         $this->assertStringNotContainsString('hook-secret', $payload['webhook_url']);
         $this->assertStringNotContainsString('hook-secret', (string) $payload['expected_webhook_url']);
         $this->assertStringNotContainsString('123:abc', json_encode($payload));
+    }
+
+    public function test_health_reads_the_stored_card_and_ignores_unsaved_edits(): void
+    {
+        // Read-only, unlike Set/Remove webhook: the boxes do not count until
+        // the card is saved, so a badge only ever describes what is served.
+        $this->fakeBotApi();
+
+        $payload = $this->card('botHealth', [
+            'relay_bot_token' => '555:typed',
+            'relay_bot_webhook_secret' => 'typed-secret',
+        ]);
+
+        $this->assertTrue($payload['ok']);
+        $this->assertTrue($payload['webhook_ok'], 'the stored secret is still the one the route serves');
+
+        Http::assertSent(fn ($request) => str_contains($request->url(), '/bot123:abc/getMe'), 'the stored token is the one checked');
+        Http::assertNotSent(fn ($request) => str_contains($request->url(), 'typed'));
+
+        $setting = GlobalSettings::first();
+
+        $this->assertNotSame('555:typed', $setting?->relay_bot_token, 'health must not write the card');
+        $this->assertNotSame('typed-secret', $setting?->relay_bot_webhook_secret);
     }
 
     public function test_health_flags_a_webhook_pointing_somewhere_else(): void
@@ -146,6 +170,47 @@ class BotWebhookPanelTest extends TestCase
         $this->assertStringContainsString('***', (string) $payload['expected_webhook_url']);
     }
 
+    public function test_health_puts_a_failed_webhook_lookup_in_last_error(): void
+    {
+        // getMe is fine, so the bot is online; only getWebhookInfo failed and
+        // that is the one thing the card can report in last_error.
+        $this->fakeBotApiAnswering(Http::response([
+            'ok' => false,
+            'description' => 'Internal Server Error',
+        ], 500));
+
+        $payload = $this->card('botHealth');
+
+        $this->assertTrue($payload['ok'], 'a failed lookup is not an offline bot');
+        $this->assertFalse($payload['webhook_ok']);
+        $this->assertSame('', $payload['webhook_url'], 'nothing was read, so nothing is claimed');
+        $this->assertSame(0, $payload['pending_updates']);
+        $this->assertStringContainsString('getWebhookInfo', $payload['last_error']);
+        $this->assertStringContainsString('HTTP 500', $payload['last_error']);
+        $this->assertStringContainsString('Internal Server Error', $payload['last_error']);
+        $this->assertStringNotContainsString('123:abc', $payload['last_error'], 'the token lives in the URL, never in a message');
+    }
+
+    public function test_health_surfaces_telegrams_own_webhook_delivery_error(): void
+    {
+        // last_error_message is Telegram reporting a failed delivery to a
+        // correctly registered URL: the URL still matches, the error is shown.
+        $this->fakeBotApiAnswering(Http::response([
+            'ok' => true,
+            'result' => [
+                'url' => $this->expectedUrl(),
+                'pending_update_count' => 2,
+                'last_error_message' => 'Wrong response from the webhook: 500 Internal Server Error',
+            ],
+        ]));
+
+        $payload = $this->card('botHealth');
+
+        $this->assertTrue($payload['webhook_ok']);
+        $this->assertSame(2, $payload['pending_updates']);
+        $this->assertSame('Wrong response from the webhook: 500 Internal Server Error', $payload['last_error']);
+    }
+
     public function test_health_without_a_token_never_calls_telegram(): void
     {
         Http::fake();
@@ -168,7 +233,7 @@ class BotWebhookPanelTest extends TestCase
 
     public function test_set_webhook_registers_the_secret_as_path_and_header(): void
     {
-        Http::fake(['api.telegram.org/*/setWebhook' => Http::response(['ok' => true, 'result' => true])]);
+        Http::fake(['api.telegram.org/*' => Http::response(['ok' => true, 'result' => true])]);
 
         $payload = $this->card('setBotWebhook');
 
@@ -186,7 +251,7 @@ class BotWebhookPanelTest extends TestCase
 
     public function test_set_webhook_saves_the_card_before_registering(): void
     {
-        Http::fake(['api.telegram.org/*/setWebhook' => Http::response(['ok' => true, 'result' => true])]);
+        Http::fake(['api.telegram.org/*' => Http::response(['ok' => true, 'result' => true])]);
 
         config([
             'media_relay.bot.token' => '',
@@ -215,13 +280,53 @@ class BotWebhookPanelTest extends TestCase
 
     public function test_set_webhook_keeps_the_stored_secret_when_the_box_is_empty(): void
     {
-        Http::fake(['api.telegram.org/*/setWebhook' => Http::response(['ok' => true, 'result' => true])]);
+        Http::fake(['api.telegram.org/*' => Http::response(['ok' => true, 'result' => true])]);
 
         $payload = $this->card('setBotWebhook', ['relay_bot_webhook_secret' => '']);
 
         $this->assertTrue($payload['status'], 'an empty box keeps the saved value, exactly like the Save button');
-        Http::assertSent(fn ($request) => $request['secret_token'] === 'hook-secret'
+        Http::assertSent(fn ($request) => str_ends_with($request->url(), '/setWebhook')
+            && $request['secret_token'] === 'hook-secret'
             && $request['url'] === $this->expectedUrl());
+    }
+
+    public function test_set_webhook_registers_the_start_ping_help_cancel_menu(): void
+    {
+        Http::fake(['api.telegram.org/*' => Http::response(['ok' => true, 'result' => true])]);
+
+        $payload = $this->card('setBotWebhook');
+
+        $this->assertTrue($payload['status']);
+
+        // The "/" menu comes from Telegram, not from this install: it has to be
+        // pushed with the webhook, in the JSON field the Bot API reads.
+        Http::assertSent(function ($request) {
+            if (!str_ends_with($request->url(), '/setMyCommands')) {
+                return false;
+            }
+
+            $commands = json_decode((string) $request['commands'], true);
+
+            return is_array($commands)
+                && array_column($commands, 'command') === ['start', 'ping', 'help', 'cancel']
+                && array_column($commands, 'description') === array_column(TelegramBotClient::COMMANDS, 'description');
+        });
+    }
+
+    public function test_a_refused_command_menu_is_reported_instead_of_passing_silently(): void
+    {
+        Http::fake([
+            'api.telegram.org/*/setWebhook' => Http::response(['ok' => true, 'result' => true]),
+            'api.telegram.org/*/setMyCommands' => Http::response([
+                'ok' => false,
+                'description' => 'Bad Request: commands too many',
+            ], 400),
+        ]);
+
+        $payload = $this->card('setBotWebhook');
+
+        $this->assertFalse($payload['status']);
+        $this->assertStringContainsString('setMyCommands', $payload['message']);
     }
 
     public function test_delete_webhook_saves_the_card_first(): void
@@ -276,14 +381,19 @@ class BotWebhookPanelTest extends TestCase
         $this->assertStringNotContainsString('123:abc', $payload['message'], 'the token lives in the URL, never in an error');
     }
 
-    public function test_delete_webhook_removes_it(): void
+    public function test_delete_webhook_reports_telegram_refusals(): void
     {
-        Http::fake(['api.telegram.org/*/deleteWebhook' => Http::response(['ok' => true, 'result' => true])]);
+        Http::fake(['api.telegram.org/*/deleteWebhook' => Http::response([
+            'ok' => false,
+            'description' => 'Unauthorized',
+        ], 401)]);
 
         $payload = $this->card('deleteBotWebhook');
 
-        $this->assertTrue($payload['status']);
-        Http::assertSent(fn ($request) => str_contains($request->url(), '/deleteWebhook'));
+        $this->assertFalse($payload['status']);
+        $this->assertStringContainsString('HTTP 401', $payload['message']);
+        $this->assertStringContainsString('Unauthorized', $payload['message']);
+        $this->assertStringNotContainsString('123:abc', $payload['message'], 'the token lives in the URL, never in an error');
     }
 
     public function test_neither_button_returns_the_webhook_secret_or_the_token(): void
@@ -301,6 +411,7 @@ class BotWebhookPanelTest extends TestCase
                 'result' => ['url' => $this->expectedUrl(), 'pending_update_count' => 0],
             ]),
             'api.telegram.org/*/setWebhook' => Http::response(['ok' => true, 'result' => true]),
+            'api.telegram.org/*/setMyCommands' => Http::response(['ok' => true, 'result' => true]),
         ]);
 
         foreach (['botHealth', 'setBotWebhook'] as $button) {

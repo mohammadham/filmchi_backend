@@ -194,8 +194,23 @@ curl -X POST "https://api.telegram.org/bot$RELAY_BOT_TOKEN/setWebhook" \
 A wrong path segment is `404` and a wrong header `403`, both without writing a
 row. `/ping` answers `pong`, `/start` answers a welcome and `/help` lists the
 commands plus the two import steps, all without touching the queue, so the
-endpoint can be checked before any worker exists. **Delete
-webhook** removes it again.
+endpoint can be checked before any worker exists.
+
+The four buttons on the bot card have different contracts, so the badges never
+mislead:
+
+- **Save** persists the card; the badges and the checks read what was saved.
+- **Set webhook** saves the card first, then registers that secret as both the
+  webhook path and the `X-Telegram-Bot-Api-Secret-Token` header, so Telegram and
+  the webhook route can never hold different values. **Remove webhook** follows
+  the same order before deleting it.
+- **Check health** is read-only: it never writes, and it reports the stored
+  card - `getMe` for online/offline, `getWebhookInfo` for the registered URL and
+  pending updates, `last_error` for a failed lookup or a delivery error Telegram
+  reports. Edits still sitting in the boxes are ignored, so save the card first
+  if you changed the token or the secret.
+- A blank token or secret box keeps the stored value; the panel never returns
+  either secret, only whether one is set.
 
 **4. Queue lane.** `ImportBotFileJob` dispatches on `RELAY_BOT_QUEUE`, and
 `relay:queue-supervisor` reconciles a worker for that lane next to

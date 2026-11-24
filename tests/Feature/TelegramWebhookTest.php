@@ -199,46 +199,87 @@ class TelegramWebhookTest extends TestCase
         Queue::assertPushed(ImportBotFileJob::class, 1);
     }
 
-    public function test_a_sync_queue_warns_once_an_hour_that_the_import_runs_inline(): void
+    public function test_the_inline_warning_is_once_an_hour_and_only_on_a_workerless_queue(): void
     {
         Queue::fake();
         Http::fake();
-        config(['queue.default' => 'sync']);
-
         Log::spy();
 
-        $inline = function (string $message, array $context = []): bool {
-            return str_contains($message, 'runs inline') && ($context['connection'] ?? '') === 'sync';
-        };
-
-        // two uploads in the same window: the same statement, written once
-        $this->importDocument(80);
-        $this->importDocument(83);
-        Queue::assertPushed(ImportBotFileJob::class, 2);
-        Log::shouldHaveReceived('warning')->withArgs($inline)->once();
-
-        // the window passes: the next import says it again
-        $this->travel(61)->minutes();
-        $this->importDocument(86);
-        Log::shouldHaveReceived('warning')->withArgs($inline)->twice();
-    }
-
-    public function test_a_real_queue_does_not_raise_the_inline_warning(): void
-    {
-        Queue::fake();
-        Http::fake();
         config(['queue.default' => 'redis']);
-
-        Log::spy();
-
         $this->importDocument(70);
 
-        Queue::assertPushed(ImportBotFileJob::class, 1);
+        config(['queue.default' => 'sync']);
+        $this->importDocument(73);
+        $this->importDocument(76); // same hour: the statement is already written
 
-        // Other warnings (a failed reply, say) are not what this test is about.
-        Log::shouldNotHaveReceived('warning', function (string $message): bool {
-            return str_contains($message, 'runs inline');
-        });
+        config(['queue.default' => 'redis']);
+        $this->importDocument(79);
+
+        $this->travel(61)->minutes();
+        config(['queue.default' => 'sync']);
+        $this->importDocument(82);
+
+        // Exactly the two sync imports an hour apart, so neither the redis
+        // uploads nor the second sync one in the same hour logged it.
+        Log::shouldHaveReceived('warning')
+            ->withArgs(fn (string $message): bool => str_contains($message, 'runs inline'))
+            ->twice();
+    }
+
+    public function test_a_null_queue_warns_that_the_import_is_dropped(): void
+    {
+        Queue::fake();
+        Http::fake();
+        Log::spy();
+        config(['queue.default' => 'null']);
+
+        $this->importDocument(140);
+
+        // null drops the job without a trace, so it gets the same warning sync
+        // does - and says the import is dropped, not merely inline.
+        Log::shouldHaveReceived('warning')
+            ->withArgs(fn (string $message): bool => str_contains($message, 'is dropped')
+                && str_contains($message, 'queue.default is null'))
+            ->once();
+    }
+
+    public function test_a_dead_reply_is_logged_once_an_hour_per_chat(): void
+    {
+        Http::fake(['api.telegram.org/*' => Http::response([
+            'ok' => false,
+            'description' => 'Forbidden: bot was blocked by the user',
+        ], 403)]);
+        Log::spy();
+
+        $dead = fn (string $message): bool => $message === 'bot message failed';
+
+        // A blocked bot fails every answer: two pings, one line.
+        $this->postUpdate($this->update(120, 111, 'private', '/ping'))->assertOk();
+        $this->postUpdate($this->update(121, 111, 'private', '/ping'))->assertOk();
+        Log::shouldHaveReceived('warning')->withArgs($dead)->once();
+
+        $this->travel(61)->minutes();
+        $this->postUpdate($this->update(122, 111, 'private', '/ping'))->assertOk();
+        Log::shouldHaveReceived('warning')->withArgs($dead)->twice();
+    }
+
+    public function test_a_refused_file_is_logged_once_an_hour(): void
+    {
+        Queue::fake();
+        Http::fake();
+        config(['media_relay.bot.max_size_mb' => 1]);
+        Log::spy();
+
+        $big = ['file_size' => 5 * 1024 * 1024];
+        $refused = fn (string $message): bool => $message === 'bot document over the size cap';
+
+        $this->postUpdate($this->documentUpdate(130, 111, $big))->assertOk();
+        $this->postUpdate($this->documentUpdate(131, 111, $big))->assertOk();
+        Log::shouldHaveReceived('info')->withArgs($refused)->once();
+
+        $this->travel(61)->minutes();
+        $this->postUpdate($this->documentUpdate(132, 111, $big))->assertOk();
+        Log::shouldHaveReceived('info')->withArgs($refused)->twice();
     }
 
     public function test_an_outsider_gets_no_session_even_with_a_document(): void

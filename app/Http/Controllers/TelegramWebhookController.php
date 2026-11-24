@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Jobs\ImportBotFileJob;
 use App\RelayFile;
 use App\RelayLink;
+use App\Services\Bot\BotImportQueue;
 use App\Services\Bot\TelegramBotClient;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -76,7 +77,9 @@ class TelegramWebhookController extends Controller
         $from = $update['message']['from'] ?? $update['callback_query']['from'] ?? null;
 
         if (!$this->allowed($from, $message)) {
-            Log::info('bot update ignored', [
+            // A bot added to a group sees every message there, so the line is
+            // cooled down per chat: the first ignored update of the hour says it.
+            $this->infoOnceAnHour('ignored:' . (string) ($message['chat']['id'] ?? ''), 'bot update ignored', [
                 'update_id' => $updateId,
                 'user' => (string) ($from['id'] ?? ''),
                 'chat' => (string) ($message['chat']['type'] ?? ''),
@@ -197,7 +200,7 @@ class TelegramWebhookController extends Controller
         $capMb = (int) config('media_relay.bot.max_size_mb', 0);
 
         if ($capMb > 0 && $sizeBytes > $capMb * 1024 * 1024) {
-            Log::info('bot document over the size cap', [
+            $this->infoOnceAnHour('size-cap:' . $userId, 'bot document over the size cap', [
                 'user' => $userId,
                 'size' => $sizeBytes,
                 'cap_mb' => $capMb,
@@ -368,7 +371,7 @@ class TelegramWebhookController extends Controller
     protected function finishSubmission(array $payload, int $userId, int $chatId, int $updateId, bool $isSeries): void
     {
         if ($this->overDailyLimit($userId)) {
-            Log::info('bot daily limit reached', ['update_id' => $updateId, 'user' => $userId]);
+            $this->infoOnceAnHour('daily-limit:' . $userId, 'bot daily limit reached', ['update_id' => $updateId, 'user' => $userId]);
             $this->bot->trySendMessage($chatId, '⏳ سقف ورود روزانهٔ شما پر شده است؛ فردا دوباره تلاش کنید.');
 
             return;
@@ -415,45 +418,25 @@ class TelegramWebhookController extends Controller
             ->value('id');
 
         if ($submissionId > 0) {
-            $this->warnIfQueueIsSync();
+            // No worker behind the queue (sync runs the import here, null drops
+            // it): said once an hour, by this request or the supervisor sweep.
+            BotImportQueue::warnOnceAnHour();
 
             ImportBotFileJob::dispatch($submissionId);
         }
     }
 
-    /** Throttle key: the sync-queue warning is written at most once an hour. */
-    protected const INLINE_WARNING_CACHE_KEY = 'relay:bot:inline-warning';
-
     /**
-     * QUEUE_CONNECTION=sync runs the import inside this webhook request: no
-     * worker, no retry, and Telegram waits for the whole copy/adopt before the
-     * update is acknowledged. A redis/database queue is the supported setup, so
-     * the misconfiguration gets said out loud instead of looking like a normal
-     * import (the panel's bot card shows the same flag).
-     *
-     * The statement does not change between uploads, so the log line is cooled
-     * down to one an hour: without that, every accepted document wrote the same
-     * warning and buried everything else in the log. The panel flag is not
-     * affected - it is computed from the config on every health check.
+     * One line per key per hour. A statement that does not change between
+     * updates (a refused file, an ignored group) would otherwise write itself
+     * once per request and bury the rest of the log. Cache::add is atomic, so of
+     * the requests in the window exactly one writes the line.
      */
-    protected function warnIfQueueIsSync(): void
+    protected function infoOnceAnHour(string $key, string $message, array $context = []): void
     {
-        $connection = (string) config('queue.default');
-
-        if ($connection !== 'sync') {
-            return;
+        if (Cache::add('relay:bot:info:' . $key, true, now()->addHour())) {
+            Log::info($message, $context);
         }
-
-        // Cache::add is atomic: of every request in the window exactly one
-        // writes the line, so concurrent webhooks cannot double-log it either.
-        if (!Cache::add(self::INLINE_WARNING_CACHE_KEY, true, now()->addHour())) {
-            return;
-        }
-
-        Log::warning('bot import runs inline: queue.default is sync', [
-            'connection' => $connection,
-            'fix' => 'set QUEUE_CONNECTION=redis (or database) and run relay:queue-supervisor',
-        ]);
     }
 
     protected function saveSession(int $userId, int $chatId, string $state, array $payload): void

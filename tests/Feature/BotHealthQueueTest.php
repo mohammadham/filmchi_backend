@@ -48,6 +48,16 @@ class BotHealthQueueTest extends TestCase
         $this->assertSame('sync', $payload['queue_connection']);
     }
 
+    public function test_the_card_flags_a_null_queue_as_workerless(): void
+    {
+        config(['queue.default' => 'null']);
+
+        $payload = $this->health();
+
+        $this->assertTrue($payload['queue_sync'], 'null drops the job, so the card must warn too');
+        $this->assertSame('null', $payload['queue_connection']);
+    }
+
     public function test_a_real_queue_is_not_flagged_and_the_secret_stays_hidden(): void
     {
         config(['queue.default' => 'redis']);

@@ -17,6 +17,7 @@ use App\RelayWorker;
 use App\Notification;
 use App\Season;
 use App\Pages;
+use App\Services\Bot\BotImportQueue;
 use App\Services\Bot\TelegramBotClient;
 use App\Services\Relay\DiskBudget;
 use App\Services\Relay\NineDriveClient;
@@ -391,11 +392,12 @@ class SettingController extends Controller
     /**
      * Bot card badges: the Bot API answers online/offline plus the webhook
      * Telegram currently has, measured against the URL this panel would use.
+     *
+     * Read-only: it never writes the card, so a badge only describes what is
+     * stored. Edits in the boxes reach Telegram through Save or Set webhook.
      */
     public function botHealth(Request $request)
     {
-        // Badges describe what is stored, not what is being typed: the buttons
-        // save the card first, so an unsaved box can never look saved.
         $bot = new TelegramBotClient();
         $health = $bot->health();
 
@@ -418,9 +420,10 @@ class SettingController extends Controller
             'enabled' => (bool) config('media_relay.bot.enabled'),
             'token_set' => (string) config('media_relay.bot.token') !== '',
             'secret_set' => $secret !== '',
-            // sync has no worker: the import runs inside the webhook request.
-            'queue_connection' => (string) config('queue.default'),
-            'queue_sync' => (string) config('queue.default') === 'sync',
+            // sync runs the import inside the request and null drops it: both
+            // leave no worker to pick the job up.
+            'queue_connection' => BotImportQueue::driver(),
+            'queue_sync' => BotImportQueue::runsInline(),
             'ok' => $health['ok'],
             'message' => $health['message'],
             // The secret is the path segment of this URL: the panel says whether
@@ -457,14 +460,18 @@ class SettingController extends Controller
         $url = $this->botWebhookUrl($secret);
 
         try {
-            (new TelegramBotClient())->setWebhook($url, $secret);
+            $bot = new TelegramBotClient();
+            $bot->setWebhook($url, $secret);
+            // The "/" menu lives on Telegram's side, so it is registered here
+            // with the webhook rather than re-sent on every message.
+            $bot->setMyCommands();
         } catch (\Throwable $e) {
             return response()->json(['status' => false, 'message' => $e->getMessage()]);
         }
 
         return response()->json([
             'status' => true,
-            'message' => 'Card saved and webhook set: ' . $this->maskSecret($url, $secret),
+            'message' => 'Card saved, webhook and command menu set: ' . $this->maskSecret($url, $secret),
             'webhook_url' => $this->maskSecret($url, $secret),
         ]);
     }
@@ -509,8 +516,9 @@ class SettingController extends Controller
     }
 
     /**
-     * Persist the bot card before a webhook call, so Telegram and this install
-     * always agree. Returns the error response to send back, or null to go on.
+     * Persist the bot card before any Bot API call the card makes, so what is
+     * checked or registered is what this install stores. Returns the error
+     * response to send back, or null to go on.
      */
     protected function saveBotCard(Request $request): ?\Illuminate\Http\JsonResponse
     {
@@ -519,7 +527,7 @@ class SettingController extends Controller
         } catch (\Throwable $e) {
             return response()->json([
                 'status' => false,
-                'message' => 'could not save the bot card, so nothing was registered: ' . $e->getMessage(),
+                'message' => 'could not save the bot card, so nothing was sent: ' . $e->getMessage(),
             ]);
         }
 

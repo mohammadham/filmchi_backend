@@ -2,6 +2,7 @@
 
 namespace App\Services\Bot;
 
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
@@ -50,10 +51,14 @@ class TelegramBotClient
 
             return true;
         } catch (Throwable $e) {
-            Log::warning('bot message failed', [
-                'chat' => $chatId,
-                'message' => $e->getMessage(),
-            ]);
+            // A blocked bot fails every reply, so the line is cooled down per
+            // chat: one an hour still names the chat, without one per message.
+            if (Cache::add('relay:bot:warn:message-failed:' . $chatId, true, now()->addHour())) {
+                Log::warning('bot message failed', [
+                    'chat' => $chatId,
+                    'message' => $e->getMessage(),
+                ]);
+            }
 
             return false;
         }
@@ -116,6 +121,23 @@ class TelegramBotClient
     public function deleteWebhook(): void
     {
         $this->call('deleteWebhook');
+    }
+
+    /**
+     * The menu behind "/", registered with the webhook so the user never has to
+     * type a command to discover it. The list travels as one JSON field because
+     * the Bot API does not read nested form arrays.
+     */
+    public const COMMANDS = [
+        ['command' => 'start', 'description' => 'شروع و خوش‌آمد'],
+        ['command' => 'ping', 'description' => 'تست پاسخ‌دهی ربات'],
+        ['command' => 'help', 'description' => 'راهنمای دستورها'],
+        ['command' => 'cancel', 'description' => 'لغو گفتگوی نیمه‌کاره'],
+    ];
+
+    public function setMyCommands(): void
+    {
+        $this->call('setMyCommands', ['commands' => json_encode(self::COMMANDS, JSON_UNESCAPED_UNICODE)]);
     }
 
     /**
