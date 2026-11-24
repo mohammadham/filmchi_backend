@@ -28,9 +28,20 @@ class RelayQueueSupervisorHarness extends RelayQueueSupervisor
         return $this->workerQueue($role);
     }
 
+    public function sweepParts(): void
+    {
+        $this->sweepDeferredParts();
+    }
+
     public function requeueBotImports(): void
     {
         $this->requeueStaleBotImports();
+    }
+
+    /** Unix time of the last requeue attempt; 0 means the next tick retries. */
+    public function botRequeueAt(): int
+    {
+        return $this->lastBotRequeueAt;
     }
 
     public function publishHeartbeat(): void

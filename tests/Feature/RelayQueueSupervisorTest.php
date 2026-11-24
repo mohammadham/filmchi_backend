@@ -4,9 +4,12 @@ namespace Tests\Feature;
 
 use App\Console\Commands\RelayQueueSupervisor;
 use App\Jobs\ImportBotFileJob;
+use App\Services\Relay\IngestPartSweeper;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
+use RuntimeException;
 use Tests\Support\RelayQueueSupervisorHarness;
 use Tests\TestCase;
 
@@ -92,6 +95,38 @@ class RelayQueueSupervisorTest extends TestCase
         Queue::assertPushed(ImportBotFileJob::class, fn (ImportBotFileJob $job) => $job->submissionId === $stale);
     }
 
+    public function test_requeuing_with_no_worker_behind_the_queue_warns_once_an_hour(): void
+    {
+        Queue::fake();
+        Log::spy();
+        config(['queue.default' => 'sync']);
+
+        $this->submission('sup-stale', 'queued', now()->subHour());
+
+        $inline = fn (string $message): bool => str_contains($message, 'runs inline');
+
+        (new RelayQueueSupervisorHarness())->requeueBotImports();
+        Log::shouldHaveReceived('warning')->withArgs($inline)->once();
+
+        // A second sweep in the same hour is the same statement: still one line.
+        (new RelayQueueSupervisorHarness())->requeueBotImports();
+        Log::shouldHaveReceived('warning')->withArgs($inline)->once();
+
+        // A real queue has a worker behind it, so the sweep stays quiet.
+        config(['queue.default' => 'redis']);
+        (new RelayQueueSupervisorHarness())->requeueBotImports();
+        Log::shouldHaveReceived('warning')->withArgs($inline)->once();
+
+        // null is worse than sync - the job is thrown away - and gets its own
+        // line once the hour of the first one is over.
+        Cache::flush();
+        config(['queue.default' => 'null']);
+        (new RelayQueueSupervisorHarness())->requeueBotImports();
+        Log::shouldHaveReceived('warning')
+            ->withArgs(fn (string $message): bool => str_contains($message, 'queue.default is null'))
+            ->once();
+    }
+
     public function test_the_requeue_window_limits_one_pass_per_interval(): void
     {
         Queue::fake();
@@ -103,6 +138,53 @@ class RelayQueueSupervisorTest extends TestCase
         $supervisor->requeueBotImports();
 
         Queue::assertPushed(ImportBotFileJob::class, 1);
+    }
+
+    public function test_a_failed_sweep_is_logged_once_an_hour(): void
+    {
+        Log::spy();
+
+        // A sweep that keeps failing in silence is indistinguishable from a
+        // disk that simply refills, so the reason has to reach the log.
+        $this->app->instance(IngestPartSweeper::class, new class extends IngestPartSweeper {
+            public function sweep(?int $staleHours = null, bool $dryRun = false): array
+            {
+                throw new RuntimeException('db is gone');
+            }
+        });
+
+        $warning = fn (string $message): bool => $message === 'stale ingest part sweep failed';
+
+        (new RelayQueueSupervisorHarness())->sweepParts();
+        Log::shouldHaveReceived('warning')->withArgs($warning)->once();
+
+        // The interval is cleared so the next tick retries, but the line stays
+        // at one an hour: a repeating failure must not flood the log.
+        (new RelayQueueSupervisorHarness())->sweepParts();
+        Log::shouldHaveReceived('warning')->withArgs($warning)->once();
+    }
+
+    public function test_a_failed_requeue_is_logged_and_retried_on_the_next_tick(): void
+    {
+        // The requeue runs unattended inside the supervisor loop, so a swallowed
+        // error only shows up as imports that quietly never resume.
+        Log::spy();
+        DB::shouldReceive('table')->andThrow(new RuntimeException('db is gone'));
+
+        $supervisor = new RelayQueueSupervisorHarness();
+        $supervisor->requeueBotImports();
+
+        Log::shouldHaveReceived('warning')
+            ->withArgs(fn (string $message): bool => $message === 'stale bot import requeue failed')
+            ->once();
+
+        $this->assertSame(0, $supervisor->botRequeueAt(), 'the next tick must retry instead of waiting an interval');
+
+        // The reset makes the next tick run again; the line stays at one an hour.
+        $supervisor->requeueBotImports();
+        Log::shouldHaveReceived('warning')
+            ->withArgs(fn (string $message): bool => $message === 'stale bot import requeue failed')
+            ->once();
     }
 
     public function test_every_lane_in_the_role_list_is_supervised_on_its_own_queue(): void

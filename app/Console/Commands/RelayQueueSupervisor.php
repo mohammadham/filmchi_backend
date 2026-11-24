@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Jobs\ImportBotFileJob;
+use App\Services\Bot\BotImportQueue;
 use App\Services\Relay\DiskBudget;
 use App\Services\Relay\IngestPartSweeper;
 use App\Services\Relay\RelaySettings;
@@ -10,6 +11,7 @@ use App\Services\Relay\WorkerRegistry;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Throwable;
 
 /**
@@ -98,7 +100,6 @@ class RelayQueueSupervisor extends Command
 
             $this->sweepDeferredParts();
             $this->requeueStaleBotImports();
-
             $this->heartbeat();
 
             if (!$this->stopping) {
@@ -198,9 +199,12 @@ class RelayQueueSupervisor extends Command
         $this->lastSweepAt = time();
 
         try {
-            $result = (new IngestPartSweeper())->sweep();
+            // Resolved from the container so the sweep can be swapped in tests.
+            $result = app(IngestPartSweeper::class)->sweep();
 
-            if ($result['deleted'] > 0 || $result['sidecars'] > 0) {
+            // A direct instance has no console; the sweep still has to work
+            // there (tests, and any embedder that reconciles without a terminal).
+            if (($result['deleted'] > 0 || $result['sidecars'] > 0) && $this->output !== null) {
                 $this->info(sprintf(
                     'swept %d stale ingest part(s), %d MB, %d orphan chunk manifest(s)',
                     $result['deleted'],
@@ -209,9 +213,28 @@ class RelayQueueSupervisor extends Command
                 ));
             }
         } catch (Throwable $e) {
-            // A transient DB hiccup must not stop the pool; retry next tick.
+            // Retry next tick, but never silently: a sweep that keeps failing
+            // looks exactly like a disk that simply refills.
+            $this->warnOnceAnHour('sweep-failed', 'stale ingest part sweep failed', ['message' => $e->getMessage()]);
             $this->lastSweepAt = 0;
         }
+    }
+
+    /**
+     * One warning line an hour for a housekeeping failure.
+     *
+     * The sweep and the requeue run unattended inside the supervisor loop, so a
+     * swallowed error only shows up later as a disk that keeps filling or as
+     * imports that never resume. The throttle keeps a flapping database from
+     * turning one broken pass into a line every few minutes.
+     */
+    protected function warnOnceAnHour(string $key, string $message, array $context = []): void
+    {
+        if (!Cache::add('relay:supervisor:warn:' . $key, true, now()->addHour())) {
+            return;
+        }
+
+        Log::warning($message, $context);
     }
 
     /**
@@ -239,19 +262,27 @@ class RelayQueueSupervisor extends Command
                 ->limit(50)
                 ->pluck('id');
         } catch (Throwable $e) {
-            // A transient DB hiccup must not stop the pool; retry next tick.
+            // Retry next tick, but never silently: a swallowed error only shows
+            // up as imports that quietly never resume.
+            $this->warnOnceAnHour('requeue-failed', 'stale bot import requeue failed', ['message' => $e->getMessage()]);
             $this->lastBotRequeueAt = 0;
 
             return;
         }
 
+        if ($stale->isEmpty()) {
+            return;
+        }
+
+        // With no worker behind the queue, the requeue below is a lie: sync runs
+        // each import inside this loop and null drops it silently.
+        BotImportQueue::warnOnceAnHour();
+
         foreach ($stale as $id) {
             ImportBotFileJob::dispatch((int) $id);
         }
 
-        // A direct instance has no console: the sweep still has to work there
-        // (tests, and any embedder that reconciles without a terminal).
-        if ($stale->isNotEmpty() && $this->output !== null) {
+        if ($this->output !== null) {
             $this->info(sprintf('requeued %d stale bot import(s)', $stale->count()));
         }
     }
