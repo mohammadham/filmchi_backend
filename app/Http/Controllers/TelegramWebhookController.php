@@ -37,13 +37,6 @@ class TelegramWebhookController extends Controller
     /** How long a half-answered conversation waits for the next message. */
     protected const SESSION_MINUTES = 30;
 
-    /** `/help`: the commands the bot answers, then the two questions it asks. */
-    protected const HELP_TEXT = "راهنما:\n"
-        . "/start — سلام و شروع\n"
-        . "/ping — تست اینکه ربات پاسخ می‌دهد\n"
-        . "/cancel — لغو گفتگوی نیمه‌کاره\n"
-        . 'ثبت فایل: فایل را با گزینهٔ Document (Send as file) بفرست، بعد کیفیت (1080/720/480) و سریال بودن را جواب بده؛ در پایان لینک پخش می‌آید.';
-
     public function __construct(protected TelegramBotClient $bot)
     {
     }
@@ -419,8 +412,8 @@ class TelegramWebhookController extends Controller
             ->value('id');
 
         if ($submissionId > 0) {
-            // No worker behind the queue (sync runs the import here, null drops
-            // it): said once an hour, by this request or the supervisor sweep.
+            // No worker behind the queue (sync runs it here, null drops it):
+            // the same line covers the supervisor's own sweep.
             BotImportQueue::warnOnceAnHour();
 
             ImportBotFileJob::dispatch($submissionId);
@@ -428,10 +421,8 @@ class TelegramWebhookController extends Controller
     }
 
     /**
-     * One line per key per hour. A statement that does not change between
-     * updates (a refused file, an ignored group) would otherwise write itself
-     * once per request and bury the rest of the log. Cache::add is atomic, so of
-     * the requests in the window exactly one writes the line.
+     * One line per key per hour: an unchanged statement would otherwise repeat
+     * itself on every update and bury the log, and Cache::add keeps it to one.
      */
     protected function infoOnceAnHour(string $key, string $message, array $context = []): void
     {
@@ -553,9 +544,24 @@ class TelegramWebhookController extends Controller
 
         $this->bot->trySendMessage($chatId, match ($command) {
             'start' => 'سلام! فایل را به‌صورت سند (Document) بفرست تا ذخیره‌اش کنم.',
-            'help' => self::HELP_TEXT,
+            'help' => $this->helpText(),
             default => 'pong',
         });
+    }
+
+    /**
+     * `/help`: the list the "/" menu shows, built from it so a renamed or added
+     * command cannot be documented in one place and missing from the other.
+     */
+    protected function helpText(): string
+    {
+        $commands = array_map(
+            fn (array $command) => '/' . $command['command'] . ' — ' . $command['description'],
+            TelegramBotClient::COMMANDS
+        );
+
+        return "راهنما:\n" . implode("\n", $commands)
+            . "\n" . 'ثبت فایل: فایل را با گزینهٔ Document (Send as file) بفرست، بعد کیفیت (1080/720/480) و سریال بودن را جواب بده؛ در پایان لینک پخش می‌آید.';
     }
 
     /**

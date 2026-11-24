@@ -7,6 +7,7 @@ use App\Jobs\ImportBotFileJob;
 use App\Providers\AppServiceProvider;
 use App\RelayFile;
 use App\RelayLink;
+use App\Services\Bot\TelegramBotClient;
 use App\Services\Relay\RelaySettings;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -830,11 +831,16 @@ class TelegramWebhookTest extends TestCase
         Http::assertSent(function ($request) {
             $text = (string) $request['text'];
 
+            // /help is the "/" menu's own list: every registered command and
+            // its description, so the two cannot drift apart.
+            foreach (TelegramBotClient::COMMANDS as $command) {
+                if (!str_contains($text, '/' . $command['command'] . ' — ' . $command['description'])) {
+                    return false;
+                }
+            }
+
             return str_ends_with($request->url(), '/sendMessage')
                 && (int) $request['chat_id'] === 111
-                && str_contains($text, '/start')
-                && str_contains($text, '/ping')
-                && str_contains($text, '/cancel')
                 && str_contains($text, 'Document')
                 && str_contains($text, '1080');
         });
