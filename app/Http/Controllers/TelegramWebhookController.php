@@ -8,7 +8,6 @@ use App\RelayLink;
 use App\Services\Bot\BotImportQueue;
 use App\Services\Bot\TelegramBotClient;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -70,9 +69,10 @@ class TelegramWebhookController extends Controller
         $from = $update['message']['from'] ?? $update['callback_query']['from'] ?? null;
 
         if (!$this->allowed($from, $message)) {
-            // A bot added to a group sees every message there, so the line is
-            // cooled down per chat: the first ignored update of the hour says it.
-            $this->infoOnceAnHour('ignored:' . (string) ($message['chat']['id'] ?? ''), 'bot update ignored', [
+            // A bot added to a group sees every message there. The line is not
+            // cooled down: a cooldown keyed by chat would also hide whatever
+            // else that chat does next, which is exactly what a debugger needs.
+            Log::info('bot update ignored', [
                 'update_id' => $updateId,
                 'user' => (string) ($from['id'] ?? ''),
                 'chat' => (string) ($message['chat']['type'] ?? ''),
@@ -194,7 +194,7 @@ class TelegramWebhookController extends Controller
         $capMb = (int) config('media_relay.bot.max_size_mb', 0);
 
         if ($capMb > 0 && $sizeBytes > $capMb * 1024 * 1024) {
-            $this->infoOnceAnHour('size-cap:' . $userId, 'bot document over the size cap', [
+            Log::info('bot document over the size cap', [
                 'user' => $userId,
                 'size' => $sizeBytes,
                 'cap_mb' => $capMb,
@@ -365,7 +365,7 @@ class TelegramWebhookController extends Controller
     protected function finishSubmission(array $payload, int $userId, int $chatId, int $updateId, bool $isSeries): void
     {
         if ($this->overDailyLimit($userId)) {
-            $this->infoOnceAnHour('daily-limit:' . $userId, 'bot daily limit reached', ['update_id' => $updateId, 'user' => $userId]);
+            Log::info('bot daily limit reached', ['update_id' => $updateId, 'user' => $userId]);
             $this->bot->trySendMessage($chatId, '⏳ سقف ورود روزانهٔ شما پر شده است؛ فردا دوباره تلاش کنید.');
 
             return;
@@ -417,17 +417,6 @@ class TelegramWebhookController extends Controller
             BotImportQueue::warnOnceAnHour();
 
             ImportBotFileJob::dispatch($submissionId);
-        }
-    }
-
-    /**
-     * One line per key per hour: an unchanged statement would otherwise repeat
-     * itself on every update and bury the log, and Cache::add keeps it to one.
-     */
-    protected function infoOnceAnHour(string $key, string $message, array $context = []): void
-    {
-        if (Cache::add('relay:bot:info:' . $key, true, now()->addHour())) {
-            Log::info($message, $context);
         }
     }
 

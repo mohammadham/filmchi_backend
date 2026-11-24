@@ -213,15 +213,11 @@ class TelegramWebhookTest extends TestCase
         $this->importDocument(73);
         $this->importDocument(76); // same hour: the statement is already written
 
-        config(['queue.default' => 'redis']);
+        $this->travel(61)->minutes();
         $this->importDocument(79);
 
-        $this->travel(61)->minutes();
-        config(['queue.default' => 'sync']);
-        $this->importDocument(82);
-
         // Exactly the two sync imports an hour apart, so neither the redis
-        // uploads nor the second sync one in the same hour logged it.
+        // upload nor the second sync one inside the hour logged it.
         Log::shouldHaveReceived('warning')
             ->withArgs(fn (string $message): bool => str_contains($message, 'runs inline'))
             ->twice();
@@ -264,7 +260,7 @@ class TelegramWebhookTest extends TestCase
         Log::shouldHaveReceived('warning')->withArgs($dead)->twice();
     }
 
-    public function test_a_refused_file_is_logged_once_an_hour(): void
+    public function test_every_refused_file_and_ignored_update_is_logged(): void
     {
         Queue::fake();
         Http::fake();
@@ -274,13 +270,16 @@ class TelegramWebhookTest extends TestCase
         $big = ['file_size' => 5 * 1024 * 1024];
         $refused = fn (string $message): bool => $message === 'bot document over the size cap';
 
+        // No cooldown: two refusals in the same hour are two events. A key per
+        // user would also have swallowed the next line about that same user.
         $this->postUpdate($this->documentUpdate(130, 111, $big))->assertOk();
         $this->postUpdate($this->documentUpdate(131, 111, $big))->assertOk();
-        Log::shouldHaveReceived('info')->withArgs($refused)->once();
-
-        $this->travel(61)->minutes();
-        $this->postUpdate($this->documentUpdate(132, 111, $big))->assertOk();
         Log::shouldHaveReceived('info')->withArgs($refused)->twice();
+
+        $this->postUpdate($this->update(132, 999, 'group'))->assertOk();
+        Log::shouldHaveReceived('info')
+            ->withArgs(fn (string $message): bool => $message === 'bot update ignored')
+            ->once();
     }
 
     public function test_an_outsider_gets_no_session_even_with_a_document(): void
