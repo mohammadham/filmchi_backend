@@ -2,9 +2,8 @@
 
 namespace App\Services\Bot;
 
-use Illuminate\Support\Facades\Cache;
+use App\Services\LogOnce;
 use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Log;
 use RuntimeException;
 use Throwable;
 
@@ -53,12 +52,10 @@ class TelegramBotClient
         } catch (Throwable $e) {
             // A blocked bot fails every reply, so the line is cooled down per
             // chat: one an hour still names the chat, without one per message.
-            if (Cache::add('relay:bot:warn:message-failed:' . $chatId, true, now()->addHour())) {
-                Log::warning('bot message failed', [
-                    'chat' => $chatId,
-                    'message' => $e->getMessage(),
-                ]);
-            }
+            LogOnce::warning('bot:message-failed:' . $chatId, 'bot message failed', [
+                'chat' => $chatId,
+                'message' => $e->getMessage(),
+            ]);
 
             return false;
         }
@@ -136,7 +133,7 @@ class TelegramBotClient
     ];
 
     /** An empty list is how the Bot API clears the "/" menu again. */
-    public function setMyCommands(array $commands = self::COMMANDS): void
+    public function setMyCommands(array $commands): void
     {
         $this->call('setMyCommands', ['commands' => json_encode($commands, JSON_UNESCAPED_UNICODE)]);
     }

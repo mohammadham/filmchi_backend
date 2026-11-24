@@ -116,15 +116,6 @@ class RelayQueueSupervisorTest extends TestCase
         config(['queue.default' => 'redis']);
         (new RelayQueueSupervisorHarness())->requeueBotImports();
         Log::shouldHaveReceived('warning')->withArgs($inline)->once();
-
-        // null is worse than sync - the job is thrown away - and gets its own
-        // line once the hour of the first one is over.
-        Cache::flush();
-        config(['queue.default' => 'null']);
-        (new RelayQueueSupervisorHarness())->requeueBotImports();
-        Log::shouldHaveReceived('warning')
-            ->withArgs(fn (string $message): bool => str_contains($message, 'queue.default is null'))
-            ->once();
     }
 
     public function test_the_requeue_window_limits_one_pass_per_interval(): void

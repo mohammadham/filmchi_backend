@@ -290,7 +290,7 @@ class BotWebhookPanelTest extends TestCase
             && $request['url'] === $this->expectedUrl());
     }
 
-    public function test_set_webhook_registers_the_start_ping_help_cancel_menu(): void
+    public function test_set_webhook_registers_the_command_menu(): void
     {
         Http::fake(['api.telegram.org/*' => Http::response(['ok' => true, 'result' => true])]);
 
@@ -300,17 +300,8 @@ class BotWebhookPanelTest extends TestCase
 
         // The "/" menu comes from Telegram, not from this install: it has to be
         // pushed with the webhook, in the JSON field the Bot API reads.
-        Http::assertSent(function ($request) {
-            if (!str_ends_with($request->url(), '/setMyCommands')) {
-                return false;
-            }
-
-            $commands = json_decode((string) $request['commands'], true);
-
-            return is_array($commands)
-                && array_column($commands, 'command') === ['start', 'ping', 'help', 'cancel']
-                && array_column($commands, 'description') === array_column(TelegramBotClient::COMMANDS, 'description');
-        });
+        Http::assertSent(fn ($request) => str_ends_with($request->url(), '/setMyCommands')
+            && json_decode((string) $request['commands'], true) === TelegramBotClient::COMMANDS);
     }
 
     public function test_a_refused_command_menu_is_reported_instead_of_passing_silently(): void

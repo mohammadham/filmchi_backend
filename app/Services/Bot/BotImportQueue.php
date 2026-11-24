@@ -2,8 +2,7 @@
 
 namespace App\Services\Bot;
 
-use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Log;
+use App\Services\LogOnce;
 
 /**
  * Whether dispatching a bot import ever reaches a worker process.
@@ -38,13 +37,9 @@ class BotImportQueue
             return;
         }
 
-        if (!Cache::add('relay:bot:warn:inline-warning', true, now()->addHour())) {
-            return;
-        }
-
         // null is the worse of the two: sync at least runs the import, null
         // throws it away. The line says which one the install is on.
-        Log::warning($driver === 'null'
+        LogOnce::warning('bot:inline-warning', $driver === 'null'
             ? 'bot import is dropped: queue.default is null'
             : 'bot import runs inline: queue.default is ' . $driver, [
                 'fix' => 'set QUEUE_CONNECTION=redis (or database) and run relay:queue-supervisor',

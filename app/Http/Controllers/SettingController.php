@@ -464,7 +464,7 @@ class SettingController extends Controller
             $bot->setWebhook($url, $secret);
             // The "/" menu lives on Telegram's side, so it is registered here
             // with the webhook rather than re-sent on every message.
-            $bot->setMyCommands();
+            $bot->setMyCommands(TelegramBotClient::COMMANDS);
         } catch (\Throwable $e) {
             return response()->json(['status' => false, 'message' => $e->getMessage()]);
         }

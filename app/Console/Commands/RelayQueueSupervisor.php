@@ -7,11 +7,11 @@ use App\Services\Bot\BotImportQueue;
 use App\Services\Relay\DiskBudget;
 use App\Services\Relay\IngestPartSweeper;
 use App\Services\Relay\RelaySettings;
+use App\Services\LogOnce;
 use App\Services\Relay\WorkerRegistry;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
 use Throwable;
 
 /**
@@ -230,11 +230,7 @@ class RelayQueueSupervisor extends Command
      */
     protected function warnOnceAnHour(string $key, string $message, array $context = []): void
     {
-        if (!Cache::add('relay:supervisor:warn:' . $key, true, now()->addHour())) {
-            return;
-        }
-
-        Log::warning($message, $context);
+        LogOnce::warning('supervisor:' . $key, $message, $context);
     }
 
     /**
