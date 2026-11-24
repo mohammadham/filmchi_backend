@@ -309,8 +309,10 @@ The production `.env` uses `QUEUE_CONNECTION=sync`, so crossing the threshold on
 
 The same install has no supervisor, so the `bot_updates` prune does not depend
 on one: `relay:prune-bot-updates` is scheduled hourly in
-`App\Console\Kernel::schedule`. Only the standard scheduler cron is needed, and
-it runs the prune (and any later schedule entry) with it:
+`App\Console\Kernel::schedule`. Nothing fires that schedule by itself, so the
+compose stack runs a `scheduler` service (`php artisan schedule:work`) next to
+the worker; `docker compose up -d` on deploy is all it needs. An install that
+does not run that service has to call the scheduler from cron instead:
 
 ```cron
 * * * * * docker exec flixy php /app/artisan schedule:run >> /var/log/flixy-schedule.log 2>&1
@@ -321,4 +323,11 @@ it runs the prune (and any later schedule entry) with it:
 - `flixy-compose.yml` (copied to `docker-compose.yml` on the server by `deploy.yml` before `docker compose up`) bind-mounts `./storage/app` and `./storage/logs`; without them every rebuild wipes uploads and logs.
 - Sessions use Redis (`SESSION_DRIVER=redis`) so panel logins survive redeploys.
 - `deploy.yml` now runs `php artisan migrate --force` and `optimize:clear` after `docker compose up`.
+- The `scheduler` service is what actually fires the hourly `relay:prune-bot-updates`: it stays up on its own and needs no host cron. If it is removed, `bot_updates` is never pruned on a `QUEUE_CONNECTION=sync` install. A deploy adds it automatically (`docker compose up -d` reads the new service); an install that is already up only needs:
+
+  ```bash
+  cd /opt/flixy && cp flixy-compose.yml docker-compose.yml && docker compose up -d scheduler
+  ```
+
+  Check it once with `docker logs --tail 20 flixy-scheduler` (it prints nothing until a scheduled task runs) and `docker exec flixy php artisan schedule:list`.
 - `setting.js` is cache-busted with `?v=<filemtime>`; bumping assets no longer requires a hard refresh.
