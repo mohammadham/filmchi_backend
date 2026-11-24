@@ -331,13 +331,27 @@ class BotWebhookPanelTest extends TestCase
 
     public function test_delete_webhook_saves_the_card_first(): void
     {
-        Http::fake(['api.telegram.org/*/deleteWebhook' => Http::response(['ok' => true, 'result' => true])]);
+        Http::fake(['api.telegram.org/*' => Http::response(['ok' => true, 'result' => true])]);
 
         $payload = $this->card('deleteBotWebhook', ['relay_bot_token' => '321:typed']);
 
         $this->assertTrue($payload['status']);
         Http::assertSent(fn ($request) => str_contains($request->url(), '/bot321:typed/deleteWebhook'));
         $this->assertSame('321:typed', GlobalSettings::first()->relay_bot_token);
+    }
+
+    public function test_delete_webhook_also_clears_the_command_menu(): void
+    {
+        Http::fake(['api.telegram.org/*' => Http::response(['ok' => true, 'result' => true])]);
+
+        $payload = $this->card('deleteBotWebhook');
+
+        $this->assertTrue($payload['status']);
+
+        // The menu is Telegram-side state that survives deleteWebhook: left
+        // alone, "/" keeps listing commands the removed webhook cannot answer.
+        Http::assertSent(fn ($request) => str_ends_with($request->url(), '/setMyCommands')
+            && json_decode((string) $request['commands'], true) === []);
     }
 
     public function test_set_webhook_refuses_an_empty_secret(): void

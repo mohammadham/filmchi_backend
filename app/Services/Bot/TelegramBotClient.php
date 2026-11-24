@@ -135,9 +135,10 @@ class TelegramBotClient
         ['command' => 'cancel', 'description' => 'لغو گفتگوی نیمه‌کاره'],
     ];
 
-    public function setMyCommands(): void
+    /** An empty list is how the Bot API clears the "/" menu again. */
+    public function setMyCommands(array $commands = self::COMMANDS): void
     {
-        $this->call('setMyCommands', ['commands' => json_encode(self::COMMANDS, JSON_UNESCAPED_UNICODE)]);
+        $this->call('setMyCommands', ['commands' => json_encode($commands, JSON_UNESCAPED_UNICODE)]);
     }
 
     /**

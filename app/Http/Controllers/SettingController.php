@@ -487,12 +487,16 @@ class SettingController extends Controller
         }
 
         try {
-            (new TelegramBotClient())->deleteWebhook();
+            $bot = new TelegramBotClient();
+            $bot->deleteWebhook();
+            // The "/" menu lives on Telegram's side and outlives the webhook:
+            // left as is, it keeps offering commands nothing answers any more.
+            $bot->setMyCommands([]);
         } catch (\Throwable $e) {
             return response()->json(['status' => false, 'message' => $e->getMessage()]);
         }
 
-        return response()->json(['status' => true, 'message' => 'Card saved and webhook removed.']);
+        return response()->json(['status' => true, 'message' => 'Card saved, webhook and command menu removed.']);
     }
 
     /**
