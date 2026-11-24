@@ -124,7 +124,7 @@ php artisan relay:status            # tier health and statistics
 
 **A persistent cache store.** Demand counters live in the cache. With the default `array` driver they are discarded after every request, so nothing ever reaches the threshold and no file is promoted. Set `CACHE_DRIVER=redis` (or `RELAY_STATE_STORE=redis`). The panel page and `relay:status` both warn when the store is not persistent.
 
-**A queue worker for background promotion.** Promotion runs in `PromoteToCacheJob`. With `QUEUE_CONNECTION=sync` there is no worker, so a file that crosses the threshold is only marked `queued`; run `php artisan relay:promote` (cron or manually) to move it. With a real queue (`redis`, `database`) the job is dispatched and the panel returns immediately.
+**A queue worker for background promotion.** Promotion runs in `PromoteToCacheJob`. With `QUEUE_CONNECTION=sync` there is no worker, so a file that crosses the threshold is only marked `queued`; with `null` the dispatch is discarded and nothing happens at all. Run `php artisan relay:promote` (cron or manually) to move it. With a real queue (`redis`, `database`) the job is dispatched and the panel returns immediately.
 
 **9drive panel credentials.** Uploading to 9drive only needs the API key, but serving cached bytes goes through the public share endpoints, which are created with a panel session. Without `NINEDRIVE_EMAIL`/`NINEDRIVE_PASSWORD` a promoted file is marked warm and falls back to the public Google Drive link, which Google throttles with an interstitial for large files. Setting the credentials avoids that.
 
@@ -173,9 +173,10 @@ RELAY_BOT_UPDATE_RETENTION_DAYS=2        # dedup rows are pruned after this (min
 ```
 
 The dedup table is pruned by the scheduler: `relay:prune-bot-updates` runs
-hourly from `App\Console\Kernel::schedule` (never from the supervisor, which a
-`QUEUE_CONNECTION=sync` install does not have) and deletes `bot_updates` rows
-older than the retention (`received_at`, indexed). Retention is clamped to at
+hourly from `App\Console\Kernel::schedule` and never from the supervisor, whose
+loop is not guaranteed to be running (a `QUEUE_CONNECTION=sync` install has no
+reason to start one) and has no business owning retention. It deletes
+`bot_updates` rows older than the retention (`received_at`, indexed). Retention is clamped to at
 least one day, so it always outlives Telegram's 24-hour retry window and a
 retried delivery can never start a second flow. These values are
 also editable on the settings page; a blank token/secret field keeps the stored
@@ -203,7 +204,9 @@ mislead:
 - **Set webhook** saves the card first, then registers that secret as both the
   webhook path and the `X-Telegram-Bot-Api-Secret-Token` header, so Telegram and
   the webhook route can never hold different values. **Remove webhook** follows
-  the same order before deleting it.
+  the same order, then clears the `/` command menu too (`setMyCommands` with an
+  empty list): the menu outlives the webhook on Telegram's side, so leaving it
+  would keep offering commands nothing answers.
 - **Check health** is read-only: it never writes, and it reports the stored
   card - `getMe` for online/offline, `getWebhookInfo` for the registered URL and
   pending updates, `last_error` for a failed lookup or a delivery error Telegram
@@ -222,15 +225,33 @@ php artisan relay:queue-supervisor --queue=default --poll=3
 # relay queue supervisor started (download=1, upload=1, probe=1, bot=1)
 ```
 
-With `QUEUE_CONNECTION=sync` there is no worker at all and the import runs inside
-the webhook request; set `redis` or `database` for anything real. That case is
-not silent: the webhook's inline dispatch logs `bot import runs inline`, cooled
-down by the cache key `relay:bot:inline-warning` to one line an hour so a busy
-bot cannot bury the rest of the log in the same sentence. The throttle is only
-on the log: the bot card's health call derives `queue_sync` from the config on
-every check, so the panel still warns even when the line is suppressed. The
-supervisor also re-queues submissions left `queued`/`retrying` for
-`RELAY_BOT_STALE_SECONDS`, so a worker that dies does not strand a file.
+Two drivers have no worker behind them and `App\Services\Bot\BotImportQueue` is
+the single place that decides so: `sync` runs the job inside its caller (the
+webhook request, or the supervisor loop) and `null` discards it without a trace.
+The bot card, the webhook and the supervisor all read that one answer, so they
+cannot disagree about whether an import has a consumer. Set `redis` (or
+`database`) for anything real.
+
+That case is not silent: the first dispatch of the hour logs
+`bot import runs inline: queue.default is sync`, or, worse,
+`bot import is dropped: queue.default is null`, together with a `fix` hint.
+Whichever process notices first writes it, throttled by
+`App\Services\LogOnce` (cache key `relay:warn:bot:inline-warning`) to one line an
+hour so a busy bot cannot bury the rest of the log in the same sentence. The throttle is only on the log: the
+bot card's health call derives `queue_connection` and `queue_sync` from the
+config on every check, so the panel keeps warning even while the line is
+suppressed.
+
+The supervisor's requeue is where those drivers change behaviour. It selects up
+to 50 `bot_submissions` rows left `queued`/`retrying` for
+`RELAY_BOT_STALE_SECONDS` (never more often than `RELAY_BOT_REQUEUE_SECONDS`) and
+dispatches each one again: with a real queue that is what un-strands a file
+after a worker died. With `sync` those imports run inline inside the supervisor
+loop, so the tick blocks until they finish (the rows do reach a final state, one
+at a time). With `null` the dispatches are dropped: the same rows stay
+`queued`/`retrying`, get selected again every `RELAY_BOT_REQUEUE_SECONDS`, and
+the hourly warning is the only trace - a `null` install has no path to a
+finished import at all.
 
 **5. Smoke test.** Send `/ping` from an allowed account (expect `pong`), then a
 small document: the bot asks quality, then series, replies that the file is
@@ -301,7 +322,7 @@ Panel values are stored in `global_settings` (`relay_*` columns) and override `c
 
 ### Promotion without a queue worker
 
-The production `.env` uses `QUEUE_CONNECTION=sync`, so crossing the threshold only marks a file `queued`. A cron entry drains it:
+The production `.env` uses `QUEUE_CONNECTION=sync`, so crossing the threshold only marks a file `queued` (under `null` the dispatch is dropped just the same). A cron entry drains it:
 
 ```cron
 */5 * * * * docker exec flixy php /app/artisan relay:promote --limit=20 >> /var/log/flixy-relay-promote.log 2>&1
